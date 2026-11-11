@@ -14,6 +14,34 @@ modern browser.
 
 ![peek in a browser: the host's desktop with the toolbar at the top and the stats panel open on the left](docs/screenshot.png)
 
+## Numbers
+
+The point is a short wait for the screen, so that is what is measured. On a
+Linux laptop (niri, 1920×1080, medium quality), connecting from the same
+machine with [`bench/first-frame.ts`](bench/first-frame.ts):
+
+| | Median | p90 |
+|---|---|---|
+| Connect to an idle host, until the whole first frame (149 KB) has arrived | 24 ms | 26 ms |
+| The same within 5 s of the last connection (capture still set up) | 14 ms | 18 ms |
+| Of that, capturing and encoding the full screen | 13 ms | 14 ms |
+| Socket open | 1.3 ms | 1.6 ms |
+
+Idle, the host captures nothing: 10 ms of CPU over two minutes (0.01% of a
+core) and 17 MB of memory. The binary is 3.6 MB.
+
+Over a network, add about two round trips (TCP and the WebSocket handshake)
+and the time to carry the first frame; the browser then decodes and draws it.
+**Stats → First frame** in the client shows the whole wait as you see it.
+
+To measure a host yourself (it must accept the connection: use `--no-token`
+from the same machine, or pass the token):
+
+```
+bun bench/first-frame.ts ws://127.0.0.1:9182/ws [runs] [token]   # cold: waits out the 5 s idle release
+bun bench/first-frame.ts ws://127.0.0.1:9182/ws 20 --warm       # warm: back to back
+```
+
 ## Run
 
 ```
@@ -73,7 +101,8 @@ Hover the dot at the top to show the toolbar; the pin keeps it open.
   data received (hover a bar for its value) with its average and peak,
   latency split into host (capture to send), network (half the round trip)
   and browser (receive to draw), and the data received and sent since the
-  page was opened.
+  page was opened, and the first frame: how long the screen took to appear
+  after connecting (and, in Details, after opening the page).
 
 ### On a phone or tablet
 
@@ -333,6 +362,7 @@ src/platform/mod.rs       the interface a backend provides
 src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape
 src/platform/linux/       wlr-screencopy, virtual pointer, uinput, data-control
 build.rs                  builds the client before the host is compiled
+bench/first-frame.ts      time from connecting to the first frame (`bun bench/first-frame.ts`)
 client/src/connection.ts  the socket: connecting, frame decoding, stats counters
 client/src/input.ts       mouse, keyboard and clipboard to the host
 client/src/state.ts       settings and UI state, as Solid signals

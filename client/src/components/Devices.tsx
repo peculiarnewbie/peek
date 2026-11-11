@@ -129,6 +129,14 @@ export function Devices() {
               is then a click away, with mouse, keyboard and clipboard.</p>
             <p class="hint lead">This site only serves the page: your browser connects straight to each machine
               over Tailscale.</p>
+            <div class="figures">
+              <div><b>24<small> ms</small></b><span>from connecting to a whole 1080p frame, with the
+                machine idle until then</span></div>
+              <div><b>0.01<small> %</small></b><span>of one CPU core while nobody is looking: no capture runs</span></div>
+              <div><b>17<small> MB</small></b><span>of memory, in a 3.6 MB program</span></div>
+            </div>
+            <p class="hint small">Measured on the machine itself (Linux, 1920×1080); your network adds its round
+              trips. <a href="/docs/#numbers">How these were measured</a></p>
           </section>
         }>
           <div class="dgrid">
