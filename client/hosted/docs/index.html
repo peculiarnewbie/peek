@@ -122,6 +122,9 @@ cargo build --release</code></pre>
 <pre><code>.\scripts\install-autostart.ps1 -PeekArgs '--no-token'</code></pre>
 <p>This allows peek through Windows Firewall (Tailscale addresses only) and starts it at logon, hidden and as
 administrator, so it can also control windows that run as administrator. <code>-Remove</code> undoes both.</p>
+<p>On a desktop PC, add <code>--keep-gpu</code> to <code>-PeekArgs</code> to connect faster from idle: peek then
+keeps its GPU device open while nobody is watching. It costs some memory, and on a laptop it can keep a separate
+graphics card from sleeping, so it is off by default.</p>
 <p><strong>Linux.</strong> From inside the Wayland session:</p>
 <pre><code>cp target/release/peek ~/.local/bin/
 cp scripts/peek.service ~/.config/systemd/user/

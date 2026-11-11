@@ -72,6 +72,7 @@ tailnet decides who can connect (see [Security](#security)).
 | `--view-only` | Ignore mouse, keyboard and clipboard from clients |
 | `--no-clipboard` | Do not synchronise the clipboard |
 | `--detach` | Windows: start in the background with no window, then return |
+| `--keep-gpu` | Windows: keep the GPU device open while idle, so connecting from idle is faster (costs some memory; on a laptop it can keep a discrete GPU awake) |
 | `--log <file>` | Also append log lines to a file |
 | `-v` | Log every input event and periodic throughput |
 

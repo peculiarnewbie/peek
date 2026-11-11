@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, IDC_WAIT, LoadCursorW,
 };
 
-pub use capture::Capture;
+pub use capture::{Capture, keep_device};
 
 /// One-time process setup. Must run before anything asks for screen metrics,
 /// otherwise Windows reports scaled coordinates instead of physical pixels.
