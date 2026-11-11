@@ -14,7 +14,7 @@
 // A staged version is not installable until a maintainer approves it with 2FA,
 // on npmjs.com or with `npm stage approve <id>`.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,10 +34,13 @@ const targets = [
 
 function run(cmd, args, opts = {}) {
   console.log(`> ${cmd} ${args.join(' ')}`);
-  // npm is a .cmd on Windows, which Node only starts through a shell.
-  const shell = process.platform === 'win32' && cmd === 'npm';
-  const quoted = shell ? args.map((a) => (/[\s"&|<>^]/.test(a) ? `"${a}"` : a)) : args;
-  return execFileSync(cmd, quoted, { cwd: root, stdio: 'inherit', shell, ...opts });
+  // npm is a .cmd on Windows, which Node only starts through a shell: hand
+  // it one command line, quoted here, rather than arguments to concatenate.
+  if (process.platform === 'win32' && cmd === 'npm') {
+    const line = ['npm', ...args.map((a) => (/[\s"&|<>^%]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a))].join(' ');
+    return execSync(line, { cwd: root, stdio: 'inherit', ...opts });
+  }
+  return execFileSync(cmd, args, { cwd: root, stdio: 'inherit', ...opts });
 }
 
 function fail(message) {

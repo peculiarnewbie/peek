@@ -121,29 +121,29 @@ view it from, all on the same tailnet. Then, once per tailnet, in the Tailscale 
 <strong>DNS</strong>, turn on <strong>HTTPS Certificates</strong>. (This puts your machine and tailnet names in
 the public Certificate Transparency logs.)</p>
 
-<h3>2. Build peek</h3>
-<p>peek is built from source for now. It needs <a href="https://rustup.rs">Rust</a> and
-<a href="https://bun.sh">Bun</a> (or Node):</p>
-<pre><code>git clone https://github.com/peculiarnewbie/peek
-cd peek
-cargo build --release</code></pre>
-<p>The program is <code>target/release/peek</code> (<code>peek.exe</code> on Windows).</p>
+<h3>2. Install peek</h3>
+<p>peek is on npm, for Windows x64 and for Linux x64 and arm64. With <a href="https://nodejs.org">Node</a>
+installed:</p>
+<pre><code>npm install -g @peculiarnewbie/peek</code></pre>
+<p><code>bun add -g @peculiarnewbie/peek</code> and <code>pnpm add -g @peculiarnewbie/peek</code> work too. Node only
+starts peek; the package carries the program itself.</p>
 
-<h3>3. Start it</h3>
-<p><strong>Windows.</strong> From an elevated PowerShell in the <code>peek</code> folder:</p>
-<pre><code>.\scripts\install-autostart.ps1 -PeekArgs '--no-token'</code></pre>
-<p>This allows peek through Windows Firewall (Tailscale addresses only) and starts it at logon, hidden and as
-administrator, so it can also control windows that run as administrator. <code>-Remove</code> undoes both.</p>
-<p>On a desktop PC, add <code>--keep-gpu</code> to <code>-PeekArgs</code> to connect faster from idle: peek then
-keeps its GPU device open while nobody is watching. It costs some memory, and on a laptop it can keep a separate
-graphics card from sleeping, so it is off by default.</p>
-<p><strong>Linux.</strong> From inside the Wayland session:</p>
-<pre><code>cp target/release/peek ~/.local/bin/
-cp scripts/peek.service ~/.config/systemd/user/
-systemctl --user enable --now peek</code></pre>
-<p>Keys are typed through <code>/dev/uinput</code>, which many distributions already let the logged-in user
-write; the <a href="https://github.com/peculiarnewbie/peek#install-on-linux-key-access-start-at-login-firewall">README</a>
+<h3>3. Start it at logon</h3>
+<pre><code>peek install --no-token</code></pre>
+<p>This copies peek to a fixed place and starts it in the background whenever you log in. Flags after
+<code>install</code> are for that peek; <code>--no-token</code> means only Tailscale connections are accepted.</p>
+<p><strong>Windows</strong> asks once for administrator rights: peek is allowed through Windows Firewall
+(Tailscale addresses only) and started hidden and as administrator, so it can also control windows that run as
+administrator. On a desktop PC, add <code>--keep-gpu</code> to connect faster from idle: peek then keeps its GPU
+device open while nobody is watching. It costs some memory, and on a laptop it can keep a separate graphics card
+from sleeping, so it is off by default.</p>
+<p><strong>Linux</strong>: run it from inside the Wayland session. It becomes a systemd user service that starts
+with the graphical session. Keys are typed through <code>/dev/uinput</code>, which many distributions already let
+the logged-in user write; the <a href="https://github.com/peculiarnewbie/peek#install-on-linux-key-access-start-at-login-firewall">README</a>
 has the one-line udev rule if yours does not.</p>
+<p>After updating (<code>npm update -g @peculiarnewbie/peek</code>), run <code>peek install</code> again with the
+same flags. <code>peek uninstall</code> removes it. To build from source instead, see the
+<a href="https://github.com/peculiarnewbie/peek#run">README</a>.</p>
 
 <h2 id="pair">Pair a browser</h2>
 <p>On the machine, run:</p>
