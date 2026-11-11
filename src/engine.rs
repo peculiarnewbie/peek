@@ -22,6 +22,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::platform::{self, Capture, Pixels};
 use crate::server::Shared;
+use crate::webp;
 
 /// Tile edge in pixels. A multiple of 16 so JPEG blocks line up at the seams.
 pub const TILE: usize = 64;
@@ -403,24 +404,28 @@ fn encode_piece(screen: &Screen, r: Rect, scale: usize, factor: usize, quality: 
 }
 
 /// Colour of tiles painted over in a lossless piece (they go out as JPEG).
-const FLAT: [u8; 4] = [128, 128, 128, 255];
+const FLAT: [u8; 3] = [128, 128, 128];
 
 /// Losslessly encode one region at the canvas scale as WebP. Tiles not in
-/// `exact` are painted flat: they are sent as JPEG and drawn over it.
+/// `exact` are painted flat: they are sent as JPEG and drawn over it. At full
+/// size the pixels are read from the screen in place, with no copy; at half
+/// size from the shrunk copy, a quarter of the region.
 fn encode_lossless(screen: &Screen, r: Rect, scale: usize, exact: &[bool]) -> (Rect, Vec<u8>) {
-    let (pixels, ow, oh) = region(screen, r, scale);
-    // The 4th byte of a captured pixel is undefined; WebP gets opaque RGBA.
-    let mut rgba = Vec::with_capacity(ow * oh * 4);
-    for (oy, row) in pixels.chunks_exact(ow * 4).enumerate() {
+    let (pixels, stride) = if scale > 1 {
+        let (buf, ow, _) = downscale(screen, r, scale);
+        (Cow::Owned(buf), ow * 4)
+    } else {
+        (Cow::Borrowed(&screen.buf[(r.y * screen.width + r.x) * 4..]), screen.width * 4)
+    };
+    let (ow, oh) = (r.w.div_ceil(scale), r.h.div_ceil(scale));
+    let out = webp::encode(ow, oh, |oy, row| {
+        let line = &pixels[oy * stride..][..ow * 4];
         let tiles = &exact[(r.y + oy * scale) / TILE * screen.cols..];
-        for (ox, px) in row.chunks_exact(4).enumerate() {
-            rgba.extend_from_slice(&if tiles[(r.x + ox * scale) / TILE] { [px[2], px[1], px[0], 255] } else { FLAT });
+        for (ox, (dst, px)) in row.iter_mut().zip(line.chunks_exact(4)).enumerate() {
+            // BGRA in, with an undefined 4th byte; RGB out.
+            *dst = if tiles[(r.x + ox * scale) / TILE] { [px[2], px[1], px[0]] } else { FLAT };
         }
-    }
-    let mut out = Vec::new();
-    image_webp::WebPEncoder::new(&mut out)
-        .encode(&rgba, ow as u32, oh as u32, image_webp::ColorType::Rgba8)
-        .expect("WebP encoding into memory cannot fail");
+    });
     (on_canvas(r, scale), out)
 }
 
