@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { defineConfig, type Plugin } from 'vite';
 import solid from 'vite-plugin-solid';
 import { viteSingleFile } from 'vite-plugin-singlefile';
@@ -18,13 +18,39 @@ const HOSTED_HEADERS = `/*
   Cache-Control: no-cache
 `;
 
-// Files only the hosted site has: its headers, and the docs at /docs/ (a
-// static page; machine pages never take that path, see hosted.ts).
+// Where the hosted site lives, for link previews (they need absolute URLs).
+const SITE = 'https://peek.peculiarnewbie.com';
+const DESCRIPTION = 'A small, fast remote desktop, tailored for short sessions.';
+const PREVIEW: [string, string, string][] = [
+  ['name', 'description', DESCRIPTION],
+  ['property', 'og:type', 'website'],
+  ['property', 'og:site_name', 'peek'],
+  ['property', 'og:title', 'peek'],
+  ['property', 'og:description', DESCRIPTION],
+  ['property', 'og:url', `${SITE}/`],
+  ['property', 'og:image', `${SITE}/og.png`],
+  ['property', 'og:image:width', '1200'],
+  ['property', 'og:image:height', '630'],
+  ['property', 'og:image:alt', 'peek: a small, fast remote desktop, tailored for short sessions'],
+  ['name', 'twitter:card', 'summary_large_image'],
+];
+
+// What only the hosted site has: its headers, link preview tags, and the
+// files in hosted/ (the docs at /docs/, the preview banner og.png; og.svg is
+// the banner's source). Machine pages never take /docs: see hosted.ts.
 const hostedFiles = (): Plugin => ({
   name: 'peek-hosted-files',
+  transformIndexHtml: () => PREVIEW.map(([key, name, content]) =>
+    ({ tag: 'meta', attrs: { [key]: name, content }, injectTo: 'head' as const })),
   generateBundle() {
     this.emitFile({ type: 'asset', fileName: '_headers', source: HOSTED_HEADERS });
-    this.emitFile({ type: 'asset', fileName: 'docs/index.html', source: readFileSync('docs/index.html', 'utf8') });
+    for (const file of readdirSync('hosted', { recursive: true, withFileTypes: true })) {
+      if (!file.isFile() || file.name === 'og.svg') continue;
+      const path = `${file.parentPath}/${file.name}`.replace(/\\/g, '/');
+      // HTML as text: later plugins rewrite emitted HTML and expect a string.
+      const source = path.endsWith('.html') ? readFileSync(path, 'utf8') : readFileSync(path);
+      this.emitFile({ type: 'asset', fileName: path.slice('hosted/'.length), source });
+    }
   },
 });
 

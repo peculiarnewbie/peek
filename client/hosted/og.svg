@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <!-- Link preview banner. Source for og.png: render at 1200x630. -->
+  <defs>
+    <radialGradient id="glow" cx="78%" cy="45%" r="55%">
+      <stop offset="0" stop-color="#0ca30c" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#0ca30c" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#0d0d0d"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- the icon and the name -->
+  <g transform="translate(96 150)">
+    <rect width="96" height="96" rx="22" fill="#141413" stroke="rgba(255,255,255,.12)" stroke-width="2"/>
+    <g transform="scale(.1875)">
+      <rect x="136" y="160" width="240" height="166" rx="22" fill="none" stroke="#f0efec" stroke-width="22"/>
+      <path d="M206 372h100" stroke="#f0efec" stroke-width="22" stroke-linecap="round"/>
+      <circle cx="256" cy="243" r="30" fill="#0ca30c"/>
+    </g>
+    <text x="124" y="74" fill="#f0efec" font-family="system-ui, 'Segoe UI', sans-serif" font-size="88" font-weight="700" letter-spacing="-2">peek</text>
+  </g>
+
+  <text fill="#f0efec" font-family="system-ui, 'Segoe UI', sans-serif" font-size="44" font-weight="600" letter-spacing="-.5">
+    <tspan x="96" y="338">A small, fast remote desktop,</tspan>
+    <tspan x="96" y="392">tailored for short sessions.</tspan>
+  </text>
+
+  <!-- a screen, as in the icon -->
+  <g transform="translate(838 160)">
+    <rect x="0" y="0" width="270" height="186" rx="22" fill="#141413" stroke="#f0efec" stroke-width="12"/>
+    <rect x="24" y="24" width="222" height="138" rx="8" fill="#1d1d1b"/>
+    <path d="M44 56h90M44 80h140M44 104h70" stroke="#3a3a37" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="200" cy="122" r="22" fill="#0ca30c"/>
+    <path d="M90 236h90" stroke="#f0efec" stroke-width="12" stroke-linecap="round"/>
+    <path d="M135 186v50" stroke="#f0efec" stroke-width="12"/>
+  </g>
+
+  <text x="96" y="482" fill="#898781" font-family="ui-monospace, 'Cascadia Code', Consolas, monospace" font-size="24">peek.peculiarnewbie.com</text>
+</svg>
