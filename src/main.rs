@@ -53,6 +53,9 @@ struct Args {
     /// Also append log lines to this file
     #[arg(long, value_name = "FILE")]
     log: Option<PathBuf>,
+    /// Need no access token; accept connections only over Tailscale instead
+    #[arg(long)]
+    no_token: bool,
     /// Log every input event and periodic throughput figures
     #[arg(short, long)]
     verbose: bool,
@@ -128,11 +131,19 @@ fn main() {
     }
 
     platform::init();
-    let token = match load_token() {
-        Ok(token) => token,
-        Err(e) => {
-            eprintln!("cannot store the access token in {}: {e}", config_dir().display());
-            std::process::exit(1);
+    if args.no_token && !(args.bind.is_unspecified() || args.bind.is_loopback() || server::tailnet(args.bind)) {
+        eprintln!("--no-token accepts only Tailscale connections; --bind {} is not a Tailscale address", args.bind);
+        std::process::exit(2);
+    }
+    let token = if args.no_token {
+        None
+    } else {
+        match load_token() {
+            Ok(token) => Some(token),
+            Err(e) => {
+                eprintln!("cannot store the access token in {}: {e}", config_dir().display());
+                std::process::exit(1);
+            }
         }
     };
 
@@ -168,21 +179,33 @@ fn main() {
         let mut hosts = vec![IpAddr::from([127, 0, 0, 1])];
         if let Ok(addrs) = if_addrs::get_if_addrs() {
             hosts.extend(
-                addrs.iter().map(|a| a.ip()).filter(|ip| ip.is_ipv4() && !ip.is_loopback() && server::allowed(*ip)),
+                addrs.iter().map(|a| a.ip()).filter(|ip| {
+                    ip.is_ipv4()
+                        && !ip.is_loopback()
+                        && if args.no_token { server::tailnet(*ip) } else { server::allowed(*ip) }
+                }),
             );
         }
         hosts
     } else {
         vec![args.bind]
     };
+    let fragment = shared.token.as_ref().map_or(String::new(), |t| format!("#{t}"));
     println!("peek is running. Open one of these on the client:");
-    for host in hosts {
+    for host in &hosts {
         match host {
-            IpAddr::V6(v6) => println!("  http://[{v6}]:{}/#{}", args.port, shared.token),
-            v4 => println!("  http://{v4}:{}/#{}", args.port, shared.token),
+            IpAddr::V6(v6) => println!("  http://[{v6}]:{}/{fragment}", args.port),
+            v4 => println!("  http://{v4}:{}/{fragment}", args.port),
         }
     }
-    println!("The part after # is the access token; the browser remembers it after the first visit.");
+    if shared.token.is_some() {
+        println!("The part after # is the access token; the browser remembers it after the first visit.");
+    } else {
+        println!("No access token: any device on your tailnet can connect, and nothing else can.");
+        if args.bind.is_unspecified() && hosts.iter().all(|h| h.is_loopback()) {
+            println!("Tailscale is not up yet; connections are accepted as soon as it is.");
+        }
+    }
     if !args.view_only && !platform::is_elevated() {
         println!(
             "Not running as administrator: windows that are (Task Manager, installers) will ignore remote input."

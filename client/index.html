@@ -256,6 +256,7 @@ const el = (tag, props = {}, ...kids) => {
 };
 
 // Access token: arrives once in the URL fragment, then lives in localStorage.
+// A host started with --no-token needs none, so connecting without one is fine.
 function takeToken() {
   const t = location.hash.slice(1);
   if (t) { store('token', t); history.replaceState(null, '', location.pathname); }
@@ -304,7 +305,6 @@ const message = text => { $('msg-text').textContent = text || ''; $('msg').class
 const live = () => ws && ws.readyState === 1;
 
 function connect() {
-  if (!token) { message('No access token. Open the full URL the host printed (it ends in #token).'); return; }
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const q = new URLSearchParams({ v: PROTOCOL, token, q: cfg.quality, scale: cfg.scale, fps: cfg.fps,
                                   soft: cfg.soft ? 1 : 0, mon: cfg.mon, vis: active() ? 1 : 0 });
@@ -328,7 +328,12 @@ function connect() {
     refreshBar();
     if (e.code === 4403) {
       store('token', '');
-      message('Wrong access token. Open the full URL the host printed (it ends in #token).');
+      message((token ? 'Wrong access token.' : 'This host needs an access token.') +
+              ' Open the full URL the host printed (it ends in #token).');
+      return;
+    }
+    if (e.code === 4401) {
+      message('The host refused this address. Open it by its IP address or Tailscale name.');
       return;
     }
     if (e.code === 4426) {

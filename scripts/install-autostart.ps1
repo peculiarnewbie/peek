@@ -13,6 +13,7 @@ Run from an elevated PowerShell:
     .\scripts\install-autostart.ps1              # install and start now
     .\scripts\install-autostart.ps1 -Remove      # uninstall
     .\scripts\install-autostart.ps1 -PeekArgs '--port 9000 --no-clipboard'
+    .\scripts\install-autostart.ps1 -PeekArgs '--no-token'   # Tailscale only, no token
 #>
 #Requires -RunAsAdministrator
 param(
@@ -44,10 +45,14 @@ if ($Remove) {
 
 Remove-PeekFirewallRules
 # peek itself refuses anything but these ranges; the firewall rule matches,
-# so it is safe on a network Windows has classed as Public too.
+# so it is safe on a network Windows has classed as Public too. Without a
+# token peek accepts Tailscale only, and so does the rule.
+$noToken = $PeekArgs -match '(^|\s)--no-token(\s|$)'
+$remote = if ($noToken) { @('100.64.0.0/10', 'fd7a:115c:a1e0::/48') }
+          else { @('LocalSubnet', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '169.254.0.0/16') }
 New-NetFirewallRule -DisplayName $name -Description 'peek remote desktop host' `
     -Direction Inbound -Action Allow -Program $exePath -Protocol TCP -Profile Any `
-    -RemoteAddress @('LocalSubnet', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', '169.254.0.0/16') |
+    -RemoteAddress $remote |
     Out-Null
 
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -67,4 +72,8 @@ Get-Process -Name peek -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-ScheduledTask -TaskName $name
 "Installed the '$name' firewall rule and logon task for $user, and started peek."
 "  $exePath $arguments"
-"The access URL is printed when peek is run in a terminal; the token is in $(Join-Path $env:APPDATA 'peek\token')."
+if ($noToken) {
+    "No access token: open http://<this machine's Tailscale IP or name>:<port>/ on any device on your tailnet."
+} else {
+    "The access URL is printed when peek is run in a terminal; the token is in $(Join-Path $env:APPDATA 'peek\token')."
+}

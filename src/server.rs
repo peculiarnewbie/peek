@@ -2,7 +2,7 @@
 //! sockets, and turns client messages into injected input.
 
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
@@ -10,14 +10,16 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::connect_info::Connected;
 use axum::extract::{ConnectInfo, Query, Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::serve::ListenerExt;
+use axum::serve::{IncomingStream, Listener};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::engine::{Cmd, Out, Quality, View, ViewChange};
@@ -25,6 +27,9 @@ use crate::platform::{self, Monitor, input};
 
 /// Close code telling the client its token is wrong (so it stops retrying).
 const CLOSE_BAD_TOKEN: u16 = 4403;
+/// Close code for a socket opened from a page we did not serve, or through a
+/// name we do not trust (so it stops retrying).
+const CLOSE_BAD_ORIGIN: u16 = 4401;
 /// Close code telling a page loaded from an older host to reload itself.
 const CLOSE_OUTDATED: u16 = 4426;
 /// Bumped whenever the wire format changes; the client sends it as `v`.
@@ -36,7 +41,8 @@ const PING_EVERY: Duration = Duration::from_secs(5);
 const DEAD_AFTER: Duration = Duration::from_secs(15);
 
 pub struct Shared {
-    pub token: String,
+    /// None: no token, and only Tailscale connections are accepted.
+    pub token: Option<String>,
     pub view_only: bool,
     pub clipboard: bool,
     pub verbose: bool,
@@ -54,29 +60,78 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()>
     let app = Router::new()
         .route("/", get(index))
         .route("/ws", get(ws))
-        .layer(middleware::from_fn(ip_guard))
+        .layer(middleware::from_fn_with_state(shared.clone(), ip_guard))
         .with_state(shared);
     // Input and small screen updates must not sit in Nagle's buffer.
-    let listener = tokio::net::TcpListener::bind(addr).await?.tap_io(|stream| {
+    let listener = NoDelay(TcpListener::bind(addr).await?);
+    axum::serve(listener, app.into_make_service_with_connect_info::<Peer>()).await
+}
+
+/// Both ends of a connection: who it is from, and which of our addresses it
+/// reached.
+#[derive(Clone, Copy)]
+pub struct Peer {
+    remote: SocketAddr,
+    local: Option<SocketAddr>,
+}
+
+/// A TCP listener whose connections skip Nagle's buffer.
+struct NoDelay(TcpListener);
+
+impl Listener for NoDelay {
+    type Io = TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (TcpStream, SocketAddr) {
+        let (stream, addr) = Listener::accept(&mut self.0).await; // retries errors itself
         let _ = stream.set_nodelay(true);
-    });
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await
+        (stream, addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        Listener::local_addr(&self.0)
+    }
+}
+
+impl Connected<IncomingStream<'_, NoDelay>> for Peer {
+    fn connect_info(stream: IncomingStream<'_, NoDelay>) -> Self {
+        Peer { remote: *stream.remote_addr(), local: stream.io().local_addr().ok() }
+    }
+}
+
+/// An IPv4 address carried in IPv6 counts as the IPv4 address.
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+/// Tailscale's address ranges: 100.64.0.0/10 and fd7a:115c:a1e0::/48.
+pub fn tailnet(ip: IpAddr) -> bool {
+    match canonical(ip) {
+        IpAddr::V4(a) => {
+            let o = a.octets();
+            o[0] == 100 && o[1] & 0xC0 == 64
+        }
+        IpAddr::V6(a) => a.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
+}
+
+/// Without a token, the connection must come in over Tailscale: from a
+/// tailnet address to one of ours. Checking our end as well means a device
+/// on the LAN that gives itself a 100.x address still cannot reach us, and
+/// it keeps working when Tailscale comes up after peek does.
+pub fn tailnet_connection(remote: IpAddr, local: Option<IpAddr>) -> bool {
+    let local = local.map(canonical);
+    (tailnet(remote) && local.is_some_and(tailnet))
+        || (canonical(remote).is_loopback() && local.is_some_and(|l| l.is_loopback()))
 }
 
 /// Only private, link-local and tailnet addresses may talk to us at all.
 pub fn allowed(ip: IpAddr) -> bool {
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
-        v4 => v4,
-    };
-    match ip {
-        IpAddr::V4(a) => {
-            let o = a.octets();
-            a.is_loopback()
-                || a.is_private()
-                || a.is_link_local()
-                || (o[0] == 100 && o[1] & 0xC0 == 64) // 100.64.0.0/10, Tailscale
-        }
+    match canonical(ip) {
+        IpAddr::V4(a) => a.is_loopback() || a.is_private() || a.is_link_local() || tailnet(ip),
         IpAddr::V6(a) => {
             let first = a.segments()[0];
             a.is_loopback() || first & 0xFE00 == 0xFC00 || first & 0xFFC0 == 0xFE80
@@ -84,13 +139,56 @@ pub fn allowed(ip: IpAddr) -> bool {
     }
 }
 
-async fn ip_guard(ConnectInfo(addr): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
-    if allowed(addr.ip()) {
+async fn ip_guard(
+    State(shared): State<Arc<Shared>>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let ip = peer.remote.ip();
+    let ok = match shared.token {
+        Some(_) => allowed(ip),
+        None => tailnet_connection(ip, peer.local.map(|l| l.ip())),
+    };
+    if ok {
         next.run(req).await
     } else {
-        crate::log!("rejected non-private address {}", addr.ip());
+        let why = if shared.token.is_some() { "not a private address" } else { "not over Tailscale" };
+        crate::log!("rejected {ip}: {why}");
         StatusCode::FORBIDDEN.into_response()
     }
+}
+
+/// A browser lets any page open a WebSocket to any address, and the request
+/// then comes from a device we trust. So a socket must come from our own
+/// page: its Origin must name the very host it connected to.
+///
+/// Without a token, that host must also be a name no stranger can point at
+/// us (DNS rebinding: their domain resolving to our address would make the
+/// Origin match): an IP address, localhost, a bare machine name, or a
+/// Tailscale MagicDNS name.
+fn origin_ok(headers: &HeaderMap, need_trusted_name: bool) -> bool {
+    let get = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    let (Some(host), Some(origin)) = (get(header::HOST), get(header::ORIGIN)) else {
+        return false;
+    };
+    let Some(origin_host) = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")) else {
+        return false;
+    };
+    origin_host.eq_ignore_ascii_case(host) && (!need_trusted_name || trusted_name(host))
+}
+
+fn trusted_name(host: &str) -> bool {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split_once(']').is_some_and(|(ip, _)| ip.parse::<Ipv6Addr>().is_ok());
+    }
+    let name = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    let name = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
+    !name.is_empty()
+        && (name.parse::<Ipv4Addr>().is_ok()
+            || name == "localhost"
+            || !name.contains('.')
+            || name.ends_with(".ts.net"))
 }
 
 async fn index() -> impl IntoResponse {
@@ -108,10 +206,22 @@ fn token_matches(given: &str, expected: &str) -> bool {
 
 async fn ws(
     State(shared): State<Arc<Shared>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
     Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    let addr = peer.remote;
+    if !origin_ok(&headers, shared.token.is_none()) {
+        let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("none");
+        crate::log!("rejected socket from {} with origin {origin}", addr.ip());
+        // Upgrade only to say why, so our own page stops retrying.
+        return upgrade.on_upgrade(|mut socket| async move {
+            let _ = socket
+                .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_ORIGIN, reason: "bad origin".into() })))
+                .await;
+        });
+    }
     upgrade
         .max_message_size(MAX_CLIPBOARD * 4 + 4096)
         .on_upgrade(move |socket| client(socket, shared, query, addr))
@@ -177,7 +287,8 @@ impl Held {
 }
 
 async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<String, String>, addr: SocketAddr) {
-    if !token_matches(query.get("token").map_or("", String::as_str), &shared.token) {
+    let given = query.get("token").map_or("", String::as_str);
+    if shared.token.as_deref().is_some_and(|expected| !token_matches(given, expected)) {
         crate::log!("bad token from {}", addr.ip());
         let _ = socket
             .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_TOKEN, reason: "bad token".into() })))
@@ -430,6 +541,50 @@ mod tests {
         ] {
             assert!(!allowed(bad.parse().unwrap()), "{bad} should be rejected");
         }
+    }
+
+    #[test]
+    fn tailnet_connections() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let here = Some(ip("100.97.2.26"));
+        assert!(tailnet_connection(ip("100.64.38.83"), here));
+        assert!(tailnet_connection(ip("fd7a:115c:a1e0::5"), Some(ip("fd7a:115c:a1e0::1"))));
+        assert!(tailnet_connection(ip("::ffff:100.64.38.83"), Some(ip("::ffff:100.97.2.26"))));
+        assert!(tailnet_connection(ip("127.0.0.1"), Some(ip("127.0.0.1"))));
+        // A LAN device posing as a tailnet address, reaching our LAN address.
+        assert!(!tailnet_connection(ip("100.64.38.83"), Some(ip("192.168.1.10"))));
+        assert!(!tailnet_connection(ip("192.168.1.20"), here));
+        assert!(!tailnet_connection(ip("100.64.38.83"), None));
+        assert!(!tailnet_connection(ip("fd00::1"), Some(ip("fd7a:115c:a1e0::1"))));
+    }
+
+    #[test]
+    fn origin_checks() {
+        let headers = |host: &str, origin: Option<&str>| {
+            let mut h = HeaderMap::new();
+            h.insert(header::HOST, host.parse().unwrap());
+            if let Some(o) = origin {
+                h.insert(header::ORIGIN, o.parse().unwrap());
+            }
+            h
+        };
+        for (host, origin) in [
+            ("100.97.2.26:9182", "http://100.97.2.26:9182"),
+            ("[fd7a:115c:a1e0::1]:9182", "http://[fd7a:115c:a1e0::1]:9182"),
+            ("desktop-work-ar:9182", "http://DESKTOP-WORK-AR:9182"),
+            ("desktop-work-ar.tail1234.ts.net:9182", "http://desktop-work-ar.tail1234.ts.net:9182"),
+            ("localhost:9182", "http://localhost:9182"),
+        ] {
+            assert!(origin_ok(&headers(host, Some(origin)), true), "{host} from {origin}");
+        }
+        // Another site, a missing Origin, a different port.
+        assert!(!origin_ok(&headers("100.97.2.26:9182", Some("https://evil.example")), false));
+        assert!(!origin_ok(&headers("100.97.2.26:9182", None), false));
+        assert!(!origin_ok(&headers("100.97.2.26:9182", Some("http://100.97.2.26:8080")), false));
+        // DNS rebinding: Origin and Host agree, but on a stranger's domain.
+        let rebound = headers("evil.example:9182", Some("http://evil.example:9182"));
+        assert!(origin_ok(&rebound, false));
+        assert!(!origin_ok(&rebound, true));
     }
 
     #[test]

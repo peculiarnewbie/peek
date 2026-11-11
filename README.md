@@ -23,8 +23,14 @@ It prints URLs ending in `#<token>`. Open the one with the host's LAN or
 Tailscale address on another device. The browser remembers the token after
 the first visit, so a bookmark is enough from then on.
 
+If you only connect over Tailscale, `--no-token` drops the token: open
+`http://<host's Tailscale IP or name>:9182/` on any device on your tailnet.
+Only connections that arrive over Tailscale are accepted then, so your
+tailnet decides who can connect (see [Security](#security)).
+
 | Flag | Meaning |
 |---|---|
+| `--no-token` | No access token; accept Tailscale connections only |
 | `--bind <ip>` | Address to listen on (default: all interfaces) |
 | `--port <n>` | Port (default 9182) |
 | `--fps <n>` | Frame rate cap (default 60) |
@@ -91,7 +97,8 @@ From an elevated PowerShell:
 
 This allows `peek.exe` through the firewall (private and Tailscale addresses
 only) and registers a logon task that starts peek elevated and hidden.
-`-Remove` undoes both.
+`-Remove` undoes both. Flags for peek go in `-PeekArgs`; with
+`-PeekArgs '--no-token'` the firewall rule admits Tailscale addresses only.
 
 ## How it works
 
@@ -116,10 +123,25 @@ only) and registers a logon task that starts peek elevated and hidden.
 - Every socket needs the access token, stored in `%APPDATA%\peek\token`.
 - Connections from anything but private, link-local and Tailscale addresses
   are refused.
+- A socket is accepted only from the page peek served: its `Origin` must
+  match the address it connected to. Otherwise any web page open on a
+  trusted device could open one.
 - Traffic is plain HTTP: encrypted by the tunnel over Tailscale, in the clear
   on a LAN.
 - Anyone with the token has full control of the desktop. Treat it like a
   password.
+
+With `--no-token`:
+
+- Anyone on your tailnet who can reach the host has full control. That suits
+  a tailnet of only your own devices; with shared machines or other users,
+  limit who reaches it with Tailscale ACLs, or keep the token.
+- A connection must come from a Tailscale address *to* one of the host's
+  Tailscale addresses, so a LAN device that gives itself a 100.x address
+  gets nowhere. Everything else is refused, loopback aside.
+- The page must be opened by IP address, `localhost`, the bare machine name
+  or its `*.ts.net` name. Any other name could be a stranger's domain pointed
+  at the host (DNS rebinding).
 
 ## Limits
 
