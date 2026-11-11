@@ -27,10 +27,12 @@ export const [cfg, setCfg] = createStore<Cfg>({
   quality: savedQuality && savedQuality in QUALITY ? savedQuality as Quality : 'med',
   scale: store.get('scale') === '2' ? 2 : 1,
   soft: store.get('soft') === '1',
-  lossless: store.get('lossless') === '1',
+  lossless: store.get('lossless') !== '0',
   fps: FPS_STEPS.includes(Number(store.get('fps'))) ? Number(store.get('fps')) : 60,
   mon: parseInt(store.get('mon') ?? '', 10) || 0,
-  autoSleep: store.get('autosleep') === '1',
+  // Saved as 'pause' since it became the default: every settings change used to
+  // save 'autosleep' too, as off, whether or not anyone had picked it.
+  autoSleep: store.get('pause') !== '0',
 });
 
 export interface Monitor { w: number; h: number }

@@ -137,14 +137,15 @@ Hover the dot at the top to show the toolbar; the pin keeps it open.
     first time, so they need no sharp re-send; tiles that look like photos
     or gradients stay JPEG. A first frame of text is 10 to 60% smaller and
     a typed character about 240 bytes instead of 1.7 KB; browsers take a few
-    milliseconds longer to decode it. Off by default for now. With soft
+    milliseconds longer to decode it. On by default. With soft
     motion, changing regions still go soft and the lossless copy follows
     once they stop.
   - **Frame rate**: at most 60, 30, 15 or 10 per second. Changes in between
     are combined, not dropped.
   - **Monitor**, when the host has more than one.
   - **Pause when unfocused**: sleep while the browser window is in the
-    background and resume when it is focused again. Remembered per browser.
+    background and resume when it is focused again. On by default;
+    remembered per browser.
 - **Stats** is one line (frame rate, receive rate, latency) until hovered;
   its pin keeps it open, and its title bar drags it anywhere. Open, it shows
   frame rate, receive rate and latency, a 60-second chart of

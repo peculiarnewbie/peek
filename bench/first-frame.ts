@@ -1,13 +1,13 @@
 // How long peek takes from "open the socket" to "the whole first frame has
 // arrived": the wait that peek exists to keep short.
 //
-//   bun bench/first-frame.ts ws://127.0.0.1:9182/ws [runs] [token] [--warm] [--lossless]
+//   bun bench/first-frame.ts ws://127.0.0.1:9182/ws [runs] [token] [--warm] [--jpeg]
 //
 // Each run opens a fresh connection, waits for the first frame, and closes.
 // Runs are cold by default: the script waits out the host's idle release
 // (5 s), so every connection finds the capture shut down, as it is when you
 // connect to an idle machine. `--warm` connects again straight away instead.
-// `--lossless` asks for the lossless text setting.
+// `--jpeg` turns the lossless text setting off, sending everything as JPEG.
 //
 // The browser then decodes and draws the frame, a few more milliseconds that
 // the client's stats panel shows as "First frame".
@@ -16,7 +16,7 @@ const PROTOCOL = 4;
 
 const args = process.argv.slice(2);
 const warm = args.includes('--warm');
-const lossless = args.includes('--lossless');
+const lossless = !args.includes('--jpeg');
 const [url = 'ws://127.0.0.1:9182/ws', runsArg = '20', token = ''] = args.filter(a => !a.startsWith('--'));
 const runs = Number(runsArg);
 const origin = url.replace(/^ws/, 'http').replace(/\/ws.*$/, '');
