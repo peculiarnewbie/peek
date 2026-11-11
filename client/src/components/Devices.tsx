@@ -107,27 +107,28 @@ export function Devices() {
     <Show when={!current()}>
       <main id="devices">
         <header class="dhead">
-          <h1>peek</h1>
-          <Show when={machines().length && !showForm()}>
-            <button class="tb" tabIndex={-1} onClick={() => { setError(''); setAdding(true); }}>
-              <Icon name="plus" /><span>Add a machine</span>
-            </button>
-          </Show>
+          <h1><img src="/icon.svg" alt="" width="28" height="28" />peek</h1>
+          <nav class="dnav">
+            <Show when={machines().length && !showForm()}>
+              <button class="tb" tabIndex={-1} title="Add a machine" onClick={() => { setError(''); setAdding(true); }}>
+                <Icon name="plus" /><span>Add a machine</span>
+              </button>
+            </Show>
+            <a class="tb" href="/docs/">Docs</a>
+            <a class="tb" href={GITHUB}>GitHub</a>
+          </nav>
         </header>
         <Show when={localAccess() === 'denied'}>
           <p class="err banner">{BLOCKED_HELP}</p>
         </Show>
         <Show when={machines().length} fallback={
           <section class="intro">
-            <p class="tagline">Your computers' screens in a browser tab, connected in an instant.</p>
-            <p class="hint lead">peek is a small remote desktop for your own machines. Run it on a computer
-              (Windows, or Linux on Wayland) that is on your <a href="https://tailscale.com">Tailscale</a> network,
-              pair this browser with it once, and its screen is a click away, with mouse, keyboard and clipboard.
-              This site only serves the page: your browser connects straight to each machine over Tailscale.</p>
-            <div class="links">
-              <a class="btn alt" href="/docs/">Docs</a>
-              <a class="btn alt" href={GITHUB}>GitHub</a>
-            </div>
+            <p class="hint lead">peek is a small, fast remote desktop for your own machines.</p>
+            <p class="hint lead">Run it on a computer (Windows, or Linux on Wayland) on your{' '}
+              <a href="https://tailscale.com">Tailscale</a> network and pair this browser with it once. Its screen
+              is then a click away, with mouse, keyboard and clipboard.</p>
+            <p class="hint lead">This site only serves the page: your browser connects straight to each machine
+              over Tailscale.</p>
           </section>
         }>
           <div class="dgrid">
@@ -171,8 +172,7 @@ export function Devices() {
           }} />
         </Show>
         <p class="hint small foot">The list of machines and their keys stay in this browser. Nothing about them is
-          stored on this site.<Show when={machines().length}>{' '}<a href="/docs/">Docs</a> ·{' '}
-          <a href={GITHUB}>GitHub</a></Show></p>
+          stored on this site.</p>
       </main>
     </Show>
   );
