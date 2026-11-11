@@ -83,13 +83,16 @@
   #stats { position: fixed; top: 56px; left: 8px; z-index: 2; width: 320px; display: none;
     max-height: calc(100vh - 64px); overflow-y: auto; scrollbar-width: thin; }
   #stats.show { display: block; }
-  #stats-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 14px; }
+  #stats-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 14px;
+    cursor: grab; touch-action: none; }
+  #stats.dragging #stats-head { cursor: grabbing; }
+  #stats-head button { cursor: pointer; }
   #stats-title { font-weight: 600; }
   #stats-sum { flex: 1; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; }
-  #stats:not(.folded) #stats-sum { visibility: hidden; }
-  #stats.folded #stats-body { display: none; }
-  #stats.folded #b-fold svg { transform: rotate(-90deg); }
+  /* One line until hovered or pinned, like the toolbar. */
+  #stats:not(:hover):not(.pinned):not(.dragging) #stats-body { display: none; }
+  #stats:hover #stats-sum, #stats.pinned #stats-sum, #stats.dragging #stats-sum { visibility: hidden; }
   #stats-body { padding: 2px 14px 14px; }
   .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .tile { padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, .04); }
@@ -168,7 +171,7 @@
 <div id="sleep"><div class="card panel">
   <svg class="i"><use href="#i-moon"/></svg>
   <div class="t">Paused</div>
-  <div class="s">Nothing is being sent. Click anywhere or press Space to resume.</div>
+  <div class="s" id="sleep-text"></div>
 </div></div>
 
 <div id="msg"><div class="card panel"><div class="s" id="msg-text">Connecting…</div></div></div>
@@ -176,7 +179,7 @@
 <div id="stats" class="panel">
   <div id="stats-head">
     <span id="stats-title">Stats</span><span id="stats-sum"></span>
-    <button id="b-fold" class="tb icon" tabindex="-1" title="Fold"><svg class="i"><use href="#i-chev"/></svg></button>
+    <button id="b-stats-pin" class="tb icon" tabindex="-1" aria-pressed="false" title="Pin"><svg class="i"><use href="#i-pin"/></svg></button>
     <button id="b-close" class="tb icon" tabindex="-1" title="Close"><svg class="i"><use href="#i-x"/></svg></button>
   </div>
   <div id="stats-body">
@@ -273,6 +276,7 @@ const cfg = {
   soft: store('soft') === '1',     // changing regions at half resolution
   fps: FPS_STEPS.includes(Number(store('fps'))) ? Number(store('fps')) : 60,
   mon: parseInt(store('mon'), 10) || 0,
+  autoSleep: store('autosleep') === '1',   // this browser only; never sent to the host
 };
 let monitors = [];
 let viewOnly = false, clipboardOn = false;
@@ -396,7 +400,7 @@ function layout() {
   cv.style.width = Math.floor(cv.width * k) + 'px';
   cv.style.height = Math.floor(cv.height * k) + 'px';
 }
-addEventListener('resize', () => { layout(); drawChart(); });
+addEventListener('resize', () => { layout(); placeStats(); drawChart(); });
 
 // ---- toolbar ----
 let pinned = store('pin') === '1';
@@ -448,6 +452,7 @@ const CONTROLS = [
   { key: 'mon', label: 'Monitor', options: () => monitors.map((m, i) => [i, String(i + 1)]),
     value: () => { const m = monitors[cfg.mon]; return m ? `${m.w} × ${m.h}` : ''; },
     hidden: () => monitors.length < 2 },
+  { key: 'autoSleep', label: 'Pause when unfocused', options: () => [[false, 'Off'], [true, 'On']], value: () => '' },
 ];
 
 function segmented(options, selected, pick) {
@@ -483,7 +488,7 @@ function buildSettings() {
 function applyCfg(change) {
   Object.assign(cfg, change);
   store('q', cfg.quality); store('scale', cfg.scale); store('soft', cfg.soft ? 1 : 0);
-  store('fps', cfg.fps); store('mon', cfg.mon);
+  store('fps', cfg.fps); store('mon', cfg.mon); store('autosleep', cfg.autoSleep ? 1 : 0);
   send({ t: 'cfg', q: cfg.quality, scale: cfg.scale, mon: cfg.mon, fps: cfg.fps, soft: cfg.soft });
   buildSettings();
   refreshBar();
@@ -627,7 +632,12 @@ addEventListener('keyup', e => key(e, 0), true);
 
 // Losing focus means we may never see the key-up; have the host let go of everything.
 function releaseAll() { held = 0; swallowV = false; send({ t: 'rel' }); }
-addEventListener('blur', releaseAll);
+addEventListener('blur', () => {
+  releaseAll();
+  if (cfg.autoSleep && !sleeping) setSleep(true, true);
+});
+// Only an automatic pause ends on its own; one the user chose stays.
+addEventListener('focus', () => { if (sleeping && autoSlept) setSleep(false); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) releaseAll();
   send({ t: 'vis', v: active() });
@@ -636,10 +646,15 @@ document.addEventListener('visibilitychange', () => {
 // ---- sleep ----
 // The connection stays open, so resuming is instant, but the host stops
 // capturing and sending (and frees the capture after a few seconds).
-function setSleep(v) {
+let autoSlept = false;   // paused by "Pause when unfocused", not by the user
+function setSleep(v, auto = false) {
   if (sleeping === v) return;
   sleeping = v;
+  autoSlept = v && auto;
   if (v) releaseAll();
+  $('sleep-text').textContent = autoSlept
+    ? 'Paused while this window is in the background. It resumes when you come back.'
+    : 'Nothing is being sent. Click anywhere or press Space to resume.';
   document.body.classList.toggle('sleeping', v);
   $('sleep').classList.toggle('show', v);
   send({ t: 'vis', v: active() });
@@ -649,7 +664,9 @@ function setSleep(v) {
 }
 
 // ---- stats ----
-let statsMode = ['open', 'folded'].includes(store('stats')) ? store('stats') : 'off';
+// 'off' or 'open'; an older 'folded' (from before hover) counts as open.
+let statsMode = ['open', 'folded'].includes(store('stats')) ? 'open' : 'off';
+let statsPinned = store('stats-pin') === '1';
 const ping = { n: 0, at: 0 };
 const rate = [];                 // KB/s received, one entry per second, newest last
 const RATE_SECONDS = 60;
@@ -658,14 +675,68 @@ function setStats(mode) {
   statsMode = mode;
   store('stats', mode);
   $('stats').classList.toggle('show', mode !== 'off');
-  $('stats').classList.toggle('folded', mode === 'folded');
-  $('b-fold').title = mode === 'folded' ? 'Unfold' : 'Fold';
+  $('stats').classList.toggle('pinned', statsPinned);
+  $('b-stats-pin').setAttribute('aria-pressed', statsPinned);
+  $('b-stats-pin').title = statsPinned ? 'Unpin' : 'Pin';
+  placeStats();
   refreshBar();
   renderStats();
 }
-$('b-fold').onclick = () => { setStats(statsMode === 'folded' ? 'open' : 'folded'); cv.focus(); };
+// Opening on hover: draw at once rather than at the next one-second tick.
+$('stats').addEventListener('mouseenter', () => renderStats());
+
+// ---- moving the stats panel ----
+// Dragged by its title bar. The position is remembered; it is kept inside
+// the window (at least the title bar) without being overwritten by that.
+let statsPos = (() => {
+  try {
+    const p = JSON.parse(store('stats-pos'));
+    if (Number.isFinite(p.x) && Number.isFinite(p.y)) return p;
+  } catch (_) {}
+  return { x: 8, y: 56 };
+})();
+function placeStats() {
+  const box = $('stats'), head = 40;
+  const x = Math.min(Math.max(statsPos.x, 0), Math.max(innerWidth - (box.offsetWidth || 320), 0));
+  const y = Math.min(Math.max(statsPos.y, 0), Math.max(innerHeight - head, 0));
+  box.style.left = x + 'px';
+  box.style.top = y + 'px';
+  box.style.maxHeight = Math.max(innerHeight - y - 8, head) + 'px';
+}
+// While dragging, the window takes every pointer event first (capture phase)
+// and stops it there, so none reaches the remote screen underneath, even
+// when the pointer outruns the panel.
+let drag = null;
+$('stats-head').addEventListener('pointerdown', e => {
+  if (e.button !== 0 || e.target.closest('button')) return;
+  const r = $('stats').getBoundingClientRect();
+  drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+  try { $('stats-head').setPointerCapture(e.pointerId); } catch (_) {}
+  $('stats').classList.add('dragging');
+  e.preventDefault();
+});
+addEventListener('pointermove', e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  e.stopPropagation();
+  statsPos = { x: e.clientX - drag.dx, y: e.clientY - drag.dy };
+  placeStats();
+}, true);
+function endDrag(e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  e.stopPropagation();
+  drag = null;
+  $('stats').classList.remove('dragging');
+  const r = $('stats').getBoundingClientRect();
+  statsPos = { x: Math.round(r.left), y: Math.round(r.top) };
+  store('stats-pos', JSON.stringify(statsPos));
+  cv.focus();
+}
+addEventListener('pointerup', endDrag, true);
+addEventListener('pointercancel', endDrag, true);
+$('b-stats-pin').onclick = () => {
+  statsPinned = !statsPinned; store('stats-pin', statsPinned ? 1 : 0); setStats(statsMode); cv.focus();
+};
 $('b-close').onclick = () => { setStats('off'); cv.focus(); };
-$('stats-head').ondblclick = () => $('b-fold').click();
 
 const perSec = kb => kb >= 1024 ? (kb / 1024).toFixed(1) + ' MB/s' : kb.toFixed(kb < 10 ? 1 : 0) + ' KB/s';
 const bytes = b => b >= 1 << 30 ? (b / (1 << 30)).toFixed(2) + ' GB'
@@ -686,7 +757,6 @@ function renderStats() {
   if (statsMode === 'off') return;
   const total = L.host != null && L.rtt != null && L.client != null ? L.host + L.rtt / 2 + L.client : null;
   $('stats-sum').textContent = `${shown.fps} fps · ${perSec(shown.kbIn)} · ${ms(total)}`;
-  if (statsMode === 'folded') return;
 
   figure('t-fps', `${shown.fps} fps`);
   figure('t-rate', perSec(shown.kbIn));
@@ -738,7 +808,7 @@ function chartGeometry() {
   return { c, w, h, gutter, top: 6, bottom: h - 1, slot: (w - gutter) / RATE_SECONDS };
 }
 function drawChart() {
-  if (statsMode !== 'open') return;
+  if (statsMode !== 'open') return;   // (and a hidden body draws nothing: its width is 0)
   const { c, w, h, gutter, top, bottom, slot } = chartGeometry();
   if (!w) return;
   const dpr = devicePixelRatio || 1;
@@ -824,6 +894,8 @@ setStats(statsMode);
 refreshBar();
 layout();
 message('Connecting…');
+// Opened in the background (a restored tab, a second monitor): start paused.
+if (cfg.autoSleep && !document.hasFocus()) setSleep(true, true);
 connect();
 cv.focus();
 </script>

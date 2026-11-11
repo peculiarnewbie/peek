@@ -10,6 +10,8 @@ WebSocket handshake and one frame.
 
 Windows hosts only for now. The client is any modern desktop browser.
 
+![peek in a browser: the host's desktop with the toolbar at the top and the stats panel open on the left](docs/screenshot.png)
+
 ## Run
 
 ```
@@ -50,7 +52,11 @@ Hover the dot at the top to show the toolbar; the pin keeps it open.
   - **Frame rate**: at most 60, 30, 15 or 10 per second. Changes in between
     are combined, not dropped.
   - **Monitor**, when the host has more than one.
-- **Stats** shows frame rate, receive rate and latency, a 60-second chart of
+  - **Pause when unfocused**: sleep while the browser window is in the
+    background and resume when it is focused again. Remembered per browser.
+- **Stats** is one line (frame rate, receive rate, latency) until hovered;
+  its pin keeps it open, and its title bar drags it anywhere. Open, it shows
+  frame rate, receive rate and latency, a 60-second chart of
   data received (hover a bar for its value) with its average and peak,
   latency split into host (capture to send), network (half the round trip)
   and browser (receive to draw), and the data received and sent since the
