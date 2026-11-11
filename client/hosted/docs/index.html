@@ -85,8 +85,22 @@ computer's screen for a few seconds, where a five-second connect would be most o
 
 <h2 id="numbers">Numbers</h2>
 <p>What matters for a quick look is how long the screen takes to appear, so that is what peek is built around.
-Measured on a Linux laptop (niri, one 1920×1080 screen, medium quality), connecting from the same machine, so
-these are peek's own share of the wait:</p>
+All at medium quality.</p>
+<h3>Over Tailscale</h3>
+<p>From a Linux laptop to a Windows desktop (one 1920×1080 screen) on another network, connected directly with a
+ping of about 8 ms, peek started with <code>--keep-gpu</code>:</p>
+<table>
+  <tr><th></th><th>Median</th><th>Slowest 10%</th></tr>
+  <tr><td>Connect to an idle machine, until the whole first frame (331 KB) has arrived</td><td>125 ms</td><td>157 ms</td></tr>
+  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>121 ms</td><td>157 ms</td></tr>
+  <tr><td>Of that, capturing and encoding the full screen</td><td>11 ms</td><td>15 ms</td></tr>
+  <tr><td>Socket open (WebSocket handshake answered)</td><td>15 ms</td><td>18 ms</td></tr>
+</table>
+<p>Most of the rest is carrying the frame: the more detail on the screen, the bigger it is and the longer it
+takes. Without <code>--keep-gpu</code>, starting from idle added about 200 ms on this machine.</p>
+<h3>On the machine itself</h3>
+<p>A Linux laptop (niri, one 1920×1080 screen) connecting to its own peek, so these are peek's own share of the
+wait:</p>
 <table>
   <tr><th></th><th>Median</th><th>Slowest 10%</th></tr>
   <tr><td>Connect to an idle machine, until the whole first frame (149 KB) has arrived</td><td>24 ms</td><td>26 ms</td></tr>
@@ -96,10 +110,8 @@ these are peek's own share of the wait:</p>
 </table>
 <p>While nobody is looking, peek captures nothing: over two idle minutes it used 10 ms of CPU time (0.01% of a
 core) and held 17 MB of memory. The program is 3.6 MB.</p>
-<p>Over a network, add the connection's round trips (about two, for TCP and the WebSocket handshake) and the time
-to carry the first frame; the browser then takes a few milliseconds to decode and draw it. To see your own
-total, open <strong>Stats</strong>: <strong>First frame</strong> is the time from connecting to the screen drawn
-in your browser. To repeat the measurement above, run <code>bun bench/first-frame.ts</code> from the repository
+<p>The browser then takes a few milliseconds to decode and draw the frame. To see your own total, open <strong>Stats</strong>: <strong>First frame</strong> is the time from connecting to the screen drawn
+in your browser. To repeat these measurements, run <code>bun bench/first-frame.ts</code> from the repository
 (its header says how).</p>
 
 <h2 id="setup">Set up a machine</h2>
