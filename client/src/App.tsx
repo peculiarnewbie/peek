@@ -1,6 +1,7 @@
 import { createEffect } from 'solid-js';
 import { BlockedNote, Message, SleepCard } from './components/Overlays';
 import { IconSprite } from './components/Icons';
+import { Keyboard } from './components/Keyboard';
 import { Settings } from './components/Settings';
 import { Stats } from './components/Stats';
 import { Toolbar } from './components/Toolbar';
@@ -22,6 +23,7 @@ export function App() {
       <Toolbar />
       <Settings />
       <BlockedNote />
+      <Keyboard />
     </>
   );
 }

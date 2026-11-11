@@ -257,6 +257,10 @@ enum ClientMsg {
     Key { c: String, d: u8 },
     #[serde(rename = "rel")]
     Release,
+    /// Text to type as characters (from a phone's keyboard, which reports
+    /// text rather than keys).
+    #[serde(rename = "type")]
+    Type { s: String },
     #[serde(rename = "clip")]
     Clipboard { s: String },
     /// Answered straight away, for the client's round-trip measurement.
@@ -436,6 +440,14 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                     held.keys.insert(c);
                 } else {
                     held.keys.remove(&c);
+                }
+            }
+            ClientMsg::Type { s } => {
+                if shared.verbose {
+                    crate::log!("type {} chars", s.chars().count());
+                }
+                if inject && s.len() <= MAX_CLIPBOARD {
+                    input::text(&s);
                 }
             }
             ClientMsg::Release => {

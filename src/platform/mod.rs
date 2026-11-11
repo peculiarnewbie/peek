@@ -2,7 +2,7 @@
 //!
 //! - `init()`: one-time process setup.
 //! - `Capture`: `new()`, `monitors()`, `acquire()`, `release()`.
-//! - `input`: `mouse_move`, `button`, `wheel`, `key`.
+//! - `input`: `mouse_move`, `button`, `wheel`, `key`, `text`.
 //! - `clipboard`: `sequence`, `get_text`, `set_text`.
 //! - `cursor_name()`: CSS cursor name for the pointer shape currently shown.
 //! - `input_blocked()`: true while the OS is refusing our injected input.

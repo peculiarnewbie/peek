@@ -27,7 +27,7 @@ svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor;
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, .45); backdrop-filter: blur(10px); }
 
-#stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+#stage { position: fixed; inset: 0 0 var(--bottom-inset, 0) 0; display: flex; align-items: center; justify-content: center; }
 #screen { display: block; touch-action: none; outline: none; transform-origin: 0 0; }
 body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 
@@ -156,6 +156,9 @@ body.touch #bar:not(.open) #status-text { display: none; }
 @media (max-width: 640px) {
   .tb span { display: none; }
   .tb { padding: 0 8px; }
+  /* The dot's colour still tells the state. */
+  #status-text { display: none; }
+  #status { padding: 4px 8px; }
 }
 /* The pointer, drawn here: the host's capture has none, and a touch screen
    shows none of its own. Its tip is the element's top-left corner. */
@@ -163,3 +166,30 @@ body.touch #bar:not(.open) #status-text { display: none; }
 #cursor svg { display: block; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .45)); }
 body.touch #cursor { display: block; }
 body.sleeping #cursor { display: none; }
+
+/* ---- keyboard dock ---- */
+#kbd { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; display: none; background: #141413;
+  border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+#kbd.show { display: block; }
+body.sleeping #kbd { display: none; }
+#kbd.keys .kbd-bar, #kbd:not(.keys) .kbd-keys { display: none; }
+.kbd-bar { display: flex; align-items: center; gap: 2px; padding: 6px 6px; }
+#kbd-text { flex: 1; min-width: 0; height: 38px; padding: 0 12px; margin: 0 4px; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--page); color: var(--ink);
+  font: 16px var(--sans); outline: none; -webkit-user-select: text; user-select: text; }
+#kbd-text:focus { border-color: var(--s1); }
+.kbd-btn { display: flex; align-items: center; justify-content: center; width: 42px; height: 38px; flex: none;
+  border-radius: 8px; color: var(--ink-2); touch-action: manipulation; }
+.kbd-btn:active { background: var(--raised); color: var(--ink); }
+.kbd-btn svg.i { width: 22px; height: 22px; }
+.kbd-keys { display: flex; flex-direction: column; gap: 3px; padding: 3px; height: min(50vh, 280px);
+  box-sizing: border-box; }
+.kbd-row { flex: 1; display: flex; gap: 3px; min-height: 0; }
+.key { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 0;
+  border-radius: 4px; background: #000; color: var(--ink); font-size: clamp(13px, 2.4vw, 20px);
+  touch-action: none; overflow: hidden; }
+.key.small { font-size: clamp(10px, 1.6vw, 14px); }
+.key.gap { visibility: hidden; }
+.key.down { background: var(--raised); }
+.key.mod.latched, .key.on { background: #454541; }
+.key.mod.locked { background: var(--s1); }

@@ -2,7 +2,7 @@
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSE_EVENT_FLAGS,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS,
     MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
@@ -197,6 +197,49 @@ pub fn lookup(code: &str) -> Option<Key> {
         "Pause" => Virtual(0x13),
         _ => return None,
     })
+}
+
+/// Type text as characters, whatever the host's keyboard layout: each UTF-16
+/// unit goes in as a Unicode key press. Line breaks and tabs are pressed as
+/// the Enter and Tab keys instead, which is what applications expect.
+pub fn text(s: &str) {
+    let unicode = |unit: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: unit,
+                dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let mut batch = Vec::new();
+    let flush = |batch: &mut Vec<INPUT>| {
+        if !batch.is_empty() {
+            unsafe { SendInput(batch, size_of::<INPUT>() as i32) };
+            batch.clear();
+        }
+    };
+    for ch in s.replace("\r\n", "\n").chars() {
+        match ch {
+            '\n' | '\r' | '\t' => {
+                flush(&mut batch);
+                let code = if ch == '\t' { "Tab" } else { "Enter" };
+                key(code, true);
+                key(code, false);
+            }
+            _ => {
+                let mut units = [0u16; 2];
+                for &unit in ch.encode_utf16(&mut units).iter() {
+                    batch.push(unicode(unit, false));
+                    batch.push(unicode(unit, true));
+                }
+            }
+        }
+    }
+    flush(&mut batch);
 }
 
 /// Press or release the key named by a `KeyboardEvent.code`. Returns false

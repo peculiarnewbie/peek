@@ -23,13 +23,25 @@ const viewListeners: (() => void)[] = [];
 /** Called whenever the canvas moves on the page. */
 export const onViewChange = (f: () => void) => { viewListeners.push(f); };
 
+/** Height kept free at the bottom of the window, for the keyboard dock. */
+let bottomInset = 0;
+/** The area the remote screen is shown in: the window above the dock. */
+export const areaW = () => innerWidth;
+export const areaH = () => Math.max(innerHeight - bottomInset, 1);
+export function setBottomInset(px: number) {
+  if (px === bottomInset) return;
+  bottomInset = px;
+  document.documentElement.style.setProperty('--bottom-inset', px + 'px');
+  layout();
+}
+
 /** At most this many CSS pixels per remote pixel when zoomed in. */
 const MAX_PIXEL_ZOOM = 3;
 const maxZoom = () => Math.max(2, (MAX_PIXEL_ZOOM * cv.width) / baseW);
 
 /** Fit the canvas into the window, keeping its aspect ratio. */
 export function layout() {
-  const k = Math.min(innerWidth / cv.width, innerHeight / cv.height);
+  const k = Math.min(areaW() / cv.width, areaH() / cv.height);
   baseW = Math.floor(cv.width * k);
   baseH = Math.floor(cv.height * k);
   cv.style.width = baseW + 'px';
@@ -46,7 +58,7 @@ export function resizeScreen(w: number, h: number) {
 }
 
 /** Where the canvas's top-left corner sits when not zoomed. */
-const baseOrigin = () => ({ x: (innerWidth - baseW) / 2, y: (innerHeight - baseH) / 2 });
+const baseOrigin = () => ({ x: (areaW() - baseW) / 2, y: (areaH() - baseH) / 2 });
 
 /** The canvas as currently shown, in CSS pixels. */
 export function shownRect() {
@@ -54,13 +66,13 @@ export function shownRect() {
   return { left: o.x + view.x, top: o.y + view.y, width: baseW * view.z, height: baseH * view.z };
 }
 
-// Keep the zoomed canvas covering the window: no empty margin on a side
-// where it is larger than the window, centred where it is smaller.
+// Keep the zoomed canvas covering the area: no empty margin on a side
+// where it is larger than the area, centred where it is smaller.
 function clampView() {
-  const o = baseOrigin();
+  const o = baseOrigin(), aw = areaW(), ah = areaH();
   const w = baseW * view.z, h = baseH * view.z;
-  view.x = w <= innerWidth ? (innerWidth - w) / 2 - o.x : Math.min(Math.max(view.x, innerWidth - w - o.x), -o.x);
-  view.y = h <= innerHeight ? (innerHeight - h) / 2 - o.y : Math.min(Math.max(view.y, innerHeight - h - o.y), -o.y);
+  view.x = w <= aw ? (aw - w) / 2 - o.x : Math.min(Math.max(view.x, aw - w - o.x), -o.x);
+  view.y = h <= ah ? (ah - h) / 2 - o.y : Math.min(Math.max(view.y, ah - h - o.y), -o.y);
 }
 
 function applyView() {

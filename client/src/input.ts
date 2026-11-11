@@ -112,7 +112,10 @@ function copyViaSelection(text: string) {
 const PASTE_WAIT = 150;
 let pasteTimer: ReturnType<typeof setTimeout> | null = null, swallowV = false;
 function pressV() { send({ t: 'k', c: 'KeyV', d: 1 }); send({ t: 'k', c: 'KeyV', d: 0 }); }
+/** Typing in a field of our own (the phone keyboard's text field) is not for the host. */
+const ownField = (e: Event) => e.target instanceof HTMLInputElement;
 document.addEventListener('paste', e => {
+  if (ownField(e)) return;
   e.preventDefault();
   if (!pasteTimer) return;                       // not a paste we are waiting for
   clearTimeout(pasteTimer); pasteTimer = null;
@@ -128,7 +131,7 @@ const META = new Set(['MetaLeft', 'MetaRight']);
 /** A key handled here (wake, close settings); its release stays here too. */
 let swallowKey: string | null = null;
 function key(e: KeyboardEvent, down: boolean) {
-  if (!e.code || e.code === 'Unidentified') return;
+  if (!e.code || e.code === 'Unidentified' || ownField(e)) return;
   if (!down && e.code === swallowKey) { swallowKey = null; e.preventDefault(); return; }
   if (down && settingsOpen() && e.code === 'Escape') {
     e.preventDefault(); swallowKey = e.code; showSettings(false); return;

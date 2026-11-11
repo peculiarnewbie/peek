@@ -11,8 +11,9 @@
 import { showSettings } from './actions';
 import { hooks, send } from './connection';
 import { sendButton, sendMove } from './input';
-import { cv, onViewChange, panBy, shownRect, toCanvas, view, zoomed, zoomTo } from './screen';
+import { areaH, areaW, cv, onViewChange, panBy, shownRect, toCanvas, view, zoomed, zoomTo } from './screen';
 import { setBarOpen, setIsTouch, settingsOpen, touchMode } from './state';
+import { resetText } from './keyboard';
 import { clamp01 } from './util';
 
 /** CSS px a finger may wander and still count as a tap or a press. */
@@ -57,8 +58,8 @@ onViewChange(placeCursor);
 function followCursor() {
   if (!zoomed()) return;
   const p = cursorOnPage();
-  const dx = p.x < EDGE ? EDGE - p.x : p.x > innerWidth - EDGE ? innerWidth - EDGE - p.x : 0;
-  const dy = p.y < EDGE ? EDGE - p.y : p.y > innerHeight - EDGE ? innerHeight - EDGE - p.y : 0;
+  const dx = p.x < EDGE ? EDGE - p.x : p.x > areaW() - EDGE ? areaW() - EDGE - p.x : 0;
+  const dy = p.y < EDGE ? EDGE - p.y : p.y > areaH() - EDGE ? areaH() - EDGE - p.y : 0;
   if (dx || dy) panBy(dx, dy);
 }
 
@@ -153,6 +154,8 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   setIsTouch(true);
   setBarOpen(false);
+  // The host's caret may move; the text field starts over.
+  resetText();
   const now = performance.now();
   fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t: now });
   if (fingers.size === 1) {

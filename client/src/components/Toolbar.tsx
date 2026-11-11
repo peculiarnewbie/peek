@@ -5,6 +5,7 @@ import {
   barOpen, cfg, fullscreen, isTouch, live, monitors, pinned, setBarOpen, setIsTouch, settingsOpen, sleeping,
   statsMode, touchMode, viewOnly,
 } from '../state';
+import { dock, setDock } from '../keyboard';
 import { Icon } from './Icons';
 
 /** The pill at the top: a dot until hovered (or tapped), unless pinned or settings are open. */
@@ -47,6 +48,10 @@ export function Toolbar() {
           <Icon name="chart" /><span>Stats</span>
         </button>
         <Show when={isTouch()}>
+          <button id="b-kbd" class="tb" tabIndex={-1} aria-pressed={dock() !== 'off'}
+            onClick={() => setDock(dock() === 'off' ? 'text' : 'off')}>
+            <Icon name="keyboard" /><span>Keyboard</span>
+          </button>
           <button id="b-touch" class="tb" tabIndex={-1} onClick={toggleTouchMode}
             title={touchMode() === 'trackpad'
               ? 'Trackpad: drag to move the pointer, tap to click. Switch to touch'
