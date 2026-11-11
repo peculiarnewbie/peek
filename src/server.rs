@@ -76,6 +76,7 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()>
         .route("/api/pair-code", post(local_pair_code))
         .route("/api/clients", get(local_clients))
         .route("/api/clients/revoke", post(local_revoke))
+        .route("/api/logs", get(local_logs))
         .layer(middleware::from_fn_with_state(shared.clone(), ip_guard))
         .with_state(shared);
     // Input and small screen updates must not sit in Nagle's buffer.
@@ -377,6 +378,21 @@ async fn local_clients(State(shared): State<Arc<Shared>>, headers: HeaderMap) ->
     }
     let list = serde_json::to_string(&shared.pairing.list()).unwrap_or_default();
     ([(header::CONTENT_TYPE, "application/json")], list).into_response()
+}
+
+async fn local_logs(
+    State(shared): State<Arc<Shared>>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if !local_ok(&shared, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let number = |key: &str| query.get(key).and_then(|v| v.parse::<u64>().ok());
+    let (last, lines) = crate::recent_log(number("after").unwrap_or(0), number("limit").unwrap_or(50) as usize);
+    let file = crate::LOG_PATH.get().map(|p| p.display().to_string());
+    let body = serde_json::json!({ "last": last, "lines": lines, "file": file });
+    ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
 
 async fn local_revoke(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {

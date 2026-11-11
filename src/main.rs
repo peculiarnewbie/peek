@@ -9,7 +9,7 @@ mod pairing;
 mod platform;
 mod server;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
@@ -20,6 +20,13 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use clap::{Parser, Subcommand};
 
 static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
+/// Where `--log` writes, made absolute so `peek logs` can say where to look.
+pub static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// The latest log lines, numbered, for `peek logs`: a host started as a
+/// service has no console to read them from.
+static RECENT: Mutex<(u64, VecDeque<String>)> = Mutex::new((0, VecDeque::new()));
+const RECENT_LINES: usize = 1000;
 
 pub fn log_line(line: std::fmt::Arguments<'_>) {
     let line = format!("{} {line}", chrono::Local::now().format("%H:%M:%S"));
@@ -27,6 +34,21 @@ pub fn log_line(line: std::fmt::Arguments<'_>) {
     if let Some(file) = LOG_FILE.get() {
         let _ = writeln!(file.lock().unwrap(), "{line}");
     }
+    let mut recent = RECENT.lock().unwrap();
+    recent.0 += 1;
+    if recent.1.len() == RECENT_LINES {
+        recent.1.pop_front();
+    }
+    recent.1.push_back(line);
+}
+
+/// Log lines numbered above `after`, at most the last `limit`, with the
+/// number of the newest line (to ask for what follows it next time).
+pub fn recent_log(after: u64, limit: usize) -> (u64, Vec<String>) {
+    let recent = RECENT.lock().unwrap();
+    let (last, lines) = &*recent;
+    let new = last.saturating_sub(after).min(lines.len() as u64) as usize;
+    (*last, lines.iter().skip(lines.len() - new.min(limit)).cloned().collect())
 }
 
 #[macro_export]
@@ -86,6 +108,15 @@ enum Command {
     Clients,
     /// Unpair a browser, by the id `peek clients` shows
     Unpair { id: String },
+    /// Show what the running peek has logged recently
+    Logs {
+        /// Keep showing new lines as they come
+        #[arg(short, long)]
+        follow: bool,
+        /// How many recent lines to show first
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+    },
 }
 
 /// Where the access token lives: %APPDATA%\peek on Windows, otherwise
@@ -305,6 +336,37 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             }
             Ok(())
         }
+        Command::Logs { follow, lines } => {
+            let mut after = 0;
+            let mut limit = *lines;
+            loop {
+                let (status, body) = match local_request(args, "GET", &format!("/api/logs?after={after}&limit={limit}"), "") {
+                    Ok(reply) => reply,
+                    Err(e) if *follow && after > 0 => return Err(format!("peek stopped ({e})")),
+                    Err(e) => return Err(e),
+                };
+                if status == 404 {
+                    return Err("the running peek is too old for `peek logs`. Update and restart it.".into());
+                }
+                let reply: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                for line in reply["lines"].as_array().into_iter().flatten() {
+                    println!("{}", line.as_str().unwrap_or(""));
+                }
+                if after == 0 && !*follow {
+                    if let Some(file) = reply["file"].as_str() {
+                        eprintln!("(the full log is in {file})");
+                    }
+                }
+                if !*follow {
+                    return Ok(());
+                }
+                let last = reply["last"].as_u64().unwrap_or(after);
+                // peek restarted: its numbering began again.
+                after = if last < after { 0 } else { last };
+                limit = RECENT_LINES;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
         Command::Unpair { id } => match local_request(args, "POST", "/api/clients/revoke", id)?.0 {
             204 => {
                 println!("Unpaired {id}. It can no longer connect; a session it has open stays until it disconnects.");
@@ -344,7 +406,10 @@ fn main() {
 
     if let Some(path) = &args.log {
         match OpenOptions::new().create(true).append(true).open(path) {
-            Ok(file) => drop(LOG_FILE.set(Mutex::new(file))),
+            Ok(file) => {
+                let _ = LOG_FILE.set(Mutex::new(file));
+                let _ = LOG_PATH.set(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
+            }
             Err(e) => eprintln!("cannot write log file {}: {e}", path.display()),
         }
     }

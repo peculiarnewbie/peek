@@ -203,6 +203,9 @@ peek unpair &lt;id&gt;    # unpair one; it can no longer connect</code></pre>
   <li>In Chrome, check the site may access your local network: the icon left of the address bar.</li>
   <li>The very first connection to a machine can take a few seconds while Tailscale fetches its certificate.</li>
 </ul>
+<h3>Seeing what peek is doing</h3>
+<p>On the machine, <code>peek logs</code> shows what peek logged recently (connections, capture starts,
+errors), even when it runs in the background; <code>peek logs -f</code> keeps following it.</p>
 <h3>"No longer paired"</h3>
 <p>The machine unpaired this browser, or its pairing data was reset. Run <code>peek pair</code> there again.</p>
 
