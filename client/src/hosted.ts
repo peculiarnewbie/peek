@@ -32,20 +32,44 @@ function setMachines(list: Machine[]) {
   store.set('machines', JSON.stringify(list));
 }
 
-const [currentId, setCurrentIdRaw] = createSignal<string | null>(store.get('current'));
-export const current = () => machines().find(m => m.id === currentId()) ?? null;
-export function setCurrent(id: string | null) {
-  setCurrentIdRaw(id);
-  store.set('current', id ?? '');
+// ---- pages ----
+// `/` lists the machines; `/<name>` shows one (its Tailscale name's first
+// part, unique in a tailnet). Plain history entries, so Back returns to the list.
+export const slug = (m: Machine) => m.host.split('.')[0];
+const [path, setPath] = createSignal(location.pathname);
+addEventListener('popstate', () => setPath(location.pathname));
+export function navigate(to: string, replace = false) {
+  if (to === location.pathname) return;
+  history[replace ? 'replaceState' : 'pushState'](null, '', to);
+  setPath(to);
 }
-
-/** The machine list: open on its own when there is nothing to show yet. */
-export const [machinesOpen, setMachinesOpen] = createSignal(false);
+/** The machine this page shows, or null on the list. */
+export const current = () => {
+  const name = decodeURIComponent(path().slice(1)).toLowerCase();
+  return (name && machines().find(m => slug(m) === name || m.id === name)) || null;
+};
+export const openMachine = (m: Machine) => navigate(`/${slug(m)}`);
+export const home = () => navigate('/');
 
 export function forget(id: string) {
   setMachines(machines().filter(m => m.id !== id));
-  if (currentId() === id) setCurrent(null);
 }
+
+// ---- Chrome's Local Network Access ----
+// Chrome asks before a public site may reach addresses like Tailscale's
+// 100.x.y.z; once blocked, every request fails without saying why.
+export type LocalAccess = 'granted' | 'prompt' | 'denied' | 'unknown';
+export const [localAccess, setLocalAccess] = createSignal<LocalAccess>('unknown');
+(async () => {
+  try {
+    const status = await navigator.permissions.query({ name: 'local-network-access' as PermissionName });
+    const update = () => setLocalAccess(status.state as LocalAccess);
+    update();
+    status.addEventListener('change', update);
+  } catch {}   // not Chrome, or a Chrome without the prompt: nothing to ask for
+})();
+export const BLOCKED_HELP = 'This browser is blocking the site from reaching devices on your network. Click the ' +
+  'icon left of the address, allow "Local network access", and reload.';
 
 // ---- reachability ----
 export type Reach = 'checking' | 'up' | 'down';
@@ -104,9 +128,10 @@ export async function pair(hostText: string, code: string): Promise<Machine> {
     // Long enough for Tailscale to fetch the machine's certificate on its first HTTPS request.
     info = await about(host, 20000);
   } catch {
+    if (localAccess() === 'denied') throw new Error(BLOCKED_HELP);
     throw new Error(`Cannot reach ${host}. Check that Tailscale is connected on this device, and that the ` +
-      'machine runs peek and `peek pair` worked there. If the browser asked to access devices on ' +
-      'your local network, allow it.');
+      'machine runs peek and `peek pair` worked there. If the browser asks to access devices on your ' +
+      'local network, allow it.');
   }
   let r: Response;
   try {

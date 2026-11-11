@@ -207,8 +207,11 @@ it would put peek on the internet.
 ## One site for all your machines
 
 https://peek.peculiarnewbie.com is the same client, served from one place
-and paired with any number of machines. Switch between them from the
-toolbar's machine button, like a KVM switch. The site only serves the page:
+and paired with any number of machines. It opens on a page of them; each
+machine has its own address (`/hp-book`), and the toolbar's back button (or
+the browser's) returns to the list, like a KVM switch. In Chrome, allow
+**Local network access** when the site asks, or it cannot reach your tailnet.
+The site only serves the page:
 the browser connects straight to each machine over Tailscale, and the list
 of machines and their tokens stay in that browser.
 
