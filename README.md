@@ -88,9 +88,13 @@ Tap the dot to open the toolbar; tap the screen to close it. The toolbar's
 | Two-finger tap | right click | right click |
 | Three-finger tap | middle click | middle click |
 | Two fingers moving together | scroll | scroll |
-| Pinch | zoom; the view follows the pointer | zoom and pan |
+| Pinch | zoom around the pointer | zoom and pan |
 
 The host's screen capture has no pointer in it, so the client draws one.
+
+In Trackpad mode a zoomed view keeps the pointer in the middle of the
+screen and moves with it. Near the remote screen's edges the view stops
+and the pointer carries on to the edge.
 
 Gestures work anywhere above the keyboard bar, not only on the remote
 screen itself.

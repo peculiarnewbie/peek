@@ -5,13 +5,15 @@
 // tap then touch again and drag (or long-press and drag) holds the button.
 // Direct mode: the finger is the pointer. Tap clicks there, long-press
 // right-clicks, drag drags.
-// Both: two fingers moving together scroll; pinching zooms the view (and
-// pans it with the fingers). In trackpad mode the zoomed view follows the
-// cursor.
+// Both: two fingers moving together scroll; pinching zooms the view. In
+// trackpad mode a zoomed view keeps the cursor in the middle of the window,
+// except near the screen's edges, where the view stops and the cursor
+// carries on to the edge. In direct mode the pinch zooms around the fingers
+// and pans with them.
 import { showSettings } from './actions';
 import { hooks, send } from './connection';
 import { sendButton, sendMove } from './input';
-import { areaH, areaW, onViewChange, panBy, shownRect, stage, toCanvas, view, zoomed, zoomTo } from './screen';
+import { areaH, areaW, onViewChange, shownRect, stage, toCanvas, view, zoomed, zoomTo } from './screen';
 import { setBarOpen, setIsTouch, settingsOpen, touchMode } from './state';
 import { clamp01 } from './util';
 
@@ -22,8 +24,6 @@ const LONG_PRESS_MS = 450;
 const TAP_DRAG_MS = 300;
 /** Two- and three-finger taps must be at least this quick. */
 const MULTI_TAP_MS = 350;
-/** Trackpad: when zoomed, the view pans to keep the cursor this far inside the window. */
-const EDGE = 48;
 /** Windows wheel units (120 a notch) per CSS px of two-finger movement. */
 const WHEEL_PER_PX = 3;
 
@@ -53,13 +53,15 @@ function placeCursor() {
 }
 onViewChange(placeCursor);
 
-/** Pan a zoomed view so the cursor stays clear of the window's edges. */
+/** Trackpad: zoom to `z` with the cursor in the middle of the window, as
+ *  far as the screen's edges allow (the view never shows past them). */
+function centerOnCursor(z: number) {
+  const r = shownRect();
+  const at = { x: (cursor.x * r.width) / view.z, y: (cursor.y * r.height) / view.z };
+  zoomTo(z, at, areaW() / 2, areaH() / 2);
+}
 function followCursor() {
-  if (!zoomed()) return;
-  const p = cursorOnPage();
-  const dx = p.x < EDGE ? EDGE - p.x : p.x > areaW() - EDGE ? areaW() - EDGE - p.x : 0;
-  const dy = p.y < EDGE ? EDGE - p.y : p.y > areaH() - EDGE ? areaH() - EDGE - p.y : 0;
-  if (dx || dy) panBy(dx, dy);
+  if (zoomed()) centerOnCursor(view.z);
 }
 
 /** Trackpad: move by a finger's movement in CSS px, so it tracks the finger at any zoom. */
@@ -202,8 +204,9 @@ stage.addEventListener('pointermove', e => {
   }
 
   if (g.kind === 'pinch' && fingers.size >= 2) {
-    const m = mid();
-    zoomTo(g.z0! * spread() / g.dist0!, g.at!, m.x, m.y);
+    const z = g.z0! * spread() / g.dist0!;
+    if (trackpad) centerOnCursor(z);
+    else { const m = mid(); zoomTo(z, g.at!, m.x, m.y); }
   } else if (g.kind === 'scroll' && fingers.size >= 2) {
     // Content follows the fingers, as when scrolling a page on the phone.
     const m = mid();
