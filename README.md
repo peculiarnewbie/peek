@@ -19,6 +19,9 @@ cargo build --release
 target\release\peek.exe
 ```
 
+Building needs [Bun](https://bun.sh) (or Node) as well as Rust: the browser
+client is bundled as part of the build.
+
 It prints URLs ending in `#<token>`. Open the one with the host's LAN or
 Tailscale address on another device. The browser remembers the token after
 the first visit, so a bookmark is enough from then on.
@@ -163,8 +166,21 @@ src/server.rs             HTTP + WebSocket, authentication, input dispatch, clip
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
 src/platform/mod.rs       the interface a backend provides
 src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape
-client/index.html         the whole client, embedded in the binary
+build.rs                  builds the client before the host is compiled
+client/src/connection.ts  the socket: connecting, frame decoding, stats counters
+client/src/input.ts       mouse, keyboard and clipboard to the host
+client/src/state.ts       settings and UI state, as Solid signals
+client/src/components/    toolbar, settings, stats panel, overlays
 ```
+
+The client is TypeScript and [Solid](https://www.solidjs.com), bundled by
+Vite into one HTML file (`client/dist/index.html`) that is embedded in the
+binary. `cargo build` runs that bundling through `build.rs`, so it needs
+[Bun](https://bun.sh) (or Node with npm) installed.
+
+For work on the client alone, run a host, then `bun run dev` in `client/`:
+it serves the client with hot reload on http://localhost:5173 and forwards
+the socket to the host on port 9182.
 
 `cargo test` runs the unit tests. `cargo test -- --ignored` adds the ones
 that need a real desktop session.

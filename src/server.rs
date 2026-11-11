@@ -194,7 +194,7 @@ fn trusted_name(host: &str) -> bool {
 async fn index() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")],
-        include_str!("../client/index.html"),
+        include_str!("../client/dist/index.html"),
     )
 }
 
