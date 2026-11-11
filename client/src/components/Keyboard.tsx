@@ -116,12 +116,16 @@ export function Keyboard() {
   // so the next tap anywhere would bring the keyboard back. Seeing the window
   // grow back to its full height while the field has focus means the
   // keyboard went away: let go of the field too.
+  // Only once the keyboard has been seen open, though: while it is opening,
+  // Chrome moves its own bars and the window can briefly be its full height
+  // (or taller), which must not count as the keyboard closing.
   onMount(() => {
     const height = () => window.visualViewport?.height ?? innerHeight;
-    let full = height();
+    let full = height(), keyboardSeen = false;
     const onResize = () => {
-      if (document.activeElement !== field.el) { full = height(); return; }
-      if (height() >= full - 80) field.el?.blur();
+      if (document.activeElement !== field.el) { full = height(); keyboardSeen = false; return; }
+      if (height() < full - 150) keyboardSeen = true;
+      else if (keyboardSeen && height() >= full - 80) { keyboardSeen = false; field.el?.blur(); }
     };
     addEventListener('resize', onResize);
     visualViewport?.addEventListener('resize', onResize);
