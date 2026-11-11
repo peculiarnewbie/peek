@@ -58,7 +58,29 @@ bun bench/first-frame.ts ws://127.0.0.1:9182/ws [runs] [token]   # cold: waits o
 bun bench/first-frame.ts ws://127.0.0.1:9182/ws 20 --warm       # warm: back to back
 ```
 
+## Install
+
+```
+npm install -g @peculiarnewbie/peek     (or: bun add -g, pnpm add -g)
+peek install
+peek pair
+```
+
+The package holds the binary for Windows x64 and Linux x64 and arm64; Node
+only starts it. `peek install` copies it to a fixed place and starts it at
+logon from there (details for [Windows](#install-on-windows-firewall-rule-and-start-at-logon-as-administrator)
+and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
+`peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
+After updating the package, run `peek install` again; `peek uninstall` removes
+it. To try peek once without installing anything: `npx @peculiarnewbie/peek`.
+
 ## Run
+
+```
+peek                           (Linux: from inside the Wayland session)
+```
+
+Or build it yourself:
 
 ```
 cargo build --release
@@ -186,16 +208,25 @@ Two things need administrator rights once:
 - Windows drops input injected into windows that run as administrator (Task
   Manager, installers) unless peek is elevated too.
 
-From an elevated PowerShell:
+```
+peek install
+```
+
+Windows asks for administrator rights once. peek is copied to
+`%LOCALAPPDATA%\Programs\peek\peek.exe`, allowed through the firewall
+(private and Tailscale addresses only), and started elevated and hidden by a
+logon task, logging to `%APPDATA%\peek\peek.log`. Flags after `install` are
+for that peek: with `peek install --no-token` the firewall rule admits
+Tailscale addresses only. `peek uninstall` undoes all of it.
+
+From a source checkout, the same from an elevated PowerShell, running
+`target\release\peek.exe` in place:
 
 ```
 .\scripts\install-autostart.ps1
 ```
 
-This allows `peek.exe` through the firewall (private and Tailscale addresses
-only) and registers a logon task that starts peek elevated and hidden.
-`-Remove` undoes both. Flags for peek go in `-PeekArgs`; with
-`-PeekArgs '--no-token'` the firewall rule admits Tailscale addresses only.
+`-Remove` undoes it, and flags for peek go in `-PeekArgs`.
 
 ### Install on Linux: key access, start at login, firewall
 
@@ -213,8 +244,17 @@ udevadm control --reload && udevadm trigger --name-match=uinput
 Without it peek still shows the screen and the mouse and typed text still
 work; it says so at startup.
 
-To start peek with the graphical session (systemd user service, which niri
-and sway sessions start):
+To start peek with the graphical session (a systemd user service, which
+niri and sway sessions start):
+
+```
+peek install
+```
+
+This copies peek to `~/.local/share/peek/peek` and writes
+`~/.config/systemd/user/peek.service`; flags after `install` go on its
+`ExecStart` line, and `peek uninstall` removes both. From a source checkout,
+by hand:
 
 ```
 cp target/release/peek ~/.local/bin/
@@ -378,6 +418,7 @@ With `--no-token`:
 src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
 src/server.rs             HTTP + WebSocket, authentication, pairing endpoints, input dispatch, clipboard watcher
 src/pairing.rs            one-time codes, paired browsers' token hashes
+src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task or systemd unit
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
 src/platform/mod.rs       the interface a backend provides
 src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape
@@ -390,6 +431,8 @@ client/src/state.ts       settings and UI state, as Solid signals
 client/src/components/    toolbar, settings, stats panel, overlays, machine list, pairing
 client/src/hosted.ts      the hosted client: paired machines, pairing, reachability
 client/cloudflare.config.ts  deploys the hosted client to Cloudflare (`cf deploy --mode hosted`)
+npm/                      the npm package: its manifest and the launcher that picks a binary
+scripts/npm-release.mjs   builds every platform, packs the npm package, stages it
 ```
 
 The client is TypeScript and [Solid](https://www.solidjs.com), bundled by
@@ -407,3 +450,20 @@ that need a real desktop session. On Linux, the test that clicks and types
 only runs with `PEEK_TEST_NESTED=1`, against a nested compositor (start
 `niri` from inside the session; it opens as a window with its own
 `WAYLAND_DISPLAY`).
+
+### Releasing to npm
+
+The version is the one in `Cargo.toml`. On Windows, with the Linux targets
+and [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild):
+
+```
+rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+pip install ziglang
+cargo install cargo-zigbuild --locked
+node scripts/npm-release.mjs            # build all three, pack into dist/npm/
+node scripts/npm-release.mjs --stage    # and stage it on npm
+```
+
+Staging uses `npm login`, or a stage-only token in `NPM_TOKEN`. A staged
+version is not installable until it is approved with 2FA, on npmjs.com or
+with `npm stage approve <id>`. The Linux builds target glibc 2.28.

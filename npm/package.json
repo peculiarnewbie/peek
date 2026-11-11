@@ -1,0 +1,25 @@
+{
+  "name": "@peculiarnewbie/peek",
+  "version": "0.0.0",
+  "description": "Instant-connect remote desktop host for LAN and Tailscale. The client is a browser tab.",
+  "license": "MIT",
+  "keywords": ["remote-desktop", "tailscale", "vnc", "screen-sharing", "wayland"],
+  "homepage": "https://peek.peculiarnewbie.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/peculiarnewbie/peek.git"
+  },
+  "bugs": "https://github.com/peculiarnewbie/peek/issues",
+  "bin": {
+    "peek": "bin/peek.js"
+  },
+  "files": [
+    "bin/",
+    "vendor/"
+  ],
+  "os": ["win32", "linux"],
+  "cpu": ["x64", "arm64"],
+  "engines": {
+    "node": ">=18"
+  }
+}
