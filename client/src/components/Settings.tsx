@@ -42,11 +42,6 @@ function Segmented<T>(props: { options: [T, string][]; selected: (v: T) => boole
         <button tabIndex={-1} role="radio" aria-checked={props.selected(value)}
           onClick={() => { props.pick(value); focusScreen(); }}>{text}</button>
       }</For>
-      <Show when={!viewOnly()}>
-        <Group label="Pair a device" value="">
-          <PairDevice />
-        </Group>
-      </Show>
     </div>
   );
 }
@@ -78,6 +73,11 @@ export function Settings() {
           </Group>
         </Show>
       }</For>
+      <Show when={!viewOnly()}>
+        <Group label="Pair a device" value="">
+          <PairDevice />
+        </Group>
+      </Show>
     </div>
   );
 }
