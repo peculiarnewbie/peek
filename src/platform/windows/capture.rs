@@ -120,8 +120,9 @@ impl Capture {
     /// Wait up to `timeout` for monitor `index` to change. When it has, `f`
     /// is called with the full current frame and `Ok(true)` is returned.
     /// On `Err` the caller should `refresh()` and try again a little later:
-    /// that is what a resolution change, a UAC prompt or the lock screen
-    /// look like from here.
+    /// that is what a resolution change or the display going to sleep look
+    /// like from here. (Input moving to another desktop, for a UAC prompt or
+    /// the lock screen, is `Ok(false)`: the next call starts capturing there.)
     pub fn acquire(
         &mut self,
         index: usize,
@@ -134,34 +135,24 @@ impl Capture {
         let Some(out) = self.outputs.get(index) else {
             return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "no monitor attached"));
         };
-        let monitor = out.monitor;
         if self.dups.get(&index).is_none_or(|d| d.dup.is_none()) {
             follow_desktop();
         }
-        let d = match self.dups.entry(index) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(v) => v.insert(open(out)?),
-        };
-        if d.dup.is_none() {
-            let began = Instant::now();
-            let dup = unsafe { out.output.DuplicateOutput(&d.device) };
-            let dup = match dup {
-                Ok(dup) => dup,
-                Err(e) => {
-                    self.dups.remove(&index);
-                    return Err(e);
-                }
-            };
-            d.dup = Some(dup);
-            d.fresh = true;
-            d.startup = Some(Startup { began, device: None, duplicate: began.elapsed() });
-        }
-        match unsafe { grab(d, monitor, timeout, f) } {
+        match duplicate_and_grab(&mut self.dups, out, index, timeout, f) {
             Ok(Some(cost)) => {
                 self.last_cost = cost;
                 Ok(true)
             }
             Ok(None) => Ok(false),
+            // Input moved to another desktop, which is what ended this
+            // duplication: start one there on the next call, keeping the
+            // device, rather than fail and wait to be retried.
+            Err(_) if follow_desktop() => {
+                if let Some(d) = self.dups.get_mut(&index) {
+                    d.dup = None;
+                }
+                Ok(false)
+            }
             Err(e) => {
                 self.dups.remove(&index);
                 Err(e)
@@ -170,14 +161,37 @@ impl Capture {
     }
 }
 
+/// Open the device and duplication for `out` as far as they are not yet, and
+/// grab a frame. Returns how long reading it took, or `None` if nothing
+/// changed.
+fn duplicate_and_grab(
+    dups: &mut HashMap<usize, Duplication>,
+    out: &Output,
+    index: usize,
+    timeout: Duration,
+    f: impl FnOnce(Pixels<'_>),
+) -> windows::core::Result<Option<Duration>> {
+    let d = match dups.entry(index) {
+        Entry::Occupied(e) => e.into_mut(),
+        Entry::Vacant(v) => v.insert(open(out)?),
+    };
+    if d.dup.is_none() {
+        let began = Instant::now();
+        d.dup = Some(unsafe { out.output.DuplicateOutput(&d.device) }?);
+        d.fresh = true;
+        d.startup = Some(Startup { began, device: None, duplicate: began.elapsed() });
+    }
+    unsafe { grab(d, out.monitor, timeout, f) }
+}
+
 /// Duplication only works on the desktop taking input, which a UAC prompt or
 /// the lock screen moves away from the user's own (see `desktop`). Called
 /// before starting a duplication, and after one failed, which is how a
-/// switch shows up while capturing.
-fn follow_desktop() {
-    if let Some(name) = super::desktop::follow() {
-        crate::log!("capture: following input to the {name} desktop");
-    }
+/// switch shows up while capturing. Returns whether this thread moved.
+fn follow_desktop() -> bool {
+    let Some(name) = super::desktop::follow() else { return false };
+    crate::log!("capture: following input to the {name} desktop");
+    true
 }
 
 fn enumerate() -> windows::core::Result<Vec<Output>> {

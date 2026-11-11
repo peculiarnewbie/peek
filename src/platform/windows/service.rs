@@ -127,19 +127,13 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     shared.status.store(handle.0 as usize, Ordering::Release);
     report(SERVICE_RUNNING);
     crate::log!("service: started");
-    match job() {
-        Ok(job) => {
-            supervise(shared, job);
-            // Closing the job ends anything still in it.
-            let _ = unsafe { CloseHandle(job) };
-        }
-        Err(e) => crate::log!("service: cannot create a job object for peek: {e}"),
-    }
+    supervise(shared);
     crate::log!("service: stopped");
     report(SERVICE_STOPPED);
 }
 
-/// A job that ends peek when this service ends, however it ends.
+/// A job that ends the peek put in it when this service ends, however it
+/// ends. One per peek: a job only takes processes of one session.
 fn job() -> windows::core::Result<HANDLE> {
     unsafe {
         let job = CreateJobObjectW(None, PCWSTR::null())?;
@@ -158,8 +152,19 @@ fn job() -> windows::core::Result<HANDLE> {
 /// peek running in a user session.
 struct Child {
     process: HANDLE,
+    /// Closing it ends peek, if it has not ended already.
+    job: HANDLE,
     session: u32,
     started: Instant,
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.process);
+            let _ = CloseHandle(self.job);
+        }
+    }
 }
 
 impl Child {
@@ -180,12 +185,11 @@ impl Child {
             let _ = TerminateProcess(self.process, 0);
             // It must be gone before the next one can listen on its port.
             WaitForSingleObject(self.process, 5000);
-            let _ = CloseHandle(self.process);
         }
     }
 }
 
-fn supervise(shared: &Shared, job: HANDLE) {
+fn supervise(shared: &Shared) {
     let (stop, wake) = (HANDLE(shared.stop as *mut c_void), HANDLE(shared.wake as *mut c_void));
     let mut child: Option<Child> = None;
     // Backing off from a peek that keeps exiting, in the session it does so.
@@ -211,7 +215,6 @@ fn supervise(shared: &Shared, job: HANDLE) {
                 } else {
                     retry = FIRST_RETRY;
                 }
-                let _ = unsafe { CloseHandle(c.process) };
             } else if console.is_some_and(|s| s != c.session) {
                 let c = child.take().unwrap();
                 crate::log!("service: the console left session {}; stopping peek there", c.session);
@@ -221,7 +224,7 @@ fn supervise(shared: &Shared, job: HANDLE) {
         if let (None, Some(session)) = (&child, console)
             && Instant::now() >= not_before
         {
-            match launch(session, job) {
+            match launch(session) {
                 Ok(c) => {
                     crate::log!("service: started peek in session {session}");
                     child = Some(c);
@@ -256,7 +259,7 @@ fn supervise(shared: &Shared, job: HANDLE) {
 
 /// Start peek in `session` as SYSTEM, on the session's own desktop, with the
 /// flags this service was given (less `--service`).
-fn launch(session: u32, job: HANDLE) -> windows::core::Result<Child> {
+fn launch(session: u32) -> windows::core::Result<Child> {
     let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
     let args: Vec<OsString> = std::env::args_os().skip(1).filter(|a| a != "--service").collect();
     let mut command = command_line(exe.as_os_str(), &args);
@@ -271,13 +274,14 @@ fn launch(session: u32, job: HANDLE) -> windows::core::Result<Child> {
         duplicated?;
         let result = (|| {
             SetTokenInformation(token, TokenSessionId, (&raw const session).cast(), size_of::<u32>() as u32)?;
+            let job = job()?;
             let startup = STARTUPINFOW {
                 cb: size_of::<STARTUPINFOW>() as u32,
                 lpDesktop: PWSTR(desktop.as_mut_ptr()),
                 ..Default::default()
             };
             let mut info = PROCESS_INFORMATION::default();
-            CreateProcessAsUserW(
+            let created = CreateProcessAsUserW(
                 Some(token),
                 &HSTRING::from(exe.as_path()),
                 Some(PWSTR(command.as_mut_ptr())),
@@ -289,13 +293,17 @@ fn launch(session: u32, job: HANDLE) -> windows::core::Result<Child> {
                 PCWSTR::null(),
                 &startup,
                 &mut info,
-            )?;
+            );
+            if let Err(e) = created {
+                let _ = CloseHandle(job);
+                return Err(e);
+            }
             if let Err(e) = AssignProcessToJobObject(job, info.hProcess) {
                 crate::log!("service: peek will outlive this service if it crashes ({e})");
             }
             ResumeThread(info.hThread);
             let _ = CloseHandle(info.hThread);
-            Ok(Child { process: info.hProcess, session, started: Instant::now() })
+            Ok(Child { process: info.hProcess, job, session, started: Instant::now() })
         })();
         let _ = CloseHandle(token);
         result
