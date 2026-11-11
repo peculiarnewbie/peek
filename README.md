@@ -76,6 +76,10 @@ tailnet decides who can connect (see [Security](#security)).
 | `--log <file>` | Also append log lines to a file |
 | `-v` | Log every input event and periodic throughput |
 
+`peek logs` shows the last 50 lines the running peek logged, however it was
+started (as a service it has no console); `-f` keeps showing new ones, `-n
+<lines>` shows more. Pass the same `--port` the host uses, if not the default.
+
 ### In the client
 
 Hover the dot at the top to show the toolbar; the pin keeps it open.
@@ -355,7 +359,7 @@ With `--no-token`:
 ## Layout
 
 ```
-src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair`
+src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
 src/server.rs             HTTP + WebSocket, authentication, pairing endpoints, input dispatch, clipboard watcher
 src/pairing.rs            one-time codes, paired browsers' token hashes
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
