@@ -16,7 +16,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1,
+    CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1,
     IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
 };
 use windows::Win32::Graphics::Gdi::{
@@ -94,7 +94,12 @@ impl Capture {
         timeout: Duration,
         f: impl FnOnce(Pixels<'_>),
     ) -> windows::core::Result<bool> {
-        let Some(out) = self.outputs.get(index) else { return Ok(false) };
+        // No such monitor is a failure, not "nothing changed": enumerating
+        // while the display is off (going to sleep, say) finds none, and
+        // only a failure makes the caller look again once it is back.
+        let Some(out) = self.outputs.get(index) else {
+            return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "no monitor attached"));
+        };
         let monitor = out.monitor;
         let d = match self.dups.entry(index) {
             Entry::Occupied(e) => e.into_mut(),
