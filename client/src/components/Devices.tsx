@@ -123,7 +123,7 @@ export function Devices() {
         </Show>
         <Show when={machines().length} fallback={
           <section class="intro">
-            <p class="hint lead">peek is a small, fast remote desktop for your own machines.</p>
+            <p class="hint lead">peek is a small, fast remote desktop, tailored for short sessions.</p>
             <p class="hint lead">Run it on a computer (Windows, or Linux on Wayland) on your{' '}
               <a href="https://tailscale.com">Tailscale</a> network and pair this browser with it once. Its screen
               is then a click away, with mouse, keyboard and clipboard.</p>
