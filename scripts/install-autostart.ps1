@@ -124,9 +124,15 @@ function Remove-PeekTask {
     Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
 }
 
+# A copy still in use (the very peek running `peek install`) cannot be
+# deleted; say so rather than fail halfway.
 function Remove-Copy([string]$path) {
     if ($path -and (Test-Path -LiteralPath $path)) {
-        Remove-Item -LiteralPath $path -Force
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $path) {
+            Say "Left $path in place: it is in use. Delete it once peek has exited."
+            return
+        }
         Remove-Item -LiteralPath (Split-Path $path) -ErrorAction SilentlyContinue
     }
 }
