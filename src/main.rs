@@ -5,6 +5,7 @@
 //! WebSocket handshake plus one frame.
 
 mod engine;
+mod install;
 mod pairing;
 mod platform;
 mod server;
@@ -117,6 +118,16 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 50)]
         lines: usize,
     },
+    /// Start peek in the background at logon: copies it to a fixed place and
+    /// registers a logon task and firewall rule (Windows, asks for
+    /// administrator) or a systemd user service (Linux). Flags after it are
+    /// for that peek, like `peek install --no-token`. Run again after an update
+    Install {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
+        args: Vec<String>,
+    },
+    /// Undo `peek install`
+    Uninstall,
 }
 
 /// Where the access token lives: %APPDATA%\peek on Windows, otherwise
@@ -374,6 +385,22 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             }
             _ => Err(format!("no paired browser has the id {id} (see `peek clients`)")),
         },
+        Command::Install { args: flags } => {
+            // --bind and --port are global flags, so clap takes them even
+            // after `install`; hand them on to the background peek too.
+            let given = |name: &str| flags.iter().any(|f| f == name || f.starts_with(&format!("{name}=")));
+            let (add_bind, add_port) = (!args.bind.is_unspecified() && !given("--bind"), args.port != 9182 && !given("--port"));
+            let mut flags = flags.clone();
+            if add_bind {
+                flags.extend(["--bind".into(), args.bind.to_string()]);
+            }
+            if add_port {
+                flags.extend(["--port".into(), args.port.to_string()]);
+            }
+            install::check_service_args(&flags)?;
+            install::install(&flags)
+        }
+        Command::Uninstall => install::uninstall(),
     }
 }
 

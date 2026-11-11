@@ -92,7 +92,7 @@ fn process_elevated(pid: u32) -> bool {
 }
 
 /// Whether this process runs as administrator.
-fn is_elevated() -> bool {
+pub fn is_elevated() -> bool {
     static ELEVATED: OnceLock<bool> = OnceLock::new();
     *ELEVATED.get_or_init(|| process_elevated(unsafe { GetCurrentProcessId() }))
 }
