@@ -1,0 +1,19 @@
+# Starts peek with the graphical session (niri, sway, ...). Install with:
+#   cp target/release/peek ~/.local/bin/
+#   cp scripts/peek.service ~/.config/systemd/user/
+#   systemctl --user enable --now peek
+# Flags for peek go on the ExecStart line.
+
+[Unit]
+Description=peek remote desktop host
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/peek
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

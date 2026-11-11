@@ -8,7 +8,9 @@ The host stays running and idle. A browser tab is the client. Capture only
 runs while a client tab is open and visible, so connecting costs one
 WebSocket handshake and one frame.
 
-Windows hosts only for now. The client is any modern desktop browser.
+The host runs on Windows, or on Linux under a Wayland compositor that offers
+the wlroots protocols (niri, sway, Hyprland, river). The client is any
+modern browser.
 
 ![peek in a browser: the host's desktop with the toolbar at the top and the stats panel open on the left](docs/screenshot.png)
 
@@ -16,7 +18,8 @@ Windows hosts only for now. The client is any modern desktop browser.
 
 ```
 cargo build --release
-target\release\peek.exe
+target\release\peek.exe        (Windows)
+target/release/peek            (Linux, from inside the Wayland session)
 ```
 
 Building needs [Bun](https://bun.sh) (or Node) as well as Rust: the browser
@@ -39,7 +42,7 @@ tailnet decides who can connect (see [Security](#security)).
 | `--fps <n>` | Frame rate cap (default 60) |
 | `--view-only` | Ignore mouse, keyboard and clipboard from clients |
 | `--no-clipboard` | Do not synchronise the clipboard |
-| `--detach` | Start in the background with no window, then return |
+| `--detach` | Windows: start in the background with no window, then return |
 | `--log <file>` | Also append log lines to a file |
 | `-v` | Log every input event and periodic throughput |
 
@@ -119,7 +122,7 @@ Full-screen frame sizes on a 1920x1200 desktop, from
 
 Half resolution divides each of these by about 2.7.
 
-### Install: firewall rule and start at logon, as administrator
+### Install on Windows: firewall rule and start at logon, as administrator
 
 Two things need administrator rights once:
 
@@ -138,6 +141,43 @@ This allows `peek.exe` through the firewall (private and Tailscale addresses
 only) and registers a logon task that starts peek elevated and hidden.
 `-Remove` undoes both. Flags for peek go in `-PeekArgs`; with
 `-PeekArgs '--no-token'` the firewall rule admits Tailscale addresses only.
+
+### Install on Linux: key access, start at login, firewall
+
+Keys are sent through a uinput keyboard, which needs write access to
+`/dev/uinput`. Many distributions grant it to the logged-in user already
+(KDE Connect and Steam ship a rule for it); check with
+`getfacl /dev/uinput` for a `user:<you>:rw-` line. If it is missing, as root:
+
+```
+echo 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"' \
+  > /etc/udev/rules.d/60-peek-uinput.rules
+udevadm control --reload && udevadm trigger --name-match=uinput
+```
+
+Without it peek still shows the screen and the mouse and typed text still
+work; it says so at startup.
+
+To start peek with the graphical session (systemd user service, which niri
+and sway sessions start):
+
+```
+cp target/release/peek ~/.local/bin/
+cp scripts/peek.service ~/.config/systemd/user/
+systemctl --user enable --now peek
+```
+
+`journalctl --user -u peek` shows its output, including the URLs.
+
+If a firewall is on, it has to let port 9182 in. With ufw, for Tailscale and
+a home LAN:
+
+```
+sudo ufw allow in on tailscale0 to any port 9182 proto tcp
+sudo ufw allow from 192.168.0.0/16 to any port 9182 proto tcp
+```
+
+`tailscale serve` (below) connects from the host itself and needs no rule.
 
 ### Install the client as an app (HTTPS through Tailscale)
 
@@ -161,8 +201,9 @@ it would put peek on the internet.
 
 ## How it works
 
-- **Capture**: DXGI Desktop Duplication. Windows delivers a frame only when
-  the screen changed, so a still desktop costs nothing.
+- **Capture**: DXGI Desktop Duplication on Windows, wlr-screencopy on
+  Wayland. Either delivers a frame only when the screen changed, so a still
+  desktop costs nothing.
 - **Diff**: the screen is cut into 64-pixel tiles and each frame is compared
   with the last. Changed tiles are merged into rectangles.
 - **Encode**: each rectangle is sent as a JPEG, encoded in parallel. Regions
@@ -170,16 +211,22 @@ it would put peek on the internet.
 - **Backpressure**: the client acknowledges each frame after drawing it, and
   the host keeps at most two unacknowledged. A slow link gets fewer frames,
   not growing lag.
-- **Input**: positions travel as fractions of the monitor and are injected
-  with `SendInput`. Keys travel as physical key codes, so the host's keyboard
-  layout decides what is typed.
+- **Input**: positions travel as fractions of the monitor. Keys travel as
+  physical key codes, so the host's keyboard layout decides what is typed.
+  Windows injects both with `SendInput`. On Wayland the pointer is a wlr
+  virtual pointer bound to the monitor, keys go through a uinput keyboard
+  (so the compositor's own shortcuts work, as with a real keyboard), and
+  text sent from a phone is typed through a virtual keyboard whose keymap
+  holds exactly those characters; the seat's own keymap is put back after.
 - **Clipboard** (text only): the host pushes its clipboard to clients when it
   changes. In the other direction, pressing Ctrl+V in the client sends the
-  local clipboard to the host before the paste.
+  local clipboard to the host before the paste. On Wayland this goes through
+  wlr-data-control.
 
 ## Security
 
-- Every socket needs the access token, stored in `%APPDATA%\peek\token`.
+- Every socket needs the access token, stored in `%APPDATA%\peek\token`
+  (Windows) or `~/.config/peek/token` (Linux).
 - Connections from anything but private, link-local and Tailscale addresses
   are refused.
 - A socket is accepted only from the page peek served: its `Origin` must
@@ -205,6 +252,10 @@ With `--no-token`:
 ## Limits
 
 - The lock screen and UAC prompts cannot be seen or controlled.
+- On Wayland the drawn pointer is always an arrow: other programs cannot
+  learn the pointer's shape there. niri shows peek as a screencast while a
+  client is watching.
+- GNOME and KDE Plasma lack the wlroots protocols peek uses on Linux.
 - The Windows key, Alt+Tab and Ctrl+W are taken by the client's own browser
   and OS. The Fullscreen button captures them, but only on an HTTPS page.
 - On a plain-HTTP page, text copied on the host reaches the local clipboard
@@ -222,6 +273,7 @@ src/server.rs             HTTP + WebSocket, authentication, input dispatch, clip
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
 src/platform/mod.rs       the interface a backend provides
 src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape
+src/platform/linux/       wlr-screencopy, virtual pointer, uinput, data-control
 build.rs                  builds the client before the host is compiled
 client/src/connection.ts  the socket: connecting, frame decoding, stats counters
 client/src/input.ts       mouse, keyboard and clipboard to the host
@@ -239,4 +291,7 @@ it serves the client with hot reload on http://localhost:5173 and forwards
 the socket to the host on port 9182.
 
 `cargo test` runs the unit tests. `cargo test -- --ignored` adds the ones
-that need a real desktop session.
+that need a real desktop session. On Linux, the test that clicks and types
+only runs with `PEEK_TEST_NESTED=1`, against a nested compositor (start
+`niri` from inside the session; it opens as a window with its own
+`WAYLAND_DISPLAY`).

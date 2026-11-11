@@ -92,9 +92,17 @@ fn process_elevated(pid: u32) -> bool {
 }
 
 /// Whether this process runs as administrator.
-pub fn is_elevated() -> bool {
+fn is_elevated() -> bool {
     static ELEVATED: OnceLock<bool> = OnceLock::new();
     *ELEVATED.get_or_init(|| process_elevated(unsafe { GetCurrentProcessId() }))
+}
+
+/// Lines to print at startup about what remote input can and cannot do.
+pub fn input_notes() -> Vec<String> {
+    if is_elevated() {
+        return Vec::new();
+    }
+    vec!["Not running as administrator: windows that are (Task Manager, installers) will ignore remote input.".into()]
 }
 
 /// True while the window in front belongs to an administrator process and we

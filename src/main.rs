@@ -206,10 +206,10 @@ fn main() {
             println!("Tailscale is not up yet; connections are accepted as soon as it is.");
         }
     }
-    if !args.view_only && !platform::is_elevated() {
-        println!(
-            "Not running as administrator: windows that are (Task Manager, installers) will ignore remote input."
-        );
+    if !args.view_only {
+        for note in platform::input_notes() {
+            println!("{note}");
+        }
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

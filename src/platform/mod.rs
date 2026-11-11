@@ -6,7 +6,7 @@
 //! - `clipboard`: `sequence`, `get_text`, `set_text`.
 //! - `cursor_name()`: CSS cursor name for the pointer shape currently shown.
 //! - `input_blocked()`: true while the OS is refusing our injected input.
-//! - `is_elevated()`: whether this process can control privileged windows.
+//! - `input_notes()`: lines for the console about what remote input cannot do.
 
 /// A monitor's position and size on the desktop, in physical pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,5 +31,10 @@ mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
 
-#[cfg(not(windows))]
-compile_error!("peek only has a Windows backend so far");
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use self::linux::*;
+
+#[cfg(not(any(windows, target_os = "linux")))]
+compile_error!("peek has Windows and Linux (Wayland) backends only");
