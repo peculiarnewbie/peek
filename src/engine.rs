@@ -257,6 +257,18 @@ impl Tiles {
         }
         None
     }
+
+    /// Record what a frame drew (see [`Frame`]): drawn tiles now have that
+    /// frame's quality, blurry for a moving pass unless drawn losslessly.
+    fn sent(&mut self, drawn: &[bool], exact: &[bool], moving: bool, now: Instant) {
+        for t in (0..drawn.len()).filter(|&t| drawn[t]) {
+            let lossy = moving && !exact.get(t).copied().unwrap_or(false);
+            if lossy && !self.lossy[t] {
+                self.changed_at[t] = now;
+            }
+            self.lossy[t] = lossy;
+        }
+    }
 }
 
 /// A rectangle in pixels.
@@ -511,9 +523,17 @@ const FLAG_SOFT: u8 = 4;
 /// WebP) between its position and its length.
 const FLAG_LOSSLESS: u8 = 8;
 
+/// One frame message, and what it does to the client's picture.
+struct Frame {
+    msg: Vec<u8>,
+    /// Tiles the frame draws: those asked for, and more when a coarse merge
+    /// takes in whole rows.
+    drawn: Vec<bool>,
+    /// Of those, the ones drawn losslessly (none without FLAG_LOSSLESS).
+    exact: Vec<bool>,
+}
+
 /// Build one frame message for a canvas of the screen shrunk by `scale`.
-/// Also returns the tiles that went out losslessly (none without
-/// FLAG_LOSSLESS), which need no sharp re-send.
 ///
 /// Layout (little-endian): u8 kind = 1, u32 seq, u16 width, u16 height,
 /// u16 count, u32 host time in microseconds (filled in by the caller once
@@ -523,14 +543,13 @@ const FLAG_LOSSLESS: u8 = 8;
 /// may be smaller than w x h; it is stretched to fit. Rectangles are drawn
 /// in order: lossless pieces come first, with their photo-like tiles painted
 /// flat, and JPEG rectangles over those tiles after.
-fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, flags: u8, seq: u32) -> (Vec<u8>, Vec<bool>) {
+fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, flags: u8, seq: u32) -> Frame {
     let full_chroma = flags & FLAG_FULL_CHROMA != 0;
     let factor = if flags & FLAG_SOFT != 0 { scale * 2 } else { scale };
     let rects = merge(tiles, screen.cols, screen.rows, screen.width, screen.height);
+    let mut covered = vec![false; tiles.len()];
+    cover(&rects, screen.cols, &mut covered);
     let (lossless, jpeg, exact) = if flags & FLAG_LOSSLESS != 0 {
-        // Every tile the rectangles cover (more than `tiles` after a coarse merge).
-        let mut covered = vec![false; tiles.len()];
-        cover(&rects, screen.cols, &mut covered);
         let mut exact: Vec<bool> = (0..tiles.len()).into_par_iter().map(|t| covered[t] && looks_flat(screen, t)).collect();
         let photo: Vec<bool> = covered.iter().zip(&exact).map(|(&c, &e)| c && !e).collect();
         // Many small JPEGs would cost more in headers and seams than drawing
@@ -583,7 +602,7 @@ fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, fla
         msg.extend_from_slice(&(data.len() as u32).to_le_bytes());
         msg.extend_from_slice(data);
     }
-    (msg, exact)
+    Frame { msg, drawn: covered, exact }
 }
 
 #[derive(Default)]
@@ -896,10 +915,9 @@ impl Engine {
 
         s.seq = s.seq.wrapping_add(1);
         let started = Instant::now();
-        let (mut msg, exact) = frame_message(screen, &tiles, s.view.scale, quality, flags, s.seq);
-        for (lossy, &e) in s.tiles.lossy.iter_mut().zip(&exact) {
-            *lossy &= !e;
-        }
+        let frame = frame_message(screen, &tiles, s.view.scale, quality, flags, s.seq);
+        s.tiles.sent(&frame.drawn, &frame.exact, pass == Pass::Moving, now);
+        let mut msg = frame.msg;
         let done = Instant::now();
         let host = done.duration_since(since.unwrap_or(started).min(started));
         msg[11..15].copy_from_slice(&(host.as_micros().min(u32::MAX as u128) as u32).to_le_bytes());
@@ -1018,7 +1036,7 @@ mod tests {
         let mut s = screen(200, 150);
         let data = frame(150, 800, &[(5, 5)]);
         s.update(Pixels { width: 200, height: 150, stride: 800, data: &data });
-        let (msg, exact) = frame_message(&s, &s.changed, 1, 70, FLAG_REFINE, 7);
+        let Frame { msg, exact, .. } = frame_message(&s, &s.changed, 1, 70, FLAG_REFINE, 7);
         assert!(exact.is_empty(), "nothing is lossless without the flag");
         assert_eq!(msg[0], 1);
         assert_eq!(u32::from_le_bytes(msg[1..5].try_into().unwrap()), 7);
@@ -1036,18 +1054,18 @@ mod tests {
         assert_eq!(jpeg_size(&msg[HEADER + 12..]), (64, 64));
 
         // half resolution: same tile, half the size
-        let half = frame_message(&s, &s.changed, 2, 70, 0, 8).0;
+        let half = frame_message(&s, &s.changed, 2, 70, 0, 8).msg;
         assert_eq!(u16::from_le_bytes(half[5..7].try_into().unwrap()), 100);
         assert_eq!((0..4).map(|i| at(&half, i)).collect::<Vec<_>>(), vec![0, 0, 32, 32]);
         assert_eq!(jpeg_size(&half[HEADER + 12..]), (32, 32));
 
         // soft: drawn at full size, encoded at half
-        let soft = frame_message(&s, &s.changed, 1, 70, FLAG_SOFT, 9).0;
+        let soft = frame_message(&s, &s.changed, 1, 70, FLAG_SOFT, 9).msg;
         assert_eq!((0..4).map(|i| at(&soft, i)).collect::<Vec<_>>(), vec![0, 0, 64, 64]);
         assert_eq!(jpeg_size(&soft[HEADER + 12..]), (32, 32));
 
         // soft at half resolution: drawn at half, encoded at a quarter
-        let both = frame_message(&s, &s.changed, 2, 70, FLAG_SOFT, 10).0;
+        let both = frame_message(&s, &s.changed, 2, 70, FLAG_SOFT, 10).msg;
         assert_eq!((0..4).map(|i| at(&both, i)).collect::<Vec<_>>(), vec![0, 0, 32, 32]);
         assert_eq!(jpeg_size(&both[HEADER + 12..]), (16, 16));
     }
@@ -1078,7 +1096,7 @@ mod tests {
                     (still_q, still_flags | FLAG_LOSSLESS),
                 ] {
                     let t = Instant::now();
-                    let n = frame_message(&s, &all, scale, quality, flags, 1).0.len();
+                    let n = frame_message(&s, &all, scale, quality, flags, 1).msg.len();
                     cells.push(format!("{:>9.0} KB {:>4.1} ms", n as f64 / 1024.0, t.elapsed().as_secs_f64() * 1e3));
                 }
                 let res = if scale == 1 { "full" } else { "half" };
@@ -1121,6 +1139,28 @@ mod tests {
         let (sent, pass) = tiles.next(at(520), false).unwrap();
         assert_eq!((on(&sent), pass), (vec![3], Pass::Refine));
         assert!(tiles.next(at(900), false).is_none());
+    }
+
+    #[test]
+    fn tiles_a_whole_row_merge_draws_blurry_get_sharpened_too() {
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let s = screen(1920, 256);
+        let mut tiles = Tiles::default();
+        tiles.reset(s.cols * s.rows, t0);
+        tiles.next(at(0), true);
+        // A checkerboard of changed tiles: more runs than MAX_RECTS, so the
+        // frame draws whole rows, from the first changed tile to the last.
+        let (col, row) = (|t: usize| t % s.cols, |t: usize| t / s.cols);
+        tiles.dirty = (0..s.cols * s.rows).map(|t| (col(t) + row(t)) % 2 == 0).collect();
+        let (sent, pass) = tiles.next(at(10), false).unwrap();
+        assert_eq!(pass, Pass::Moving);
+        let frame = frame_message(&s, &sent, 1, 70, 0, 1);
+        let drawn: Vec<bool> = (0..s.cols * s.rows).map(|t| if row(t) % 2 == 0 { col(t) < 29 } else { col(t) > 0 }).collect();
+        assert_eq!(frame.drawn, drawn);
+        tiles.sent(&frame.drawn, &frame.exact, true, at(10));
+        // Once still, everything drawn blurry is re-sent sharp.
+        assert_eq!(tiles.next(at(300), false), Some((drawn, Pass::Refine)));
     }
 
     #[test]
@@ -1222,7 +1262,7 @@ mod tests {
         let stripes = |x: usize, y: usize| if (x / 3 + y / 5) % 4 == 0 { [20, 30, 40] } else { [250, 245, 240] };
         let s = painted(192, 100, |x, y| if (64..128).contains(&x) && y < 64 { noise(x, y) } else { stripes(x, y) });
         let flags = FLAG_REFINE | FLAG_FULL_CHROMA | FLAG_LOSSLESS;
-        let (msg, exact) = frame_message(&s, &s.changed, 1, 90, flags, 3);
+        let Frame { msg, exact, .. } = frame_message(&s, &s.changed, 1, 90, flags, 3);
         assert_eq!(msg[16], flags);
         assert_eq!(exact, vec![true, false, true, true, true, true]);
         let p = parts(&msg);
@@ -1246,7 +1286,7 @@ mod tests {
         // Photos in tiles 0 and 2 of a row of four, text in 1 and 3.
         let s = painted(256, 64, |x, y| if x / 64 % 2 == 0 { noise(x, y) } else { [255, 255, (x / 3 % 2 * 255) as u8] });
         let jpegs = |tiles: &[bool]| {
-            let (msg, exact) = frame_message(&s, tiles, 1, 70, FLAG_LOSSLESS, 6);
+            let Frame { msg, exact, .. } = frame_message(&s, tiles, 1, 70, FLAG_LOSSLESS, 6);
             let rects = parts(&msg).iter().filter(|p| p.4 == 0).map(|p| (p.0, p.2)).collect::<Vec<_>>();
             (rects, exact)
         };
@@ -1259,7 +1299,7 @@ mod tests {
     #[test]
     fn lossless_at_half_resolution_is_the_downscaled_image() {
         let s = painted(128, 64, |x, _| if x < 64 { [0, 0, 0] } else { [200, 100, 50] });
-        let (msg, exact) = frame_message(&s, &s.changed, 2, 70, FLAG_LOSSLESS, 4);
+        let Frame { msg, exact, .. } = frame_message(&s, &s.changed, 2, 70, FLAG_LOSSLESS, 4);
         assert_eq!(exact, vec![true, true]);
         let p = parts(&msg);
         assert_eq!(p.iter().map(|q| (q.0, q.1, q.2, q.3, q.4)).collect::<Vec<_>>(), vec![(0, 0, 64, 32, 1)]);
@@ -1271,7 +1311,7 @@ mod tests {
     #[test]
     fn soft_frames_stay_jpeg_and_flagless_frames_are_unchanged() {
         let s = painted(64, 64, |x, y| if (x + y) % 9 == 0 { [0, 0, 0] } else { [255, 255, 255] });
-        let (msg, exact) = frame_message(&s, &s.changed, 1, 70, 0, 5);
+        let Frame { msg, exact, .. } = frame_message(&s, &s.changed, 1, 70, 0, 5);
         assert!(exact.is_empty());
         assert_eq!(&msg[HEADER + 12..HEADER + 14], &[0xFF, 0xD8], "no format byte without the flag");
     }
