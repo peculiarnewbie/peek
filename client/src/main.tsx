@@ -2,7 +2,7 @@ import { render } from 'solid-js/web';
 import { setSleep } from './actions';
 import { App } from './App';
 import { connect } from './connection';
-import { pairFromUrl } from './components/Machines';
+import { pairFromUrl } from './components/Devices';
 import { HOSTED } from './hosted';
 import './input';
 import './touch';
@@ -30,5 +30,6 @@ layout();
 setMessage('Connecting…');
 // Opened in the background (a restored tab, a second monitor): start paused.
 if (cfg.autoSleep && !document.hasFocus()) setSleep(true, true);
-if (HOSTED && location.pathname === '/pair') pairFromUrl(); else connect();
+// The hosted client connects to whichever machine its page shows (Devices.tsx).
+if (HOSTED) { if (location.pathname === '/pair') pairFromUrl(); } else connect();
 focusScreen();

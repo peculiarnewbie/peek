@@ -4,7 +4,7 @@ import { hooks, send } from './connection';
 import { cv, focusScreen } from './screen';
 import { active, autoSlept, cfg, clipboardOn, isTouch, settingsOpen, sleeping, viewOnly } from './state';
 import { clamp01 } from './util';
-import { current, machinesOpen, setMachinesOpen } from './hosted';
+import { current, HOSTED } from './hosted';
 
 // ---- mouse ----
 function pos(e: PointerEvent): [number, number] {
@@ -137,13 +137,10 @@ const META = new Set(['MetaLeft', 'MetaRight']);
 /** A key handled here (wake, close settings); its release stays here too. */
 let swallowKey: string | null = null;
 function key(e: KeyboardEvent, down: boolean) {
-  if (!e.code || e.code === 'Unidentified' || ownField(e)) return;
+  if (!e.code || e.code === 'Unidentified' || ownField(e) || (HOSTED && !current())) return;
   if (!down && e.code === swallowKey) { swallowKey = null; e.preventDefault(); return; }
   if (down && settingsOpen() && e.code === 'Escape') {
     e.preventDefault(); swallowKey = e.code; showSettings(false); return;
-  }
-  if (down && machinesOpen() && current() && e.code === 'Escape') {
-    e.preventDefault(); swallowKey = e.code; setMachinesOpen(false); return;
   }
   if (sleeping()) {
     // Nothing goes to the host while asleep; browser shortcuts keep working.

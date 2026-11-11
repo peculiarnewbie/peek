@@ -2,7 +2,7 @@ import { createEffect } from 'solid-js';
 import { BlockedNote, Message, SleepCard } from './components/Overlays';
 import { IconSprite } from './components/Icons';
 import { Keyboard } from './components/Keyboard';
-import { Machines } from './components/Machines';
+import { Devices } from './components/Devices';
 import { HOSTED } from './hosted';
 import { Settings } from './components/Settings';
 import { Stats } from './components/Stats';
@@ -25,7 +25,7 @@ export function App() {
       <Stats />
       <Toolbar />
       <Settings />
-      <Show when={HOSTED}><Machines /></Show>
+      <Show when={HOSTED}><Devices /></Show>
       <BlockedNote />
       <Keyboard />
     </>

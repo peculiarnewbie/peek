@@ -5,7 +5,7 @@ import {
 } from './state';
 import { countIn, countOut, ping, S, tick } from './stats';
 import { cv, ctx, resizeScreen } from './screen';
-import { current, HOSTED, setMachinesOpen } from './hosted';
+import { BLOCKED_HELP, current, HOSTED, localAccess } from './hosted';
 import { store } from './util';
 import type { PairOffer } from './components/PairDevice';
 
@@ -77,11 +77,7 @@ export function disconnect() {
 export function connect() {
   clearTimeout(retryTimer);
   const t = target();
-  if (!t) {
-    setMessage('');
-    setMachinesOpen(true);
-    return;
-  }
+  if (!t) { setMessage(''); return; }
   const q = new URLSearchParams({
     v: String(PROTOCOL), token: t.token, q: cfg.quality, scale: String(cfg.scale), fps: String(cfg.fps),
     soft: cfg.soft ? '1' : '0', mon: String(cfg.mon), vis: active() ? '1' : '0',
@@ -140,9 +136,9 @@ export function connect() {
       return;
     }
     failures++;
-    setMessage(HOSTED && failures > 2
-      ? `Cannot reach ${t.name}. Retrying… (Is Tailscale connected on this device?)`
-      : 'Reconnecting…');
+    setMessage(!HOSTED || failures <= 2 ? 'Reconnecting…'
+      : localAccess() === 'denied' ? BLOCKED_HELP
+      : `Cannot reach ${t.name}. Retrying… (Is Tailscale connected on this device?)`);
     retryTimer = setTimeout(connect, retry);
     retry = Math.min(retry * 2, 3000);
   };
