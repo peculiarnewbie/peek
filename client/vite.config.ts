@@ -22,10 +22,16 @@ const hostedHeaders = (): Plugin => ({
 
 // Two builds of the same client:
 // - default: one self-contained index.html, which the host embeds with include_str!;
-// - `--mode hosted`: the hosted client (dist-hosted/), deployed by hosted/wrangler.jsonc.
-export default defineConfig(({ mode }) => ({
-  plugins: [solid(), viteSingleFile(), ...(mode === 'hosted' ? [hostedHeaders()] : [])],
-  build: { target: 'es2022', outDir: mode === 'hosted' ? 'dist-hosted' : 'dist', emptyOutDir: true },
+// - `--mode hosted`: the hosted client, which `cf deploy --mode hosted` builds and
+//   deploys as described in cloudflare.config.ts. The Cloudflare plugin is loaded
+//   only then, so the host's build (under Bun) never needs it.
+export default defineConfig(async ({ mode }) => ({
+  plugins: [
+    solid(), viteSingleFile(),
+    ...(mode === 'hosted' ? [hostedHeaders(), (await import('@cloudflare/vite-plugin')).cloudflare()] : []),
+  ],
+  // (The Cloudflare plugin puts the hosted build in .cloudflare/output.)
+  build: { target: 'es2022', outDir: 'dist', emptyOutDir: true },
   // `bun run dev` serves the client with hot reload and forwards the socket
   // to a host running on this machine.
   server: { proxy: { '/ws': { target: 'ws://127.0.0.1:9182', ws: true } } },

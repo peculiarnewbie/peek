@@ -249,9 +249,11 @@ On the machine's side:
 - Chrome may ask once whether the site may access devices on your local
   network: allow it, since that is how it reaches your machines.
 
-To run your own copy of the site: `cd client && bun run build:hosted`, set
-your domain in `hosted/wrangler.jsonc`, `cd ../hosted && bunx wrangler
-deploy`, and start peek with `--web https://your.domain`.
+The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
+deploy:hosted` (the script runs `cf` under Node, which it needs; Bun cannot
+load its config). To run your own copy, set your worker name and domain in
+`client/cloudflare.config.ts`, deploy, and start peek with `--web
+https://your.domain`.
 
 ## How it works
 
@@ -335,7 +337,7 @@ client/src/input.ts       mouse, keyboard and clipboard to the host
 client/src/state.ts       settings and UI state, as Solid signals
 client/src/components/    toolbar, settings, stats panel, overlays, machine list, pairing
 client/src/hosted.ts      the hosted client: paired machines, pairing, reachability
-hosted/wrangler.jsonc     deploys the hosted client (client/dist-hosted) to Cloudflare
+client/cloudflare.config.ts  deploys the hosted client to Cloudflare (`cf deploy --mode hosted`)
 ```
 
 The client is TypeScript and [Solid](https://www.solidjs.com), bundled by
@@ -345,7 +347,8 @@ binary. `cargo build` runs that bundling through `build.rs`, so it needs
 
 For work on the client alone, run a host, then `bun run dev` in `client/`:
 it serves the client with hot reload on http://localhost:5173 and forwards
-the socket to the host on port 9182.
+the socket to the host on port 9182. `bun run dev:hosted` serves the hosted
+client the same way, in Cloudflare's local runtime.
 
 `cargo test` runs the unit tests. `cargo test -- --ignored` adds the ones
 that need a real desktop session. On Linux, the test that clicks and types
