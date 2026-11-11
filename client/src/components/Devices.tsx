@@ -12,6 +12,27 @@ import { setMessage } from '../state';
 import { Icon } from './Icons';
 import { canScan, QrScan } from './QrScan';
 
+/** Shell commands, one per line, with one button that copies them all. */
+function Commands(props: { lines: string[] }) {
+  const [copied, setCopied] = createSignal(false);
+  let timer: number | undefined;
+  const copy = () => {
+    navigator.clipboard.writeText(props.lines.join('\n')).then(() => {
+      setCopied(true);
+      clearTimeout(timer);
+      timer = window.setTimeout(() => setCopied(false), 1200);
+    }, () => {});
+  };
+  return (
+    <div class="cmds">
+      <code>{props.lines.join('\n')}</code>
+      <button type="button" class="cmd-copy" onClick={copy} aria-label="Copy commands" title="Copy">
+        <Icon name={copied() ? 'check' : 'copy'} />
+      </button>
+    </div>
+  );
+}
+
 const [error, setError] = createSignal('');
 const [hostField, setHostField] = createSignal('');
 const [codeField, setCodeField] = createSignal('');
@@ -129,14 +150,14 @@ export function Devices() {
               is then a click away, with mouse, keyboard and clipboard.</p>
             <p class="hint lead">This site only serves the page: your browser connects straight to each machine
               over Tailscale.</p>
-            <div class="figures">
-              <div><b>24<small> ms</small></b><span>from connecting to a whole 1080p frame, with the
-                machine idle until then</span></div>
-              <div><b>0.01<small> %</small></b><span>of one CPU core while nobody is looking: no capture runs</span></div>
-              <div><b>17<small> MB</small></b><span>of memory, in a 3.6 MB program</span></div>
-            </div>
-            <p class="hint small">Measured on the machine itself (Linux, 1920×1080); your network adds its round
-              trips. <a href="/docs/#numbers">How these were measured</a></p>
+            <Commands lines={['npm install -g @peculiarnewbie/peek', 'peek install', 'peek pair']} />
+            <ul class="figures">
+              <li><b>125 ms</b>from connecting to a whole 1080p frame over Tailscale, with the machine idle until then</li>
+              <li><b>24 ms</b>the same on the machine itself, peek's own share</li>
+              <li><b>0.01%</b>of one CPU core while nobody is looking: no capture runs</li>
+              <li><b>17 MB</b>of memory, in a 3.6 MB program</li>
+              <li><a href="/docs/#numbers">How these were measured</a></li>
+            </ul>
           </section>
         }>
           <div class="dgrid">
