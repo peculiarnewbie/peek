@@ -2,11 +2,14 @@ import { createEffect } from 'solid-js';
 import { BlockedNote, Message, SleepCard } from './components/Overlays';
 import { IconSprite } from './components/Icons';
 import { Keyboard } from './components/Keyboard';
+import { Machines } from './components/Machines';
+import { HOSTED } from './hosted';
 import { Settings } from './components/Settings';
 import { Stats } from './components/Stats';
 import { Toolbar } from './components/Toolbar';
 import { stage } from './screen';
 import { isTouch, sleeping } from './state';
+import { Show } from 'solid-js';
 
 export function App() {
   // Greyed-out screen behind the pause card.
@@ -22,6 +25,7 @@ export function App() {
       <Stats />
       <Toolbar />
       <Settings />
+      <Show when={HOSTED}><Machines /></Show>
       <BlockedNote />
       <Keyboard />
     </>

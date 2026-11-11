@@ -12,10 +12,11 @@ use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::connect_info::Connected;
 use axum::extract::{ConnectInfo, Query, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::body::Bytes;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::serve::{IncomingStream, Listener};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -23,6 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::engine::{Cmd, Out, Quality, View, ViewChange};
+use crate::pairing::{self, Pairing, RedeemError};
 use crate::platform::{self, Monitor, input};
 
 /// Close code telling the client its token is wrong (so it stops retrying).
@@ -43,6 +45,10 @@ const DEAD_AFTER: Duration = Duration::from_secs(15);
 pub struct Shared {
     /// None: no token, and only Tailscale connections are accepted.
     pub token: Option<String>,
+    /// Origin of the hosted client (e.g. https://peek.peculiarnewbie.com),
+    /// whose pages may connect with a paired token.
+    pub web: Option<String>,
+    pub pairing: Pairing,
     pub view_only: bool,
     pub clipboard: bool,
     pub verbose: bool,
@@ -65,6 +71,11 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()>
         .route("/icon-192.png", get(|| asset("image/png", ICON_192)))
         .route("/icon-512.png", get(|| asset("image/png", ICON_512)))
         .route("/ws", get(ws))
+        .route("/.well-known/peek", get(about).options(preflight))
+        .route("/api/pair", post(pair).options(preflight))
+        .route("/api/pair-code", post(local_pair_code))
+        .route("/api/clients", get(local_clients))
+        .route("/api/clients/revoke", post(local_revoke))
         .layer(middleware::from_fn_with_state(shared.clone(), ip_guard))
         .with_state(shared);
     // Input and small screen updates must not sit in Nagle's buffer.
@@ -217,8 +228,168 @@ async fn index() -> impl IntoResponse {
 
 /// Constant-time comparison, so response timing says nothing about the token.
 fn token_matches(given: &str, expected: &str) -> bool {
-    let (a, b) = (given.as_bytes(), expected.as_bytes());
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    pairing::same(given, expected)
+}
+
+fn header_str<'a>(headers: &'a HeaderMap, name: header::HeaderName) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// The request comes from a page of the hosted client.
+fn from_web(shared: &Shared, headers: &HeaderMap) -> bool {
+    shared.web.as_deref().is_some_and(|web| header_str(headers, header::ORIGIN) == Some(web))
+}
+
+/// CORS headers letting the hosted client, and only it, read a response.
+/// Chrome also asks before a public page may reach a private address.
+fn cors(shared: &Shared, req: &HeaderMap) -> HeaderMap {
+    let mut h = HeaderMap::new();
+    h.insert(header::VARY, HeaderValue::from_static("Origin"));
+    if from_web(shared, req) {
+        if let Some(origin) = req.get(header::ORIGIN) {
+            h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+        }
+        h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST"));
+        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type"));
+        h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+        if req.contains_key("access-control-request-private-network") {
+            h.insert("access-control-allow-private-network", HeaderValue::from_static("true"));
+        }
+    }
+    h
+}
+
+async fn preflight(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    (StatusCode::NO_CONTENT, cors(&shared, &headers)).into_response()
+}
+
+/// Who this host is: the hosted client checks it before pairing, and to
+/// show which paired machines are up.
+async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    let body = serde_json::json!({
+        "id": shared.pairing.host_id,
+        "name": pairing::machine_name(),
+        "protocol": PROTOCOL.parse::<u32>().unwrap_or(0),
+    });
+    (cors(&shared, &headers), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
+        .into_response()
+}
+
+/// Where a request really came from: behind `tailscale serve` every
+/// connection is from loopback, and the proxy names the client.
+fn client_ip(peer: &Peer, headers: &HeaderMap) -> String {
+    let ip = peer.remote.ip();
+    if canonical(ip).is_loopback() {
+        if let Some(fwd) = header_str(headers, header::HeaderName::from_static("x-forwarded-for")) {
+            return fwd.split(',').next().unwrap_or(fwd).trim().to_string();
+        }
+    }
+    ip.to_string()
+}
+
+#[derive(Deserialize)]
+struct PairRequest {
+    code: String,
+    #[serde(default)]
+    label: String,
+}
+
+/// Trade a one-time code for a token of this browser's own.
+async fn pair(
+    State(shared): State<Arc<Shared>>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cors = cors(&shared, &headers);
+    let json = |status: StatusCode, body: serde_json::Value| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
+            .into_response()
+    };
+    // Other pages must not even try; requests from outside a browser carry no Origin.
+    if headers.contains_key(header::ORIGIN) && !from_web(&shared, &headers) {
+        return json(StatusCode::FORBIDDEN, serde_json::json!({ "error": "origin" }));
+    }
+    let Ok(req) = serde_json::from_slice::<PairRequest>(&body) else {
+        return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": "request" }));
+    };
+    match shared.pairing.redeem(&req.code, &req.label) {
+        Ok((client, token)) => {
+            crate::log!("paired a browser: {} ({}) from {}", client.label, client.id, client_ip(&peer, &headers));
+            json(
+                StatusCode::OK,
+                serde_json::json!({
+                    "token": token,
+                    "client": client.id,
+                    "id": shared.pairing.host_id,
+                    "name": pairing::machine_name(),
+                }),
+            )
+        }
+        Err(RedeemError::Invalid) => {
+            crate::log!("wrong pairing code from {}", client_ip(&peer, &headers));
+            json(StatusCode::FORBIDDEN, serde_json::json!({ "error": "code" }))
+        }
+        Err(RedeemError::Busy) => json(StatusCode::TOO_MANY_REQUESTS, serde_json::json!({ "error": "busy" })),
+    }
+}
+
+/// A new pairing code, with the link that uses it.
+fn pairing_offer(shared: &Shared) -> serde_json::Value {
+    let code = match shared.pairing.new_code() {
+        Ok(code) => code,
+        Err(e) => return serde_json::json!({ "error": e.to_string() }),
+    };
+    let name = pairing::machine_name();
+    let host = pairing::tailscale_name();
+    let link = match (&shared.web, &host) {
+        (Some(web), Some(host)) => Some(pairing::pair_link(web, host, &name, &code)),
+        _ => None,
+    };
+    serde_json::json!({
+        "code": pairing::format_code(&code),
+        "expires": pairing::CODE_TTL.as_secs(),
+        "host": host,
+        "name": name,
+        "web": shared.web,
+        "link": link,
+    })
+}
+
+/// Requests from `peek` commands on this machine: they hold the secret in
+/// the config folder, and browsers (which send an Origin) are refused.
+fn local_ok(shared: &Shared, headers: &HeaderMap) -> bool {
+    let bearer = header_str(headers, header::AUTHORIZATION).and_then(|v| v.strip_prefix("Bearer "));
+    !headers.contains_key(header::ORIGIN) && bearer.is_some_and(|b| token_matches(b, &shared.pairing.local_secret))
+}
+
+async fn local_pair_code(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    if !local_ok(&shared, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let offer = tokio::task::spawn_blocking(move || pairing_offer(&shared)).await.unwrap_or_default();
+    ([(header::CONTENT_TYPE, "application/json")], offer.to_string()).into_response()
+}
+
+async fn local_clients(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    if !local_ok(&shared, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let list = serde_json::to_string(&shared.pairing.list()).unwrap_or_default();
+    ([(header::CONTENT_TYPE, "application/json")], list).into_response()
+}
+
+async fn local_revoke(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
+    if !local_ok(&shared, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let id = String::from_utf8_lossy(&body).trim().to_string();
+    if shared.pairing.revoke(&id) {
+        crate::log!("unpaired browser {id}");
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
 
 async fn ws(
@@ -229,7 +400,8 @@ async fn ws(
     upgrade: WebSocketUpgrade,
 ) -> Response {
     let addr = peer.remote;
-    if !origin_ok(&headers, shared.token.is_none()) {
+    let web = from_web(&shared, &headers);
+    if !web && !origin_ok(&headers, shared.token.is_none()) {
         let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("none");
         crate::log!("rejected socket from {} with origin {origin}", addr.ip());
         // Upgrade only to say why, so our own page stops retrying.
@@ -241,7 +413,7 @@ async fn ws(
     }
     upgrade
         .max_message_size(MAX_CLIPBOARD * 4 + 4096)
-        .on_upgrade(move |socket| client(socket, shared, query, addr))
+        .on_upgrade(move |socket| client(socket, shared, query, addr, web))
 }
 
 #[derive(Deserialize)]
@@ -283,6 +455,9 @@ enum ClientMsg {
     /// Answered straight away, for the client's round-trip measurement.
     #[serde(rename = "ping")]
     Ping { n: u32 },
+    /// A one-time code for pairing another browser through the hosted client.
+    #[serde(rename = "paircode")]
+    PairCode,
 }
 
 /// What one client is currently holding down, so it can be let go of.
@@ -307,9 +482,14 @@ impl Held {
     }
 }
 
-async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<String, String>, addr: SocketAddr) {
+/// `web`: opened by the hosted client, which always needs a token (a paired
+/// one, or the host's own), even on a host started with `--no-token`.
+async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<String, String>, addr: SocketAddr, web: bool) {
     let given = query.get("token").map_or("", String::as_str);
-    if shared.token.as_deref().is_some_and(|expected| !token_matches(given, expected)) {
+    let paired = shared.pairing.check(given);
+    let host_token = shared.token.as_deref().is_some_and(|expected| token_matches(given, expected));
+    let needs_token = web || shared.token.is_some();
+    if needs_token && paired.is_none() && !host_token {
         crate::log!("bad token from {}", addr.ip());
         let _ = socket
             .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_TOKEN, reason: "bad token".into() })))
@@ -347,7 +527,10 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
     });
     let reply = tx.clone();
     shared.peers.lock().unwrap().insert(id, tx);
-    crate::log!("client connected: {}", addr.ip());
+    match &paired {
+        Some(c) => crate::log!("client connected: {} ({})", addr.ip(), c.label),
+        None => crate::log!("client connected: {}", addr.ip()),
+    }
 
     let (mut sink, mut stream) = socket.split();
     let writer = tokio::spawn(async move {
@@ -485,6 +668,15 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                     *shared.clip_last.lock().unwrap() = s.clone();
                     platform::clipboard::set_text(&s);
                 }
+            }
+            ClientMsg::PairCode => {
+                let shared = shared.clone();
+                let reply = reply.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut offer = pairing_offer(&shared);
+                    offer["t"] = "paircode".into();
+                    let _ = reply.send(Out::Text(offer.to_string()));
+                });
             }
             ClientMsg::Ping { n } => {
                 // Queued behind any frames already waiting, which is the

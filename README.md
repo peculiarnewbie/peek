@@ -37,6 +37,7 @@ tailnet decides who can connect (see [Security](#security)).
 | Flag | Meaning |
 |---|---|
 | `--no-token` | No access token; accept Tailscale connections only |
+| `--web <origin>` | The hosted client allowed to connect with paired tokens (default `https://peek.peculiarnewbie.com`; `none` turns it off) |
 | `--bind <ip>` | Address to listen on (default: all interfaces) |
 | `--port <n>` | Port (default 9182) |
 | `--fps <n>` | Frame rate cap (default 60) |
@@ -203,6 +204,50 @@ Connections through `tailscale serve` reach peek from the host itself, which
 peek accepts in either mode. Do not expose that port with `tailscale funnel`:
 it would put peek on the internet.
 
+## One site for all your machines
+
+https://peek.peculiarnewbie.com is the same client, served from one place
+and paired with any number of machines. Switch between them from the
+toolbar's machine button, like a KVM switch. The site only serves the page:
+the browser connects straight to each machine over Tailscale, and the list
+of machines and their tokens stay in that browser.
+
+The browser reaches each machine at `https://<machine>.<tailnet>.ts.net`,
+which needs, once per tailnet, **HTTPS Certificates** turned on in the
+Tailscale admin console under **DNS** (this puts machine and tailnet names in
+the public Certificate Transparency logs). `peek pair` sets up the rest: it
+runs `tailscale serve --bg http://127.0.0.1:9182` if Serve does not already
+forward there, and Tailscale prints a link if the tailnet still has to allow
+Serve. On Linux, Tailscale may first ask for
+`sudo tailscale set --operator=$USER`. The first connection to a machine can
+take a few seconds while Tailscale fetches its certificate.
+
+Then pair each browser with each machine:
+
+- `peek pair` on the machine prints a link and a QR code with a one-time
+  code (it works once, for five minutes). Open it on the device, or enter
+  the machine's name and the code under **Add a machine**.
+- Or, in a client already connected to the machine, **Settings → Pair a
+  device** shows the same QR code, for a phone to scan.
+
+The browser trades the code for a token of its own. `peek clients` lists
+the paired browsers and `peek unpair <id>` removes one.
+
+On the machine's side:
+
+- Sockets from the site are accepted only with a paired token (or the
+  machine's own access token), even with `--no-token`. Requests from any
+  other site are refused.
+- The machine keeps only a hash of each token, in `clients.json` in its
+  config folder, next to `host-id` (which tells machines apart) and
+  `local-secret` (which lets `peek pair` ask the running peek for a code).
+- Chrome may ask once whether the site may access devices on your local
+  network: allow it, since that is how it reaches your machines.
+
+To run your own copy of the site: `cd client && bun run build:hosted`, set
+your domain in `hosted/wrangler.jsonc`, `cd ../hosted && bunx wrangler
+deploy`, and start peek with `--web https://your.domain`.
+
 ## How it works
 
 - **Capture**: DXGI Desktop Duplication on Windows, wlr-screencopy on
@@ -272,8 +317,9 @@ With `--no-token`:
 ## Layout
 
 ```
-src/main.rs               arguments, token, startup
-src/server.rs             HTTP + WebSocket, authentication, input dispatch, clipboard watcher
+src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair`
+src/server.rs             HTTP + WebSocket, authentication, pairing endpoints, input dispatch, clipboard watcher
+src/pairing.rs            one-time codes, paired browsers' token hashes
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
 src/platform/mod.rs       the interface a backend provides
 src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape
@@ -282,7 +328,9 @@ build.rs                  builds the client before the host is compiled
 client/src/connection.ts  the socket: connecting, frame decoding, stats counters
 client/src/input.ts       mouse, keyboard and clipboard to the host
 client/src/state.ts       settings and UI state, as Solid signals
-client/src/components/    toolbar, settings, stats panel, overlays
+client/src/components/    toolbar, settings, stats panel, overlays, machine list, pairing
+client/src/hosted.ts      the hosted client: paired machines, pairing, reachability
+hosted/wrangler.jsonc     deploys the hosted client (client/dist-hosted) to Cloudflare
 ```
 
 The client is TypeScript and [Solid](https://www.solidjs.com), bundled by

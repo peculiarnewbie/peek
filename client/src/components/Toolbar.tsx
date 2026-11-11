@@ -5,6 +5,7 @@ import {
   barOpen, cfg, fullscreen, isTouch, live, monitors, pinned, setBarOpen, setIsTouch, settingsOpen, sleeping,
   statsMode, touchMode, viewOnly,
 } from '../state';
+import { current, HOSTED, machinesOpen, setMachinesOpen } from '../hosted';
 import { Icon } from './Icons';
 
 /** The pill at the top: a dot until hovered (or tapped), unless pinned or settings are open. */
@@ -33,6 +34,12 @@ export function Toolbar() {
       </div>
       <div class="more">
         <span class="sep" />
+        <Show when={HOSTED}>
+          <button id="b-machines" class="tb" tabIndex={-1} aria-pressed={machinesOpen()}
+            title="Switch machine" onClick={() => setMachinesOpen(!machinesOpen())}>
+            <Icon name="monitor" /><span>{current()?.name ?? 'Machines'}</span>
+          </button>
+        </Show>
         <button id="b-sleep" class="tb" tabIndex={-1} onClick={() => setSleep(!sleeping())}>
           <Show when={sleeping()} fallback={<><Icon name="moon" /><span>Sleep</span></>}>
             <Icon name="play" /><span>Resume</span>

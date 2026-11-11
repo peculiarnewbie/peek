@@ -5,7 +5,9 @@ import {
 } from './state';
 import { countIn, countOut, ping, S, tick } from './stats';
 import { cv, ctx, resizeScreen } from './screen';
+import { current, HOSTED, setMachinesOpen } from './hosted';
 import { store } from './util';
+import type { PairOffer } from './components/PairDevice';
 
 /** Must match the host's wire format version. */
 const PROTOCOL = 4;
@@ -16,15 +18,29 @@ const CLOSE_OUTDATED = 4426;
 
 // Access token: arrives once in the URL fragment, then lives in localStorage.
 // A host started with --no-token needs none, so connecting without one is fine.
+// (The hosted client pairs instead: see hosted.ts.)
 function takeToken() {
   const t = location.hash.slice(1);
   if (t) { store.set('token', t); history.replaceState(null, '', location.pathname); }
   return t;
 }
-const token = takeToken() || store.get('token') || '';
+const token = HOSTED ? '' : takeToken() || store.get('token') || '';
 // Entering the full URL in a tab that already shows this page only changes the
 // fragment, which does not reload the page, so pick the token up here.
-addEventListener('hashchange', () => { if (takeToken()) location.reload(); });
+if (!HOSTED) addEventListener('hashchange', () => { if (takeToken()) location.reload(); });
+
+/** Where the socket goes: the host that served this page, or the chosen machine. */
+function target(): { url: string; token: string; name: string } | null {
+  if (!HOSTED) {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    return { url: `${proto}://${location.host}/ws`, token, name: 'the host' };
+  }
+  const m = current();
+  return m && { url: `wss://${m.host}/ws`, token: m.token, name: m.name };
+}
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+/** Failed attempts in a row, to say so once a machine stays away. */
+let failures = 0;
 
 let ws: WebSocket | null = null;
 let retry = 250;
@@ -32,7 +48,11 @@ let retry = 250;
 let chain = Promise.resolve();
 
 /** Set by the input code: the host's clipboard changed / its pointer shape changed. */
-export const hooks = { clip: (_text: string) => {}, cursor: (_css: string) => {} };
+export const hooks = {
+  clip: (_text: string) => {},
+  cursor: (_css: string) => {},
+  paircode: (_offer: PairOffer) => {},
+};
 
 export function send(o: object) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -41,16 +61,36 @@ export function send(o: object) {
   ws.send(text);
 }
 
+/** Drop the connection (to switch machines), without reconnecting. */
+export function disconnect() {
+  clearTimeout(retryTimer);
+  const sock = ws;
+  ws = null;
+  sock?.close();
+  setLive(false);
+  setBlocked(false);
+  setMonitors([]);
+  chain = Promise.resolve();
+  ctx.clearRect(0, 0, cv.width, cv.height);
+}
+
 export function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  clearTimeout(retryTimer);
+  const t = target();
+  if (!t) {
+    setMessage('');
+    setMachinesOpen(true);
+    return;
+  }
   const q = new URLSearchParams({
-    v: String(PROTOCOL), token, q: cfg.quality, scale: String(cfg.scale), fps: String(cfg.fps),
+    v: String(PROTOCOL), token: t.token, q: cfg.quality, scale: String(cfg.scale), fps: String(cfg.fps),
     soft: cfg.soft ? '1' : '0', mon: String(cfg.mon), vis: active() ? '1' : '0',
   });
-  const sock = ws = new WebSocket(`${proto}://${location.host}/ws?${q}`);
+  const sock = ws = new WebSocket(`${t.url}?${q}`);
   sock.binaryType = 'arraybuffer';
   sock.onopen = () => {
     retry = 250;
+    failures = 0;
     setMessage('');
     setLive(true);
     // Pausing or resuming while the socket was still connecting (focus often
@@ -73,13 +113,19 @@ export function connect() {
     setLive(false);
     setBlocked(false);
     if (e.code === CLOSE_BAD_TOKEN) {
+      if (HOSTED) {
+        setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`);
+        return;
+      }
       store.set('token', '');
       setMessage((token ? 'Wrong access token.' : 'This host needs an access token.') +
         ' Open the full URL the host printed (it ends in #token).');
       return;
     }
     if (e.code === CLOSE_BAD_ORIGIN) {
-      setMessage('The host refused this address. Open it by its IP address or Tailscale name.');
+      setMessage(HOSTED
+        ? `${t.name} does not accept this site. Start peek there with --web ${location.origin}.`
+        : 'The host refused this address. Open it by its IP address or Tailscale name.');
       return;
     }
     if (e.code === CLOSE_OUTDATED) {
@@ -88,11 +134,16 @@ export function connect() {
       if (Date.now() - Number(sessionStorage.getItem('peek-reloaded') || 0) > 10000) {
         sessionStorage.setItem('peek-reloaded', String(Date.now()));
         location.reload();
-      } else setMessage('This page does not match the host version. Reload it.');
+      } else setMessage(HOSTED
+        ? `${t.name} runs a different version of peek than this site. Update peek there.`
+        : 'This page does not match the host version. Reload it.');
       return;
     }
-    setMessage('Reconnecting…');
-    setTimeout(connect, retry);
+    failures++;
+    setMessage(HOSTED && failures > 2
+      ? `Cannot reach ${t.name}. Retrying… (Is Tailscale connected on this device?)`
+      : 'Reconnecting…');
+    retryTimer = setTimeout(connect, retry);
     retry = Math.min(retry * 2, 3000);
   };
 }
@@ -102,7 +153,8 @@ type HostMsg =
   | { t: 'cur'; c: string }
   | { t: 'blocked'; v: boolean }
   | { t: 'clip'; s: string }
-  | { t: 'pong'; n: number };
+  | { t: 'pong'; n: number }
+  | ({ t: 'paircode' } & PairOffer);
 
 function onJson(m: HostMsg) {
   switch (m.t) {
@@ -118,6 +170,9 @@ function onJson(m: HostMsg) {
       break;
     case 'clip':
       hooks.clip(m.s);
+      break;
+    case 'paircode':
+      hooks.paircode(m);
       break;
     case 'pong':
       if (m.n === ping.n) { S.rtt += performance.now() - ping.at; S.pongs++; }

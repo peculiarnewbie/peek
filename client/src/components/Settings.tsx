@@ -1,7 +1,8 @@
 import { For, Show } from 'solid-js';
 import { applyCfg } from '../actions';
 import { focusScreen } from '../screen';
-import { cfg, FPS_STEPS, monitors, QUALITY, settingsOpen, type Cfg } from '../state';
+import { cfg, FPS_STEPS, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
+import { PairDevice } from './PairDevice';
 
 const PRESETS: [string, Partial<Cfg>][] = [
   ['Saver', { quality: 'low', scale: 1, soft: true, fps: 30 }],
@@ -41,6 +42,11 @@ function Segmented<T>(props: { options: [T, string][]; selected: (v: T) => boole
         <button tabIndex={-1} role="radio" aria-checked={props.selected(value)}
           onClick={() => { props.pick(value); focusScreen(); }}>{text}</button>
       }</For>
+      <Show when={!viewOnly()}>
+        <Group label="Pair a device" value="">
+          <PairDevice />
+        </Group>
+      </Show>
     </div>
   );
 }
