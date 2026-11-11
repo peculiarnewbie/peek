@@ -4,7 +4,7 @@
 // navigation keys) for everything a phone keyboard lacks.
 import { createSignal, For, onCleanup, onMount } from 'solid-js';
 import {
-  dock, field, keyDown, keyUp, lockModifier, mods, resetText, setDock, shifted, syncText, tap, tapModifier,
+  dock, field, keyDown, keyUp, lockModifier, mods, sendDraft, setDock, shifted, tap, tapModifier,
 } from '../keyboard';
 import { setBottomInset } from '../screen';
 import { isTouch } from '../state';
@@ -112,30 +112,40 @@ export function Keyboard() {
     onCleanup(() => ro.disconnect());
   });
 
-  // Keys the phone's keyboard does send as keys (Enter, and Backspace or
-  // arrows on an empty field) go to the host as keys.
+  // Android's Back closes the phone's keyboard but leaves the field focused,
+  // so the next tap anywhere would bring the keyboard back. Seeing the window
+  // grow back to its full height while the field has focus means the
+  // keyboard went away: let go of the field too.
+  onMount(() => {
+    const height = () => window.visualViewport?.height ?? innerHeight;
+    let full = height();
+    const onResize = () => {
+      if (document.activeElement !== field.el) { full = height(); return; }
+      if (height() >= full - 80) field.el?.blur();
+    };
+    addEventListener('resize', onResize);
+    visualViewport?.addEventListener('resize', onResize);
+    onCleanup(() => { removeEventListener('resize', onResize); visualViewport?.removeEventListener('resize', onResize); });
+  });
+
+  // The phone keyboard's Enter (shown as Send) sends the draft. On an empty
+  // field, keys it reports as keys (Backspace, arrows) go to the host.
   const onKeyDown = (e: KeyboardEvent) => {
     e.stopPropagation();
-    const empty = !(e.currentTarget as HTMLInputElement).value;
-    if (e.key === 'Enter') { e.preventDefault(); tap('Enter'); resetText(); }
+    const empty = !(e.currentTarget as HTMLTextAreaElement).value;
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendDraft(); }
     else if (empty && e.code && e.key.length > 1 && e.key !== 'Unidentified' && e.key !== 'Process') {
       e.preventDefault();
       tap(e.code);
     }
   };
 
-  // ⌫ in the bar: takes a character off the field if there is one (which
-  // deletes it on the host), else presses Backspace. Repeats while held.
+  // ⌫ in the bar is the host's Backspace, repeating while held.
   let repeat: ReturnType<typeof setTimeout> | undefined;
-  const backspace = () => {
-    const el = field.el;
-    if (el && el.value) { el.value = [...el.value].slice(0, -1).join(''); syncText(el.value); }
-    else tap('Backspace');
-  };
   const holdBackspace = (e: PointerEvent) => {
     e.preventDefault();
-    backspace();
-    const again = (wait: number) => { repeat = setTimeout(() => { backspace(); again(60); }, wait); };
+    tap('Backspace');
+    const again = (wait: number) => { repeat = setTimeout(() => { tap('Backspace'); again(60); }, wait); };
     again(400);
   };
   const stopBackspace = () => clearTimeout(repeat);
@@ -146,14 +156,15 @@ export function Keyboard() {
       <div class="kbd-bar">
         <button class="kbd-btn" tabIndex={-1} title="PC keyboard: Esc, Ctrl, F-keys, arrows…" onPointerDown={keep}
           onClick={() => setDock('keys')}><Icon name="keyboard" /></button>
-        <input id="kbd-text" ref={el => { field.el = el; }} placeholder="Send text" autocomplete="off"
-          autocapitalize="off" enterkeyhint="send"
-          onInput={e => syncText(e.currentTarget.value)} onKeyDown={onKeyDown} />
-        <button class="kbd-btn" tabIndex={-1} title="Backspace" onPointerDown={holdBackspace}
+        {/* A textarea, not an input: Chrome puts its autofill bar (passwords,
+            cards, addresses) above the keyboard for inputs. */}
+        <textarea id="kbd-text" ref={el => { field.el = el; }} placeholder="Send text" rows={1}
+          autocomplete="off" autocapitalize="off" enterkeyhint="send" onKeyDown={onKeyDown} />
+        <button class="kbd-btn" tabIndex={-1} title="Backspace on the host" onPointerDown={holdBackspace}
           onPointerUp={stopBackspace} onPointerCancel={stopBackspace} onPointerLeave={stopBackspace}>
           <Icon name="backspace" /></button>
-        <button class="kbd-btn" tabIndex={-1} title="Enter" onPointerDown={keep}
-          onClick={() => { tap('Enter'); resetText(); }}><Icon name="enter" /></button>
+        <button class="kbd-btn" tabIndex={-1} title="Send the text; Enter when there is none" onPointerDown={keep}
+          onClick={sendDraft}><Icon name="enter" /></button>
       </div>
       <div class="kbd-keys">
         <For each={fn() ? FN : MAIN}>{row =>

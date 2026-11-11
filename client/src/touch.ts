@@ -13,7 +13,6 @@ import { hooks, send } from './connection';
 import { sendButton, sendMove } from './input';
 import { areaH, areaW, onViewChange, panBy, shownRect, stage, toCanvas, view, zoomed, zoomTo } from './screen';
 import { setBarOpen, setIsTouch, settingsOpen, touchMode } from './state';
-import { resetText } from './keyboard';
 import { clamp01 } from './util';
 
 /** CSS px a finger may wander and still count as a tap or a press. */
@@ -156,8 +155,6 @@ stage.addEventListener('pointerdown', e => {
   e.preventDefault();
   setIsTouch(true);
   setBarOpen(false);
-  // The host's caret may move; the text field starts over.
-  resetText();
   const now = performance.now();
   fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t: now });
   if (fingers.size === 1) {

@@ -113,8 +113,8 @@ function copyViaSelection(text: string) {
 const PASTE_WAIT = 150;
 let pasteTimer: ReturnType<typeof setTimeout> | null = null, swallowV = false;
 function pressV() { send({ t: 'k', c: 'KeyV', d: 1 }); send({ t: 'k', c: 'KeyV', d: 0 }); }
-/** Typing in a field of our own (the phone keyboard's text field) is not for the host. */
-const ownField = (e: Event) => e.target instanceof HTMLInputElement;
+/** Typing in the keyboard bar's text field is not for the host (until it is sent). */
+const ownField = (e: Event) => (e.target as Element | null)?.id === 'kbd-text';
 document.addEventListener('paste', e => {
   if (ownField(e)) return;
   e.preventDefault();

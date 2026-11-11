@@ -11,41 +11,27 @@ export type Dock = 'text' | 'keys';
 export const [dock, setDockSignal] = createSignal<Dock>('text');
 
 // ---- the text field ----
-// Phone keyboards (Gboard and the like) do not report keys: they edit the
-// field, with autocorrect, swipe typing and suggestions. So we watch the
-// field's text and make the host's match it: whatever changed since the
-// last edit is deleted with Backspace and typed again as characters. A
-// correction that turns "teh " into "the " sends two Backspaces and "he ".
-
-/** The part of the field the host has typed. */
-let sent = '';
-export const field: { el: HTMLInputElement | null } = { el: null };
+// A draft: typed and corrected on the phone with its own keyboard, then sent
+// to the host in one go. With the field empty, Enter and Backspace (and
+// arrows, if the phone's keyboard has them) go to the host as keys.
+export const field: { el: HTMLTextAreaElement | null } = { el: null };
 
 export function tap(code: string) {
   send({ t: 'k', c: code, d: 1 });
   send({ t: 'k', c: code, d: 0 });
 }
 
-export function syncText(value: string) {
-  let i = 0;
-  while (i < sent.length && i < value.length && sent[i] === value[i]) i++;
-  // Never split a surrogate pair: back up to the start of the character.
-  if (i > 0 && /[\uD800-\uDBFF]/.test(sent[i - 1])) i--;
-  // One Backspace per character (code point) removed.
-  for (let n = [...sent.slice(i)].length; n > 0; n--) tap('Backspace');
-  const added = value.slice(i);
-  if (added) send({ t: 'type', s: added });
-  sent = value;
-}
-
-/** Start over with an empty field, e.g. after Enter or when the host's caret may have moved. */
-export function resetText() {
-  sent = '';
-  if (field.el) field.el.value = '';
+/** Send the draft and empty the field; with nothing in it, press Enter. */
+export function sendDraft() {
+  const el = field.el;
+  if (el?.value) {
+    send({ t: 'type', s: el.value });
+    el.value = '';
+  } else tap('Enter');
 }
 
 export function setDock(d: Dock) {
-  if (d === 'keys') { field.el?.blur(); resetText(); }   // the PC keyboard replaces the phone's
+  if (d === 'keys') field.el?.blur();   // the PC keyboard replaces the phone's
   else releaseModifiers();
   setDockSignal(d);
 }

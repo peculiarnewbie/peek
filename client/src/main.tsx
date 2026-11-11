@@ -16,7 +16,7 @@ addEventListener('resize', layout);
 // does: a tap anywhere else would close the phone's keyboard.
 document.addEventListener('pointerdown', e => {
   const target = e.target as Element;
-  if (target.closest?.('button') || (e.pointerType === 'touch' && !target.closest?.('input'))) e.preventDefault();
+  if (target.closest?.('button') || (e.pointerType === 'touch' && target.id !== 'kbd-text')) e.preventDefault();
 }, true);
 document.addEventListener('fullscreenchange', () => setFullscreen(!!document.fullscreenElement));
 

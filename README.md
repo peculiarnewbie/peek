@@ -96,11 +96,11 @@ A keyboard bar is always at the bottom; the remote screen fits into the
 space above it. The client never opens the phone's keyboard by itself: tap
 the field when you want it.
 
-- **Send text** is a text field for the phone's own keyboard. What you type
-  appears on the host as you type it, autocorrect and swipe typing
-  included: when the phone changes a word, the host's copy is corrected
-  too. Enter, and Backspace or arrows on an empty field, go through as
-  keys. Tapping the remote screen starts the field over.
+- **Send text** is a draft for the phone's own keyboard: type and correct it
+  on the phone, then the keyboard's Send key (or ↵ in the bar) types it on
+  the host in one go. With the field empty, Send presses Enter on the host,
+  and Backspace (or arrows, if the phone's keyboard has them) go through as
+  keys. ⌫ in the bar is always the host's Backspace.
 - The keyboard button at its left swaps in a **PC keyboard** for what a
   phone keyboard lacks. Ctrl, Alt, Win and Shift apply to the next key
   (tap again to let go; tap Win twice for the Start menu); press and hold

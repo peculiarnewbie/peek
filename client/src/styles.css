@@ -175,7 +175,8 @@ body.sleeping #cursor { display: none; }
 body.sleeping #kbd { pointer-events: none; opacity: .4; }
 #kbd.keys .kbd-bar, #kbd:not(.keys) .kbd-keys { display: none; }
 .kbd-bar { display: flex; align-items: center; gap: 2px; padding: 6px 6px; }
-#kbd-text { flex: 1; min-width: 0; height: 38px; padding: 0 12px; margin: 0 4px; box-sizing: border-box;
+#kbd-text { flex: 1; min-width: 0; height: 38px; padding: 8px 12px; margin: 0 4px; box-sizing: border-box;
+  resize: none; line-height: 20px; overflow: hidden; white-space: nowrap;
   border: 1px solid var(--line); border-radius: 8px; background: var(--page); color: var(--ink);
   font: 16px var(--sans); outline: none; -webkit-user-select: text; user-select: text; }
 #kbd-text:focus { border-color: var(--s1); }
