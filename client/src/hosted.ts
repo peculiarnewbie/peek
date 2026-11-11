@@ -33,14 +33,18 @@ function setMachines(list: Machine[]) {
 }
 
 // ---- pages ----
-// `/` lists the machines; `/<name>` shows one (its Tailscale name's first
-// part, unique in a tailnet). Plain history entries, so Back returns to the list.
-// The site's own pages keep their paths: a machine named like one goes by its id.
-const RESERVED = new Set(['docs', 'pair']);
-export const slug = (m: Machine) => {
-  const name = m.host.split('.')[0];
-  return RESERVED.has(name) ? m.id : name;
-};
+// `/` lists the machines; `/screen/<name>` shows one (its Tailscale name's
+// first part, unique in a tailnet). Plain history entries, so Back returns to
+// the list. The site's own pages (/docs/, /changelog/, /pair) sit beside
+// /screen/, so no machine's name can take one of their addresses.
+const SCREEN = '/screen/';
+const slug = (m: Machine) => m.host.split('.')[0].toLowerCase();
+export const screenPath = (m: Machine) => SCREEN + slug(m);
+// Until 0.2.0 a machine's page was `/<name>` (or `/<id>`); bookmarks of one
+// still lead to it.
+if (HOSTED && /^\/[^/]+$/.test(location.pathname) && location.pathname !== '/pair') {
+  history.replaceState(null, '', SCREEN + location.pathname.slice(1) + location.search + location.hash);
+}
 const [path, setPath] = createSignal(location.pathname);
 addEventListener('popstate', () => setPath(location.pathname));
 export function navigate(to: string, replace = false) {
@@ -50,10 +54,12 @@ export function navigate(to: string, replace = false) {
 }
 /** The machine this page shows, or null on the list. */
 export const current = () => {
-  const name = decodeURIComponent(path().slice(1)).toLowerCase();
+  if (!path().startsWith(SCREEN)) return null;
+  let name: string;
+  try { name = decodeURIComponent(path().slice(SCREEN.length)).replace(/\/+$/, '').toLowerCase(); } catch { return null; }
   return (name && machines().find(m => slug(m) === name || m.id === name)) || null;
 };
-export const openMachine = (m: Machine) => navigate(`/${slug(m)}`);
+export const openMachine = (m: Machine) => navigate(screenPath(m));
 export const home = () => navigate('/');
 
 export function forget(id: string) {

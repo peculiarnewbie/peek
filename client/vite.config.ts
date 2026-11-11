@@ -16,6 +16,8 @@ const HOSTED_HEADERS = `/*
   Cache-Control: no-cache
 /docs/*
   Cache-Control: no-cache
+/changelog/*
+  Cache-Control: no-cache
 `;
 
 // Where the hosted site lives, for link previews (they need absolute URLs).
@@ -36,8 +38,9 @@ const PREVIEW: [string, string, string][] = [
 ];
 
 // What only the hosted site has: its headers, link preview tags, and the
-// files in hosted/ (the docs at /docs/, the preview banner og.png; og.svg is
-// the banner's source). Machine pages never take /docs: see hosted.ts.
+// files in hosted/ (the docs at /docs/, the changelog at /changelog/, the
+// preview banner og.png; og.svg is the banner's source). Machine pages are
+// under /screen/, clear of these: see hosted.ts.
 const hostedFiles = (): Plugin => ({
   name: 'peek-hosted-files',
   transformIndexHtml: () => PREVIEW.map(([key, name, content]) =>

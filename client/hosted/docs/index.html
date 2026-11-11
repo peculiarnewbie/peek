@@ -58,7 +58,7 @@
 <main>
 <header>
   <a class="home" href="/">peek</a>
-  <nav><a href="/">Your machines</a><a href="https://github.com/peculiarnewbie/peek">GitHub</a></nav>
+  <nav><a href="/">Your machines</a><a href="/changelog/">Changelog</a><a href="https://github.com/peculiarnewbie/peek">GitHub</a></nav>
 </header>
 
 <h1>Docs</h1>
@@ -143,6 +143,12 @@ starts peek; the package carries the program itself.</p>
 administrator. On a desktop PC, add <code>--keep-gpu</code> to connect faster from idle: peek then keeps its GPU
 device open while nobody is watching. It costs some memory, and on a laptop it can keep a separate graphics card
 from sleeping, so it is off by default.</p>
+<p><strong>Windows, at the login screen too</strong>: <code>peek install --service --no-token</code> runs peek as a
+Windows service instead. It then also shows the login screen, the lock screen and UAC prompts and takes input
+there, and keeps running while nobody is signed in, so a paired browser can do there whatever someone at the
+keyboard could. Turn on <strong>Run unattended</strong> in Tailscale's settings on that PC, or Tailscale
+disconnects while nobody is signed in. <code>peek install</code> without <code>--service</code> goes back; either
+way your paired browsers keep working.</p>
 <p><strong>Linux</strong>: run it from inside the Wayland session. It becomes a systemd user service that starts
 with the graphical session. Keys are typed through <code>/dev/uinput</code>, which many distributions already let
 the logged-in user write; the <a href="https://github.com/peculiarnewbie/peek#install-on-linux-key-access-start-at-login-firewall">README</a>
@@ -169,7 +175,7 @@ blocks the page from reaching your machines.</p>
 
 <h2 id="use">Using it</h2>
 <p>Open a machine from <a href="/">your list</a>. Its page has its own address (for example
-<code>/my-pc</code>), so it can be bookmarked; the toolbar's back button returns to the list. Hover the dot at
+<code>/screen/my-pc</code>), so it can be bookmarked; the toolbar's back button returns to the list. Hover the dot at
 the top for the toolbar.</p>
 <ul>
   <li><strong>Sleep</strong> stops the screen while keeping the connection; click the page or press Space to
