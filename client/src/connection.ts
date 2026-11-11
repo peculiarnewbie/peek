@@ -31,8 +31,8 @@ let retry = 250;
 /** Frames are decoded asynchronously but drawn in order. */
 let chain = Promise.resolve();
 
-/** The host's clipboard changed. Set by the clipboard code. */
-export const hooks = { clip: (_text: string) => {} };
+/** Set by the input code: the host's clipboard changed / its pointer shape changed. */
+export const hooks = { clip: (_text: string) => {}, cursor: (_css: string) => {} };
 
 export function send(o: object) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -111,6 +111,7 @@ function onJson(m: HostMsg) {
       break;
     case 'cur':
       cv.style.cursor = m.c;
+      hooks.cursor(m.c);
       break;
     case 'blocked':
       setBlocked(m.v && !viewOnly());

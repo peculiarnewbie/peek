@@ -3,6 +3,7 @@ import { setSleep } from './actions';
 import { App } from './App';
 import { connect } from './connection';
 import './input';
+import './touch';
 import { cv, layout } from './screen';
 import { cfg, setFullscreen, setMessage } from './state';
 import './styles.css';

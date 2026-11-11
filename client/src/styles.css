@@ -18,7 +18,7 @@
   --s3: #199e70;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-html, body { margin: 0; height: 100%; background: var(--page); overflow: hidden;
+html, body { margin: 0; height: 100%; background: var(--page); overflow: hidden; overscroll-behavior: none;
   font: 13px/1.4 var(--sans); color: var(--ink);
   -webkit-user-select: none; user-select: none; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
@@ -28,7 +28,7 @@ svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor;
   box-shadow: 0 8px 28px rgba(0, 0, 0, .45); backdrop-filter: blur(10px); }
 
 #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
-#screen { display: block; touch-action: none; outline: none; }
+#screen { display: block; touch-action: none; outline: none; transform-origin: 0 0; }
 body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 
 /* ---- toolbar ---- */
@@ -57,7 +57,8 @@ body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 
 /* ---- settings ---- */
 #settings { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 3;
-  width: 340px; padding: 6px 16px 14px; display: none; }
+  width: min(340px, calc(100vw - 16px)); box-sizing: border-box;
+  max-height: calc(100vh - 60px); overflow-y: auto; scrollbar-width: thin; padding: 6px 16px 14px; display: none; }
 #settings.show { display: block; }
 .group { padding-top: 12px; }
 .group + .group { border-top: 1px solid var(--line); margin-top: 12px; }
@@ -72,7 +73,7 @@ body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 
 /* ---- stats ---- */
 /* Below the toolbar's row, so the two never overlap on narrow windows. */
-#stats { position: fixed; top: 56px; left: 8px; z-index: 2; width: 320px; display: none;
+#stats { position: fixed; top: 56px; left: 8px; z-index: 2; width: min(320px, calc(100vw - 16px)); display: none;
   max-height: calc(100vh - 64px); overflow-y: auto; scrollbar-width: thin; }
 #stats.show { display: block; }
 #stats-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 14px;
@@ -83,8 +84,9 @@ body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 #stats-sum { flex: 1; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
 /* One line until hovered or pinned, like the toolbar. */
-#stats:not(:hover):not(.pinned):not(.dragging) #stats-body { display: none; }
-#stats:hover #stats-sum, #stats.pinned #stats-sum, #stats.dragging #stats-sum { visibility: hidden; }
+body:not(.touch) #stats:not(:hover):not(.pinned):not(.dragging) #stats-body { display: none; }
+#stats:hover #stats-sum, #stats.pinned #stats-sum, #stats.dragging #stats-sum,
+body.touch #stats-sum { visibility: hidden; }
 #stats-body { padding: 2px 14px 14px; }
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .tile { padding: 8px 10px; border-radius: 8px; background: rgba(255, 255, 255, .04); }
@@ -142,3 +144,22 @@ details[open] summary svg { transform: none; }
 #note.show { display: flex; }
 #note svg.i { color: var(--warning); margin-top: 2px; }
 #clipbuf { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
+
+/* ---- touch screens ---- */
+/* No hover: the toolbar opens with a tap and closes with a tap on the screen.
+   (A tap leaves :hover stuck on, so it cannot be relied on to close it.) */
+body.touch #bar:not(.open) { opacity: .6; }
+body.touch #bar:not(.open) .more { display: none; }
+body.touch #bar:not(.open) #status { padding: 4px; }
+body.touch #bar:not(.open) #status-text { display: none; }
+/* Labels go first when the toolbar would not fit. */
+@media (max-width: 640px) {
+  .tb span { display: none; }
+  .tb { padding: 0 8px; }
+}
+/* The pointer, drawn here: the host's capture has none, and a touch screen
+   shows none of its own. Its tip is the element's top-left corner. */
+#cursor { position: fixed; left: 0; top: 0; display: none; pointer-events: none; }
+#cursor svg { display: block; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, .45)); }
+body.touch #cursor { display: block; }
+body.sleeping #cursor { display: none; }

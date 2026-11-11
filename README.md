@@ -71,6 +71,24 @@ Hover the dot at the top to show the toolbar; the pin keeps it open.
   and browser (receive to draw), and the data received and sent since the
   page was opened.
 
+### On a phone or tablet
+
+Tap the dot to open the toolbar; tap the screen to close it. The toolbar's
+**Trackpad / Touch** button switches between two ways of using a finger:
+
+| Gesture | Trackpad (default) | Touch |
+|---|---|---|
+| One finger moving | moves the pointer, faster for quick flicks | drags |
+| Tap | left click at the pointer | left click there |
+| Long press | holds the left button: move to drag | right click |
+| Tap, then touch again and move | drags | |
+| Two-finger tap | right click | right click |
+| Three-finger tap | middle click | middle click |
+| Two fingers moving together | scroll | scroll |
+| Pinch | zoom; the view follows the pointer | zoom and pan |
+
+The host's screen capture has no pointer in it, so the client draws one.
+
 Full-screen frame sizes on a 1920x1200 desktop, from
 `cargo test --release -- --ignored --nocapture frame_sizes`:
 

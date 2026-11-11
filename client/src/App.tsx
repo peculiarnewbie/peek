@@ -5,11 +5,13 @@ import { Settings } from './components/Settings';
 import { Stats } from './components/Stats';
 import { Toolbar } from './components/Toolbar';
 import { cv } from './screen';
-import { sleeping } from './state';
+import { isTouch, sleeping } from './state';
 
 export function App() {
   // Greyed-out screen behind the pause card.
   createEffect(() => document.body.classList.toggle('sleeping', sleeping()));
+  // Touch layout: tap-to-open toolbar, drawn cursor, stats panel never folded.
+  createEffect(() => document.body.classList.toggle('touch', isTouch()));
   return (
     <>
       <IconSprite />

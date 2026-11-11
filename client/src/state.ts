@@ -60,3 +60,13 @@ export const [statsMode, setStatsMode] = createSignal<StatsMode>(
   ['open', 'folded'].includes(store.get('stats') ?? '') ? 'open' : 'off');
 export const [statsPinned, setStatsPinned] = createSignal(store.get('stats-pin') === '1');
 export const [fullscreen, setFullscreen] = createSignal(false);
+
+// Touch screens.
+export type TouchMode = 'trackpad' | 'direct';
+/** Trackpad: a finger moves a cursor, as on a laptop. Direct: the finger is the cursor. */
+export const [touchMode, setTouchMode] = createSignal<TouchMode>(
+  store.get('touch') === 'direct' ? 'direct' : 'trackpad');
+/** This browser has been used with a finger (or has no fine pointer at all). */
+export const [isTouch, setIsTouch] = createSignal(matchMedia('(pointer: coarse)').matches);
+/** The toolbar, opened by a tap; there is no hover to open it on a touch screen. */
+export const [barOpen, setBarOpen] = createSignal(false);

@@ -3,7 +3,7 @@ import { batch } from 'solid-js';
 import { send } from './connection';
 import {
   active, cfg, pinned, setAutoSlept, setCfg, setPinned, setSettingsOpen, setSleeping, setStatsMode,
-  setStatsPinned, sleeping, statsPinned, type Cfg, type StatsMode,
+  setStatsPinned, setTouchMode, sleeping, statsPinned, touchMode, type Cfg, type StatsMode,
 } from './state';
 import { focusScreen } from './screen';
 import { store } from './util';
@@ -42,6 +42,11 @@ export function togglePin() {
   setPinned(!pinned());
   store.set('pin', pinned() ? 1 : 0);
   focusScreen();
+}
+
+export function toggleTouchMode() {
+  setTouchMode(touchMode() === 'trackpad' ? 'direct' : 'trackpad');
+  store.set('touch', touchMode());
 }
 
 export function toggleStatsPin() {

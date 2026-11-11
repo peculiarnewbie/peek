@@ -21,6 +21,16 @@ function flushMove() {
   moveQueued = false;
   if (pendingMove) { send({ t: 'm', x: pendingMove[0], y: pendingMove[1] }); pendingMove = null; }
 }
+/** Pointer moves go out at most once per animation frame. Positions are 0..1 of the screen. */
+export function sendMove(x: number, y: number) {
+  pendingMove = [x, y];
+  if (!moveQueued) { moveQueued = true; requestAnimationFrame(flushMove); }
+}
+/** b: 0 left, 1 middle, 2 right. A press or release also places the pointer, so a pending move is dropped. */
+export function sendButton(b: number, down: boolean, x: number, y: number) {
+  pendingMove = null;
+  send({ t: 'b', b, d: down ? 1 : 0, x, y });
+}
 // Diffing `buttons` (rather than trusting pointerdown/up) handles chorded
 // clicks, where the second button only shows up as a pointermove.
 function pointer(e: PointerEvent) {
@@ -33,24 +43,29 @@ function pointer(e: PointerEvent) {
     }
     held = now;
   } else if (e.type === 'pointermove') {
-    pendingMove = [x, y];
-    if (!moveQueued) { moveQueued = true; requestAnimationFrame(flushMove); }
+    sendMove(x, y);
   }
 }
+// Fingers are handled in touch.ts; these are for the mouse and pen.
 cv.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'touch') return;
   focusScreen();
   e.preventDefault();
   if (settingsOpen()) { swallowing = true; showSettings(false); return; }
   try { cv.setPointerCapture(e.pointerId); } catch {}
   pointer(e);
 });
-cv.addEventListener('pointermove', e => { if (!swallowing) pointer(e); });
+cv.addEventListener('pointermove', e => { if (e.pointerType !== 'touch' && !swallowing) pointer(e); });
 cv.addEventListener('pointerup', e => {
+  if (e.pointerType === 'touch') return;
   e.preventDefault();
   if (swallowing) { if (!e.buttons) swallowing = false; return; }
   pointer(e);
 });
-cv.addEventListener('pointercancel', () => { held = 0; swallowing = false; send({ t: 'rel' }); });
+cv.addEventListener('pointercancel', e => {
+  if (e.pointerType === 'touch') return;
+  held = 0; swallowing = false; send({ t: 'rel' });
+});
 for (const type of ['contextmenu', 'mousedown', 'mouseup', 'auxclick', 'dragstart']) {
   cv.addEventListener(type, e => e.preventDefault());
 }
