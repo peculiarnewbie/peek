@@ -10,12 +10,14 @@ import {
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
 import { Icon } from './Icons';
+import { canScan, QrScan } from './QrScan';
 
 const [error, setError] = createSignal('');
 const [hostField, setHostField] = createSignal('');
 const [codeField, setCodeField] = createSignal('');
 const [busy, setBusy] = createSignal(false);
 const [adding, setAdding] = createSignal(false);
+const [scanning, setScanning] = createSignal(false);
 
 async function submit(host: string, code: string) {
   setBusy(true);
@@ -126,6 +128,11 @@ export function Devices() {
             <div class="label"><span>Add a machine</span></div>
             <p class="hint">On the machine, run <code>peek pair</code>. Open the link it shows on this device (or
               scan its QR code), or enter its name and code here.</p>
+            <Show when={canScan()}>
+              <button class="btn alt scan" tabIndex={-1} onClick={() => { setError(''); setScanning(true); }}>
+                <Icon name="qr" /><span>Scan QR code</span>
+              </button>
+            </Show>
             <form onSubmit={e => { e.preventDefault(); if (!busy()) submit(hostField(), codeField()); }}>
               <input class="field" placeholder="my-pc.tail1234.ts.net or pairing link" autocomplete="off"
                 autocapitalize="off" spellcheck={false} value={hostField()}
@@ -143,6 +150,14 @@ export function Devices() {
               <button class="tb cancel" tabIndex={-1} onClick={() => { setAdding(false); setError(''); }}>Cancel</button>
             </Show>
           </section>
+        </Show>
+        <Show when={scanning()}>
+          <QrScan onClose={() => setScanning(false)} onLink={(host, code) => {
+            setScanning(false);
+            setHostField(host);
+            setCodeField(code);
+            submit(host, code);
+          }} />
         </Show>
         <p class="hint small foot">The list of machines and their keys stay in this browser. Nothing about them is
           stored on this site.</p>

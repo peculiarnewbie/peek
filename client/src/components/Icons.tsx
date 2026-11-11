@@ -1,7 +1,7 @@
 // Line icons, drawn once in a sprite and referenced by id.
 export type IconName =
   | 'moon' | 'play' | 'sliders' | 'chart' | 'expand' | 'shrink' | 'pin' | 'x' | 'chev' | 'shield'
-  | 'trackpad' | 'hand' | 'keyboard' | 'backspace' | 'enter' | 'monitor' | 'back' | 'plus';
+  | 'trackpad' | 'hand' | 'keyboard' | 'backspace' | 'enter' | 'monitor' | 'back' | 'plus' | 'qr';
 
 export function IconSprite() {
   return (
@@ -23,6 +23,7 @@ export function IconSprite() {
       <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2" /><path d="M9 20h6M12 16.5V20" /></symbol>
       <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 6l-6 6 6 6" /></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-qr" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><path d="M14 14h2v2M20 14v.01M14 20h.01M17 17h3v3h-3z" /></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM12 8v5M12 16h.01" /></symbol>
     </svg>
   );

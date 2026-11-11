@@ -229,7 +229,9 @@ Then pair each browser with each machine:
 
 - `peek pair` on the machine prints a link and a QR code with a one-time
   code (it works once, for five minutes). Open it on the device, or enter
-  the machine's name and the code under **Add a machine**.
+  the machine's name and the code under **Add a machine**. On a phone,
+  **Scan QR code** there reads it with the camera (where the browser can
+  read QR codes, as Chrome on Android does); the camera app works too.
 - Or, in a client already connected to the machine, **Settings → Pair a
   device** shows the same QR code, for a phone to scan.
 
