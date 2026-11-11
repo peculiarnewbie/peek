@@ -2,7 +2,7 @@
 import { release, setSleep, showSettings } from './actions';
 import { hooks, send } from './connection';
 import { cv, focusScreen } from './screen';
-import { active, autoSlept, cfg, clipboardOn, settingsOpen, sleeping, viewOnly } from './state';
+import { active, autoSlept, cfg, clipboardOn, isTouch, settingsOpen, sleeping, viewOnly } from './state';
 import { clamp01 } from './util';
 
 // ---- mouse ----
@@ -96,7 +96,8 @@ hooks.clip = text => {
   lastClip = text;
   if (window.isSecureContext && navigator.clipboard) {
     navigator.clipboard.writeText(text).catch(() => copyViaSelection(text));
-  } else copyViaSelection(text);
+  } else if (!isTouch()) copyViaSelection(text);
+  // (On a touch screen, selecting text in a box would bring up the phone's keyboard.)
 };
 // Works on plain HTTP, but only shortly after a key press or click, which a
 // copy on the remote always is.

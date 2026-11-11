@@ -1,3 +1,5 @@
+import { isTouch } from './state';
+
 // The canvas showing the remote screen. One element for the whole page, made
 // here so the socket, input handling and components can all reach it.
 //
@@ -13,8 +15,16 @@ cv.height = 9;
 
 export const ctx = cv.getContext('2d', { alpha: false })!;
 
-/** Keyboard input goes to the canvas; return focus there after UI clicks. */
-export const focusScreen = () => cv.focus({ preventScroll: true });
+/** The area the canvas is centred in: the window above the keyboard dock.
+ *  Fingers work anywhere in it, not only on the canvas. */
+export const stage = document.createElement('div');
+stage.id = 'stage';
+stage.append(cv);
+
+/** Keyboard input goes to the canvas; return focus there after UI clicks.
+ *  Not on a touch screen: there, focus is the user's business (moving it
+ *  would close the phone's keyboard). */
+export const focusScreen = () => { if (!isTouch()) cv.focus({ preventScroll: true }); };
 
 /** Zoom factor over the fitted size, and translation in CSS pixels. */
 export const view = { z: 1, x: 0, y: 0 };

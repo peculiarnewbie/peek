@@ -11,7 +11,7 @@
 import { showSettings } from './actions';
 import { hooks, send } from './connection';
 import { sendButton, sendMove } from './input';
-import { areaH, areaW, cv, onViewChange, panBy, shownRect, toCanvas, view, zoomed, zoomTo } from './screen';
+import { areaH, areaW, onViewChange, panBy, shownRect, stage, toCanvas, view, zoomed, zoomTo } from './screen';
 import { setBarOpen, setIsTouch, settingsOpen, touchMode } from './state';
 import { resetText } from './keyboard';
 import { clamp01 } from './util';
@@ -149,7 +149,9 @@ function accel(f: Finger, dx: number, dy: number, now: number) {
   return 1 + Math.min(speed, 2) * 0.75;
 }
 
-cv.addEventListener('pointerdown', e => {
+// On the whole stage, so the bars beside or above a letterboxed screen work
+// as trackpad too.
+stage.addEventListener('pointerdown', e => {
   if (e.pointerType !== 'touch') return;
   e.preventDefault();
   setIsTouch(true);
@@ -176,7 +178,7 @@ cv.addEventListener('pointerdown', e => {
   if (fingers.size === 2 && (g.kind === 'pending' || g.kind === 'move')) startTwo(g);
 });
 
-cv.addEventListener('pointermove', e => {
+stage.addEventListener('pointermove', e => {
   if (e.pointerType !== 'touch') return;
   const f = fingers.get(e.pointerId);
   if (!f || !g) return;
@@ -241,5 +243,6 @@ function lift(e: PointerEvent, cancelled: boolean) {
   wheel.x = wheel.y = 0;
   g = null;
 }
-cv.addEventListener('pointerup', e => lift(e, false));
-cv.addEventListener('pointercancel', e => lift(e, true));
+stage.addEventListener('pointerup', e => lift(e, false));
+stage.addEventListener('pointercancel', e => lift(e, true));
+stage.addEventListener('contextmenu', e => e.preventDefault());

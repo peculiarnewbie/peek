@@ -5,9 +5,10 @@ import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import { send } from './connection';
 
-/** Which part of the dock is showing. */
-export type Dock = 'off' | 'text' | 'keys';
-export const [dock, setDockSignal] = createSignal<Dock>('off');
+/** Which face of the dock is showing. The dock itself is always there on a
+ *  touch screen; the phone's keyboard only opens when the field is tapped. */
+export type Dock = 'text' | 'keys';
+export const [dock, setDockSignal] = createSignal<Dock>('text');
 
 // ---- the text field ----
 // Phone keyboards (Gboard and the like) do not report keys: they edit the
@@ -44,13 +45,9 @@ export function resetText() {
 }
 
 export function setDock(d: Dock) {
-  if (dock() !== 'keys' && d === 'keys') resetText();
-  if (d !== 'keys') releaseModifiers();
+  if (d === 'keys') { field.el?.blur(); resetText(); }   // the PC keyboard replaces the phone's
+  else releaseModifiers();
   setDockSignal(d);
-  // Focusing the field is what brings up the phone's keyboard. It has to
-  // happen inside the tap, so no waiting for anything to render.
-  if (d === 'text') field.el?.focus({ preventScroll: true });
-  else { field.el?.blur(); resetText(); }
 }
 
 // ---- modifiers ----

@@ -7,9 +7,10 @@ import {
   dock, field, keyDown, keyUp, lockModifier, mods, resetText, setDock, shifted, syncText, tap, tapModifier,
 } from '../keyboard';
 import { setBottomInset } from '../screen';
+import { isTouch } from '../state';
 import { Icon } from './Icons';
 
-type Kind = 'key' | 'mod' | 'fn' | 'text' | 'hide' | 'gap';
+type Kind = 'key' | 'mod' | 'fn' | 'text' | 'gap';
 interface KeyDef { code: string; label: string; shift?: string; w: number; kind: Kind; small?: boolean }
 
 const key = (code: string, label: string, shift?: string, w = 1): KeyDef => ({ code, label, shift, w, kind: 'key' });
@@ -23,7 +24,7 @@ const pairs = (codes: string[], plain: string, shift: string) => codes.map((c, i
 const DIGITS = [...'1234567890'].map(d => 'Digit' + d);
 
 const BOTTOM_RIGHT = [mod('AltRight', 'Alt'), mod('MetaRight', 'Win'), small('ContextMenu', 'Menu'),
-  mod('ControlRight', 'Ctrl'), special('text', '✎'), special('hide', '▾')];
+  mod('ControlRight', 'Ctrl'), special('text', '✎')];
 
 const MAIN: KeyDef[][] = [
   [key('Backquote', '`', '~'), ...pairs(DIGITS, '1234567890', '!@#$%^&*()'), key('Minus', '-', '_'),
@@ -35,7 +36,7 @@ const MAIN: KeyDef[][] = [
   [mod('ShiftLeft', '⇧', 2.25), ...letters('zxcvbnm'), key('Comma', ',', '<'), key('Period', '.', '>'),
     key('Slash', '/', '?'), mod('ShiftRight', '⇧', 2.25)],
   [special('fn', 'Fn'), mod('ControlLeft', 'Ctrl'), mod('MetaLeft', 'Win'), mod('AltLeft', 'Alt'),
-    key('Space', '', undefined, 4.5), ...BOTTOM_RIGHT],
+    key('Space', '', undefined, 5.5), ...BOTTOM_RIGHT],
 ];
 
 const F = (n: number) => small('F' + n, 'F' + n);
@@ -57,7 +58,7 @@ const FN: KeyDef[][] = [
     key('ArrowLeft', '←'), key('ArrowDown', '↓'), key('ArrowRight', '→'), mod('ShiftRight', '⇧')],
   [special('fn', 'Fn'), mod('ControlLeft', 'Ctrl'), mod('MetaLeft', 'Win'), mod('AltLeft', 'Alt'), key('Space', ''), gap(),
     key('Numpad0', '0', undefined, 2), key('NumpadDecimal', '.'), blank(), gap(),
-    mod('ControlRight', 'Ctrl'), mod('AltRight', 'Alt'), special('text', '✎'), special('hide', '▾')],
+    mod('ControlRight', 'Ctrl'), mod('AltRight', 'Alt'), mod('MetaRight', 'Win'), special('text', '✎')],
 ];
 
 const LONG_PRESS_MS = 450;
@@ -85,7 +86,6 @@ function Key(props: { def: KeyDef; fn: boolean; toggleFn: () => void }) {
     else if (e.type !== 'pointerup') return;
     else if (d.kind === 'fn') props.toggleFn();
     else if (d.kind === 'text') setDock('text');
-    else if (d.kind === 'hide') setDock('off');
   };
   const label = () => (shifted() && d.shift) || d.label;
   return d.kind === 'gap'
@@ -142,7 +142,7 @@ export function Keyboard() {
   const keep = (e: PointerEvent) => e.preventDefault();   // buttons must not take focus from the field
 
   return (
-    <div id="kbd" ref={box} classList={{ show: dock() !== 'off', keys: dock() === 'keys' }}>
+    <div id="kbd" ref={box} classList={{ show: isTouch(), keys: dock() === 'keys' }}>
       <div class="kbd-bar">
         <button class="kbd-btn" tabIndex={-1} title="PC keyboard: Esc, Ctrl, F-keys, arrows…" onPointerDown={keep}
           onClick={() => setDock('keys')}><Icon name="keyboard" /></button>
@@ -154,8 +154,6 @@ export function Keyboard() {
           <Icon name="backspace" /></button>
         <button class="kbd-btn" tabIndex={-1} title="Enter" onPointerDown={keep}
           onClick={() => { tap('Enter'); resetText(); }}><Icon name="enter" /></button>
-        <button class="kbd-btn" tabIndex={-1} title="Hide" onPointerDown={keep}
-          onClick={() => setDock('off')}><Icon name="x" /></button>
       </div>
       <div class="kbd-keys">
         <For each={fn() ? FN : MAIN}>{row =>

@@ -89,8 +89,12 @@ Tap the dot to open the toolbar; tap the screen to close it. The toolbar's
 
 The host's screen capture has no pointer in it, so the client draws one.
 
-The toolbar's **Keyboard** button opens a dock at the bottom; the remote
-screen fits into the space above it.
+Gestures work anywhere above the keyboard bar, not only on the remote
+screen itself.
+
+A keyboard bar is always at the bottom; the remote screen fits into the
+space above it. The client never opens the phone's keyboard by itself: tap
+the field when you want it.
 
 - **Send text** is a text field for the phone's own keyboard. What you type
   appears on the host as you type it, autocorrect and swipe typing
@@ -101,7 +105,7 @@ screen fits into the space above it.
   phone keyboard lacks. Ctrl, Alt, Win and Shift apply to the next key
   (tap again to let go; tap Win twice for the Start menu); press and hold
   one to lock it. **Fn** shows F-keys, a numpad, and the navigation keys and
-  arrows. Held keys repeat. ✎ goes back to the text field, ▾ hides the dock.
+  arrows. Held keys repeat. ✎ goes back to the text field.
 
 Full-screen frame sizes on a 1920x1200 desktop, from
 `cargo test --release -- --ignored --nocapture frame_sizes`:

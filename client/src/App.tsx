@@ -5,7 +5,7 @@ import { Keyboard } from './components/Keyboard';
 import { Settings } from './components/Settings';
 import { Stats } from './components/Stats';
 import { Toolbar } from './components/Toolbar';
-import { cv } from './screen';
+import { stage } from './screen';
 import { isTouch, sleeping } from './state';
 
 export function App() {
@@ -16,7 +16,7 @@ export function App() {
   return (
     <>
       <IconSprite />
-      <div id="stage">{cv}</div>
+      {stage}
       <SleepCard />
       <Message />
       <Stats />

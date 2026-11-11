@@ -27,7 +27,8 @@ svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor;
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: 0 8px 28px rgba(0, 0, 0, .45); backdrop-filter: blur(10px); }
 
-#stage { position: fixed; inset: 0 0 var(--bottom-inset, 0) 0; display: flex; align-items: center; justify-content: center; }
+#stage { position: fixed; inset: 0 0 var(--bottom-inset, 0) 0; display: flex; align-items: center; justify-content: center;
+  touch-action: none; }
 #screen { display: block; touch-action: none; outline: none; transform-origin: 0 0; }
 body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 
@@ -171,7 +172,7 @@ body.sleeping #cursor { display: none; }
 #kbd { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; display: none; background: #141413;
   border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
 #kbd.show { display: block; }
-body.sleeping #kbd { display: none; }
+body.sleeping #kbd { pointer-events: none; opacity: .4; }
 #kbd.keys .kbd-bar, #kbd:not(.keys) .kbd-keys { display: none; }
 .kbd-bar { display: flex; align-items: center; gap: 2px; padding: 6px 6px; }
 #kbd-text { flex: 1; min-width: 0; height: 38px; padding: 0 12px; margin: 0 4px; box-sizing: border-box;
