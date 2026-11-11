@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0d0d0d">
+<meta name="description" content="What changed in each version of peek, a small, fast remote desktop over Tailscale.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="peek">
+<meta property="og:title" content="peek changelog">
+<meta property="og:description" content="What changed in each version of peek, a small, fast remote desktop over Tailscale.">
+<meta property="og:url" content="https://peek.peculiarnewbie.com/changelog/">
+<meta property="og:image" content="https://peek.peculiarnewbie.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<title>peek changelog</title>
+<style>
+  :root { color-scheme: dark; --page: #0d0d0d; --surface: #1a1a19; --line: rgba(255, 255, 255, .10);
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781; --accent: #3987e5; }
+  html { background: var(--page); color: var(--ink-2); font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; padding: 32px 18px 64px; }
+  main { max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+  header a.home { color: var(--ink); font-size: 22px; font-weight: 650; text-decoration: none; }
+  header nav a { margin-left: 16px; }
+  h1 { color: var(--ink); font-size: 28px; line-height: 1.2; margin: 28px 0 8px; letter-spacing: -.01em; }
+  h2 { color: var(--ink); font-size: 19px; margin: 40px 0 8px; padding-top: 16px; border-top: 1px solid var(--line);
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+  h2 a { text-decoration: none; }
+  h2 .date { color: var(--muted); font-size: 14px; font-weight: 400; }
+  h2 .latest { color: var(--accent); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  h3 { color: var(--ink); font-size: 15px; margin: 20px 0 4px; }
+  a { color: var(--ink); text-underline-offset: 2px; }
+  a:hover { color: #fff; }
+  code { font: 13px ui-monospace, "Cascadia Code", Menlo, monospace; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: var(--ink); }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  li strong { color: var(--ink); }
+  .lead { font-size: 16px; }
+  @media (max-width: 560px) { header nav a { margin-left: 12px; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <a class="home" href="/">peek</a>
+  <nav><a href="/">Your machines</a><a href="/docs/">Docs</a><a href="https://github.com/peculiarnewbie/peek">GitHub</a></nav>
+</header>
+
+<h1>Changelog</h1>
+<p class="lead">What changed in each version of peek. To update a machine, run
+<code>npm update -g @peculiarnewbie/peek</code> there, then <code>peek install</code> again with the same flags.</p>
+
+<h2 id="0.2.0"><a href="#0.2.0">0.2.0</a><span class="date">12 November 2026</span><span class="latest">Latest</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>Windows: the login screen, the lock screen and UAC prompts.</strong>
+    <code>peek install --service</code> runs peek as a Windows service, which can also see and control these, and
+    keeps peek running while nobody is signed in. A paired browser can then do there whatever someone at the
+    keyboard could. <a href="/docs/#setup">How to set it up</a>.</li>
+  <li><strong>Lossless text</strong>, in Settings and on by default: text and flat parts of the screen arrive exact
+    the first time, instead of blurry and then sharp a moment later. Photos stay JPEG. Typing a character sends
+    238 bytes instead of 1.7 KB, and a full screen of code 84 KB instead of 219 KB. It needs peek 0.2.0 on the
+    machine.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+  <li>When many scattered parts of the screen changed at once, some could stay blurry until they next changed.
+    They are now sharpened like the rest.</li>
+</ul>
+<h3>This site</h3>
+<ul>
+  <li>A machine's page is now at <code>/screen/&lt;name&gt;</code>. Old addresses and bookmarks still lead to
+    it.</li>
+  <li>This changelog.</li>
+</ul>
+
+<h2 id="0.1.0"><a href="#0.1.0">0.1.0</a><span class="date">11 November 2026</span></h2>
+<p>The first release on npm.</p>
+<ul>
+  <li>A host for Windows, and for Linux on Wayland (niri, sway, Hyprland, river), that stays idle until someone
+    looks. Any browser is the client.</li>
+  <li>This site: one page for all your machines, each paired once with <code>peek pair</code> and reached straight
+    over Tailscale.</li>
+  <li><code>peek install</code> starts peek at logon (Windows, as administrator, with a firewall rule) or with the
+    graphical session (Linux). <code>peek uninstall</code> removes it.</li>
+  <li><code>peek logs</code> shows what the running peek logged. <code>peek clients</code> and
+    <code>peek unpair</code> manage paired browsers.</li>
+  <li>On phones and tablets: trackpad and touch modes, and a keyboard bar with a PC keyboard.</li>
+  <li>Windows: capture comes back after the PC wakes from sleep, and <code>--keep-gpu</code> makes connecting
+    from idle faster.</li>
+</ul>
+</main>
+</body>
+</html>

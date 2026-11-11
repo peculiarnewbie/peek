@@ -1,11 +1,11 @@
 // Hosted client: the page of paired machines at `/`. Choosing one opens it
-// at `/<name>`; the toolbar's back button (or the browser's) returns here.
+// at `/screen/<name>`; the toolbar's back button (or the browser's) returns here.
 import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js';
 import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
   BLOCKED_HELP, cleanHost, current, forget, localAccess, machines, navigate, openMachine, pair, parseLink,
-  probeAll, reach, slug, type Machine,
+  probeAll, reach, screenPath, type Machine,
 } from '../hosted';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
@@ -75,7 +75,7 @@ function Card(props: { m: Machine }) {
   const state = () => reach[props.m.id] ?? 'checking';
   return (
     <div class="dcard" classList={{ down: state() === 'down' }}>
-      <a class="dopen" href={`/${slug(props.m)}`} onClick={e => {
+      <a class="dopen" href={screenPath(props.m)} onClick={e => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;   // new tab still works
         e.preventDefault();
         openMachine(props.m);
@@ -136,6 +136,7 @@ export function Devices() {
               </button>
             </Show>
             <a class="tb" href="/docs/">Docs</a>
+            <a class="tb" href="/changelog/">Changelog</a>
             <a class="tb" href={GITHUB}>GitHub</a>
           </nav>
         </header>

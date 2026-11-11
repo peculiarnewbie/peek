@@ -353,7 +353,7 @@ it would put peek on the internet.
 
 https://peek.peculiarnewbie.com is the same client, served from one place
 and paired with any number of machines. It opens on a page of them; each
-machine has its own address (`/hp-book`), and the toolbar's back button (or
+machine has its own address (`/screen/hp-book`), and the toolbar's back button (or
 the browser's) returns to the list, like a KVM switch. In Chrome, allow
 **Local network access** when the site asks, or it cannot reach your tailnet.
 The site only serves the page:
@@ -394,8 +394,9 @@ On the machine's side:
 - Chrome may ask once whether the site may access devices on your local
   network: allow it, since that is how it reaches your machines.
 
-The site also serves short setup docs at `/docs/` (`client/hosted/docs/index.html`; `client/hosted/` also has the link preview banner),
-and machine pages never take that path. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
+The site also serves short setup docs at `/docs/` (`client/hosted/docs/index.html`) and the changelog at
+`/changelog/` (`client/hosted/changelog/index.html`); `client/hosted/` also has the link preview banner.
+Machine pages are under `/screen/`, so they never take those paths. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
 deploy:hosted` (the script runs `cf` under Node, which it needs; Bun cannot
 load its config). To run your own copy, set your worker name and domain in
 `client/cloudflare.config.ts`, deploy, and start peek with `--web
