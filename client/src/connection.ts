@@ -3,7 +3,7 @@ import {
   active, cfg, setBlocked, setCfg, setClipboardOn, setLive, setMessage, setMonitors, setViewOnly,
   statsMode, viewOnly, type Monitor,
 } from './state';
-import { countIn, countOut, ping, S, tick } from './stats';
+import { countIn, countOut, first, ping, S, tick } from './stats';
 import { cv, ctx, resizeScreen } from './screen';
 import { BLOCKED_HELP, current, HOSTED, localAccess } from './hosted';
 import { store } from './util';
@@ -44,6 +44,14 @@ let failures = 0;
 
 let ws: WebSocket | null = null;
 let retry = 250;
+/** When the current socket was opened, while its first frame is still to come
+ *  (and was asked for: one opened in a hidden tab waits for it to show). */
+let firstFrameFrom: number | null = null;
+/** Whether that socket was opened as the page loaded, so the page load counts too. */
+let fromPageLoad = false;
+/** Still running the page's startup code (a later connect is a click or a retry). */
+let startup = true;
+setTimeout(() => { startup = false; });
 /** Frames are decoded asynchronously but drawn in order. */
 let chain = Promise.resolve();
 
@@ -82,6 +90,8 @@ export function connect() {
     v: String(PROTOCOL), token: t.token, q: cfg.quality, scale: String(cfg.scale), fps: String(cfg.fps),
     soft: cfg.soft ? '1' : '0', mon: String(cfg.mon), vis: active() ? '1' : '0',
   });
+  firstFrameFrom = active() ? performance.now() : null;
+  fromPageLoad = startup;
   const sock = ws = new WebSocket(`${t.url}?${q}`);
   sock.binaryType = 'arraybuffer';
   sock.onopen = () => {
@@ -204,6 +214,12 @@ async function onFrame(sock: WebSocket, buf: ArrayBuffer, arrived: number) {
     const ack = JSON.stringify({ t: 'ack', s: seq });
     sock.send(ack);
     countOut(ack.length);
+  }
+  if (firstFrameFrom != null && sock === ws) {
+    const now = performance.now();
+    first.connect = now - firstFrameFrom;
+    first.page = fromPageLoad ? now : null;   // performance.now() counts from navigation
+    firstFrameFrom = null;
   }
   S.frames++; S.rects += n;
   S.host += hostUs / 1000; S.client += performance.now() - arrived;

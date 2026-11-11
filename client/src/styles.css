@@ -113,7 +113,7 @@ body.touch #stats-sum { visibility: hidden; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 8px; height: 8px; border-radius: 2px; }
 .legend b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
-.session { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.session { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .session .k { font-size: 12px; color: var(--muted); }
 .session .v { font-weight: 600; }
 details { margin-top: 14px; }
@@ -206,6 +206,13 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 .hint.lead { font-size: 14px; margin: 0 auto 18px; }
 .intro { margin-bottom: 18px; }
 .intro .hint.lead { margin: 0 0 8px; max-width: 620px; }
+.figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0 8px; }
+.figures > div { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.figures b { display: block; color: var(--ink); font-size: 26px; font-weight: 650; letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums; }
+.figures b small { font-size: 14px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+.figures span { display: block; margin-top: 2px; color: var(--ink-2); font-size: 12.5px; line-height: 1.45; }
+@media (max-width: 560px) { .figures { grid-template-columns: 1fr; } }
 .dhead h1 { display: flex; align-items: center; gap: 10px; }
 .dhead h1 img { border-radius: 7px; }
 .dnav { display: flex; align-items: center; gap: 2px; }

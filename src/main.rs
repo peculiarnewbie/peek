@@ -68,6 +68,12 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     detach: bool,
+    /// Keep the GPU device open while nobody is watching, so connecting from
+    /// idle is faster. Costs some memory, and on a laptop can keep a discrete
+    /// GPU from sleeping
+    #[cfg(windows)]
+    #[arg(long)]
+    keep_gpu: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -344,6 +350,8 @@ fn main() {
     }
 
     platform::init();
+    #[cfg(windows)]
+    platform::keep_device(args.keep_gpu);
     if args.no_token && !(args.bind.is_unspecified() || args.bind.is_loopback() || server::tailnet(args.bind)) {
         eprintln!("--no-token accepts only Tailscale connections; --bind {} is not a Tailscale address", args.bind);
         std::process::exit(2);
