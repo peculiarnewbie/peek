@@ -16,9 +16,26 @@ modern browser.
 
 ## Numbers
 
-The point is a short wait for the screen, so that is what is measured. On a
-Linux laptop (niri, 1920×1080, medium quality), connecting from the same
-machine with [`bench/first-frame.ts`](bench/first-frame.ts):
+The point is a short wait for the screen, so that is what is measured, with
+[`bench/first-frame.ts`](bench/first-frame.ts) at medium quality.
+
+**Over Tailscale**, from a Linux laptop to a Windows desktop (1920×1080) on
+another network, connected directly with a ping of about 8 ms, peek started
+with `--keep-gpu`:
+
+| | Median | p90 |
+|---|---|---|
+| Connect to an idle host, until the whole first frame (331 KB) has arrived | 125 ms | 157 ms |
+| The same within 5 s of the last connection (capture still set up) | 121 ms | 157 ms |
+| Of that, capturing and encoding the full screen | 11 ms | 15 ms |
+| Socket open | 15 ms | 18 ms |
+
+Most of the rest is carrying the frame: the more detail on the screen, the
+bigger it is and the longer it takes. Without `--keep-gpu`, starting from
+idle added about 200 ms on this machine.
+
+**On the machine itself**, a Linux laptop (niri, 1920×1080) connecting to its
+own peek, which is peek's own share of the wait:
 
 | | Median | p90 |
 |---|---|---|
@@ -30,8 +47,7 @@ machine with [`bench/first-frame.ts`](bench/first-frame.ts):
 Idle, the host captures nothing: 10 ms of CPU over two minutes (0.01% of a
 core) and 17 MB of memory. The binary is 3.6 MB.
 
-Over a network, add about two round trips (TCP and the WebSocket handshake)
-and the time to carry the first frame; the browser then decodes and draws it.
+The browser then decodes and draws the frame, a few milliseconds more.
 **Stats → First frame** in the client shows the whole wait as you see it.
 
 To measure a host yourself (it must accept the connection: use `--no-token`
