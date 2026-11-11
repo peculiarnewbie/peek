@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Command;
 
-const INPUTS: &[&str] = &["src", "index.html", "package.json", "bun.lock", "tsconfig.json", "vite.config.ts"];
+const INPUTS: &[&str] = &["src", "public", "index.html", "package.json", "bun.lock", "tsconfig.json", "vite.config.ts"];
 
 fn main() {
     for input in INPUTS {

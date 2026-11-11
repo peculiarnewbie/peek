@@ -139,6 +139,26 @@ only) and registers a logon task that starts peek elevated and hidden.
 `-Remove` undoes both. Flags for peek go in `-PeekArgs`; with
 `-PeekArgs '--no-token'` the firewall rule admits Tailscale addresses only.
 
+### Install the client as an app (HTTPS through Tailscale)
+
+The client can be installed as an app called **peek** (home screen icon,
+full screen, no address bar). Browsers only allow that over HTTPS, which
+Tailscale can provide:
+
+1. In the Tailscale admin console, under **DNS**, enable **HTTPS
+   Certificates**. (This puts your machine and tailnet names in the public
+   Certificate Transparency logs.)
+2. On the host, once: `tailscale serve --bg 9182`. Tailscale then serves
+   `https://<machine>.<tailnet>.ts.net/` to your tailnet with a certificate
+   it renews itself, and passes connections to peek. It is remembered across
+   restarts; `tailscale serve reset` undoes it.
+3. Open that address in Chrome on the phone and choose **Install app** (or
+   **Add to home screen**).
+
+Connections through `tailscale serve` reach peek from the host itself, which
+peek accepts in either mode. Do not expose that port with `tailscale funnel`:
+it would put peek on the internet.
+
 ## How it works
 
 - **Capture**: DXGI Desktop Duplication. Windows delivers a frame only when

@@ -59,6 +59,11 @@ pub struct Shared {
 pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()> {
     let app = Router::new()
         .route("/", get(index))
+        .route("/manifest.webmanifest", get(|| asset("application/manifest+json", MANIFEST)))
+        .route("/sw.js", get(|| asset("text/javascript; charset=utf-8", SERVICE_WORKER)))
+        .route("/icon.svg", get(|| asset("image/svg+xml", ICON_SVG)))
+        .route("/icon-192.png", get(|| asset("image/png", ICON_192)))
+        .route("/icon-512.png", get(|| asset("image/png", ICON_512)))
         .route("/ws", get(ws))
         .layer(middleware::from_fn_with_state(shared.clone(), ip_guard))
         .with_state(shared);
@@ -189,6 +194,18 @@ fn trusted_name(host: &str) -> bool {
             || name == "localhost"
             || !name.contains('.')
             || name.ends_with(".ts.net"))
+}
+
+// What makes the client installable as an app: a manifest, icons, and a
+// service worker (see client/public/).
+const MANIFEST: &[u8] = include_bytes!("../client/dist/manifest.webmanifest");
+const SERVICE_WORKER: &[u8] = include_bytes!("../client/dist/sw.js");
+const ICON_SVG: &[u8] = include_bytes!("../client/dist/icon.svg");
+const ICON_192: &[u8] = include_bytes!("../client/dist/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("../client/dist/icon-512.png");
+
+async fn asset(content_type: &'static str, body: &'static [u8]) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "no-cache")], body)
 }
 
 async fn index() -> impl IntoResponse {

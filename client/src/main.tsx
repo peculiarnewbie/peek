@@ -20,6 +20,9 @@ document.addEventListener('pointerdown', e => {
 }, true);
 document.addEventListener('fullscreenchange', () => setFullscreen(!!document.fullscreenElement));
 
+// Installable as an app (only over HTTPS, where service workers are allowed).
+if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
 layout();
 setMessage('Connecting…');
 // Opened in the background (a restored tab, a second monitor): start paused.

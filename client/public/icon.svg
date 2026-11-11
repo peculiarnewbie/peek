@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed background; the drawing stays inside the central circle
+       (radius 40%) that Android keeps when it crops icons to a shape. -->
+  <rect width="512" height="512" fill="#141413"/>
+  <rect x="136" y="160" width="240" height="166" rx="22" fill="none" stroke="#f0efec" stroke-width="22"/>
+  <path d="M206 372h100" stroke="#f0efec" stroke-width="22" stroke-linecap="round"/>
+  <circle cx="256" cy="243" r="30" fill="#0ca30c"/>
+</svg>
