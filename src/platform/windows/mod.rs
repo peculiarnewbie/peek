@@ -1,14 +1,25 @@
 mod capture;
+mod desktop;
 pub mod input;
+pub mod service;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
-use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
-use windows::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
+use windows::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
+use windows::Win32::Security::{
+    GetTokenInformation, IsWellKnownSid, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY,
+    TOKEN_USER, TokenElevation, TokenUser, WinLocalSystemSid,
+};
+use windows::Win32::Storage::FileSystem::CreateDirectoryW;
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows::core::{HSTRING, w};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
@@ -91,10 +102,60 @@ fn process_elevated(pid: u32) -> bool {
     }
 }
 
-/// Whether this process runs as administrator.
+/// Whether this process runs as administrator (or as SYSTEM, which is more).
 pub fn is_elevated() -> bool {
     static ELEVATED: OnceLock<bool> = OnceLock::new();
-    *ELEVATED.get_or_init(|| process_elevated(unsafe { GetCurrentProcessId() }))
+    *ELEVATED.get_or_init(|| is_system() || process_elevated(unsafe { GetCurrentProcessId() }))
+}
+
+/// Whether this process runs as SYSTEM, as the service and the peek it
+/// starts do.
+pub fn is_system() -> bool {
+    static SYSTEM: OnceLock<bool> = OnceLock::new();
+    *SYSTEM.get_or_init(|| unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        // TOKEN_USER points into the rest of the buffer, at its SID.
+        let mut buf = [0u64; 32];
+        let mut len = 0u32;
+        let ok = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), size_of_val(&buf) as u32, &mut len);
+        let _ = CloseHandle(token);
+        ok.is_ok() && IsWellKnownSid((*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid, WinLocalSystemSid).as_bool()
+    })
+}
+
+/// Create a folder that only SYSTEM and administrators can open, unless it
+/// exists already. For peek's machine-wide settings: created like any other
+/// folder under ProgramData, every user could read the access token.
+/// (`peek install --service` sets it up beforehand, also letting the user
+/// who installed it read it.)
+pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    unsafe {
+        let mut descriptor = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: false.into(),
+        };
+        let created = CreateDirectoryW(&HSTRING::from(path), Some(&attributes));
+        LocalFree(Some(HLOCAL(descriptor.0)));
+        created?;
+    }
+    Ok(())
 }
 
 /// Lines to print at startup about what remote input can and cannot do.
@@ -145,5 +206,24 @@ pub mod clipboard {
 
     pub fn set_text(text: &str) -> bool {
         clipboard_win::set_clipboard_string(text).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn private_dir_shuts_out_users() {
+        let dir = std::env::temp_dir().join(format!("peek-private-{}", std::process::id())).join("peek");
+        super::create_private_dir(&dir).unwrap();
+        assert!(dir.is_dir());
+        super::create_private_dir(&dir).unwrap();
+        if !super::is_elevated() {
+            assert!(std::fs::read_dir(&dir).is_err(), "a user could list the private folder");
+        }
+        // As its owner we may still give the folder ordinary rights back,
+        // and need to before deleting it.
+        let reset = std::process::Command::new("icacls").arg(&dir).args(["/reset", "/Q"]).output().unwrap();
+        assert!(reset.status.success());
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 }

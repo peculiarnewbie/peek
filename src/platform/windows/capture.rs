@@ -93,6 +93,7 @@ impl Capture {
     /// Re-enumerate monitors, dropping every open duplication.
     pub fn refresh(&mut self) {
         self.dups.clear();
+        follow_desktop();
         self.outputs = enumerate().unwrap_or_else(|e| {
             crate::log!("could not enumerate monitors: {e}");
             Vec::new()
@@ -134,6 +135,9 @@ impl Capture {
             return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "no monitor attached"));
         };
         let monitor = out.monitor;
+        if self.dups.get(&index).is_none_or(|d| d.dup.is_none()) {
+            follow_desktop();
+        }
         let d = match self.dups.entry(index) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(v) => v.insert(open(out)?),
@@ -163,6 +167,16 @@ impl Capture {
                 Err(e)
             }
         }
+    }
+}
+
+/// Duplication only works on the desktop taking input, which a UAC prompt or
+/// the lock screen moves away from the user's own (see `desktop`). Called
+/// before starting a duplication, and after one failed, which is how a
+/// switch shows up while capturing.
+fn follow_desktop() {
+    if let Some(name) = super::desktop::follow() {
+        crate::log!("capture: following input to the {name} desktop");
     }
 }
 
