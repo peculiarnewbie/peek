@@ -35,7 +35,12 @@ function setMachines(list: Machine[]) {
 // ---- pages ----
 // `/` lists the machines; `/<name>` shows one (its Tailscale name's first
 // part, unique in a tailnet). Plain history entries, so Back returns to the list.
-export const slug = (m: Machine) => m.host.split('.')[0];
+// The site's own pages keep their paths: a machine named like one goes by its id.
+const RESERVED = new Set(['docs', 'pair']);
+export const slug = (m: Machine) => {
+  const name = m.host.split('.')[0];
+  return RESERVED.has(name) ? m.id : name;
+};
 const [path, setPath] = createSignal(location.pathname);
 addEventListener('popstate', () => setPath(location.pathname));
 export function navigate(to: string, replace = false) {

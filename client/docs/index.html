@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0d0d0d">
+<meta name="description" content="How to set up peek: a remote desktop for your own machines over Tailscale that connects instantly.">
+<title>peek docs</title>
+<style>
+  :root { color-scheme: dark; --page: #0d0d0d; --surface: #1a1a19; --line: rgba(255, 255, 255, .10);
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781; --accent: #3987e5; }
+  html { background: var(--page); color: var(--ink-2); font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { margin: 0; padding: 32px 18px 64px; }
+  main { max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+  header a.home { color: var(--ink); font-size: 22px; font-weight: 650; text-decoration: none; }
+  header nav a { margin-left: 16px; }
+  h1 { color: var(--ink); font-size: 28px; line-height: 1.2; margin: 28px 0 8px; letter-spacing: -.01em; }
+  h2 { color: var(--ink); font-size: 19px; margin: 40px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+  h3 { color: var(--ink); font-size: 15px; margin: 24px 0 4px; }
+  a { color: var(--ink); text-underline-offset: 2px; }
+  a:hover { color: #fff; }
+  code { font: 13px ui-monospace, "Cascadia Code", Menlo, monospace; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: var(--ink); }
+  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    overflow-x: auto; }
+  pre code { background: none; border: 0; padding: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 8px 0; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--ink); font-weight: 600; }
+  ol, ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .lead { font-size: 16px; }
+  .note { border-left: 3px solid var(--accent); background: var(--surface); padding: 8px 14px;
+    border-radius: 0 8px 8px 0; }
+  .toc { columns: 2; column-gap: 32px; padding-left: 18px; }
+  .toc li { margin: 0 0 6px; break-inside: avoid; }
+  @media (max-width: 560px) { .toc { columns: 1; } header nav a { margin-left: 12px; } }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <a class="home" href="/">peek</a>
+  <nav><a href="/">Your machines</a><a href="https://github.com/peculiarnewbie/peek">GitHub</a></nav>
+</header>
+
+<h1>Docs</h1>
+<p class="lead">peek is a remote desktop for your own machines that connects instantly. The machine runs a small
+host that stays idle until you look; any browser is the client. It is meant for the times you want another
+computer's screen for a few seconds, where a five-second connect would be most of the wait.</p>
+
+<ul class="toc">
+  <li><a href="#how">How it works</a></li>
+  <li><a href="#setup">Set up a machine</a></li>
+  <li><a href="#pair">Pair a browser</a></li>
+  <li><a href="#use">Using it</a></li>
+  <li><a href="#phone">On a phone or tablet</a></li>
+  <li><a href="#manage">Paired browsers</a></li>
+  <li><a href="#security">Security</a></li>
+  <li><a href="#trouble">Troubleshooting</a></li>
+</ul>
+
+<h2 id="how">How it works</h2>
+<ul>
+  <li>The host runs on Windows, or on Linux under a Wayland compositor with the wlroots protocols (niri, sway,
+    Hyprland, river). It captures the screen only while a client is watching.</li>
+  <li>This site serves the page and nothing else. Your browser connects straight to each machine over
+    <a href="https://tailscale.com">Tailscale</a>, at its <code>https://&lt;machine&gt;.&lt;tailnet&gt;.ts.net</code>
+    name.</li>
+  <li>The list of your machines and the keys for them stay in your browser. Nothing about them is sent to or
+    stored on this site.</li>
+</ul>
+
+<h2 id="setup">Set up a machine</h2>
+<h3>1. Tailscale</h3>
+<p>Install <a href="https://tailscale.com/download">Tailscale</a> on the machine and on every device you will
+view it from, all on the same tailnet. Then, once per tailnet, in the Tailscale admin console under
+<strong>DNS</strong>, turn on <strong>HTTPS Certificates</strong>. (This puts your machine and tailnet names in
+the public Certificate Transparency logs.)</p>
+
+<h3>2. Build peek</h3>
+<p>peek is built from source for now. It needs <a href="https://rustup.rs">Rust</a> and
+<a href="https://bun.sh">Bun</a> (or Node):</p>
+<pre><code>git clone https://github.com/peculiarnewbie/peek
+cd peek
+cargo build --release</code></pre>
+<p>The program is <code>target/release/peek</code> (<code>peek.exe</code> on Windows).</p>
+
+<h3>3. Start it</h3>
+<p><strong>Windows.</strong> From an elevated PowerShell in the <code>peek</code> folder:</p>
+<pre><code>.\scripts\install-autostart.ps1 -PeekArgs '--no-token'</code></pre>
+<p>This allows peek through Windows Firewall (Tailscale addresses only) and starts it at logon, hidden and as
+administrator, so it can also control windows that run as administrator. <code>-Remove</code> undoes both.</p>
+<p><strong>Linux.</strong> From inside the Wayland session:</p>
+<pre><code>cp target/release/peek ~/.local/bin/
+cp scripts/peek.service ~/.config/systemd/user/
+systemctl --user enable --now peek</code></pre>
+<p>Keys are typed through <code>/dev/uinput</code>, which many distributions already let the logged-in user
+write; the <a href="https://github.com/peculiarnewbie/peek#install-on-linux-key-access-start-at-login-firewall">README</a>
+has the one-line udev rule if yours does not.</p>
+
+<h2 id="pair">Pair a browser</h2>
+<p>On the machine, run:</p>
+<pre><code>peek pair</code></pre>
+<p>The first time, it sets up Tailscale Serve so browsers can reach the machine over HTTPS (Tailscale may ask you
+to allow that, or on Linux for <code>sudo tailscale set --operator=$USER</code>). Then it prints a link and a QR
+code with a one-time code, valid once, for five minutes. Then either:</p>
+<ul>
+  <li>open the link on the device you want to use, or scan the QR code with its camera (on Android Chrome,
+    <strong>Scan QR code</strong> on this site works too), or</li>
+  <li>on this site, choose <strong>Add a machine</strong> and enter the machine's name and the code.</li>
+</ul>
+<p>A browser already connected to the machine can pair another device too: <strong>Settings → Pair a
+device</strong> shows a QR code.</p>
+<p class="note">In Chrome, allow <strong>Local network access</strong> when the site asks. Without it Chrome
+blocks the page from reaching your machines.</p>
+
+<h2 id="use">Using it</h2>
+<p>Open a machine from <a href="/">your list</a>. Its page has its own address (for example
+<code>/my-pc</code>), so it can be bookmarked; the toolbar's back button returns to the list. Hover the dot at
+the top for the toolbar.</p>
+<ul>
+  <li><strong>Sleep</strong> stops the screen while keeping the connection; click the page or press Space to
+    resume. <strong>Pause when unfocused</strong> in Settings does this whenever the window is in the
+    background.</li>
+  <li><strong>Settings</strong> has presets (Saver, Balanced, Crisp), and quality, resolution, motion, frame rate
+    and monitor on their own.</li>
+  <li><strong>Stats</strong> shows frame rate, data rate and latency.</li>
+  <li>Mouse, keyboard and clipboard go through as on the machine itself.</li>
+</ul>
+
+<h2 id="phone">On a phone or tablet</h2>
+<p>Tap the dot for the toolbar. Its <strong>Trackpad / Touch</strong> button switches how a finger works:</p>
+<table>
+  <tr><th>Gesture</th><th>Trackpad (default)</th><th>Touch</th></tr>
+  <tr><td>One finger moving</td><td>moves the pointer</td><td>drags</td></tr>
+  <tr><td>Tap</td><td>left click at the pointer</td><td>left click there</td></tr>
+  <tr><td>Long press</td><td>holds the left button: move to drag</td><td>right click</td></tr>
+  <tr><td>Two-finger tap</td><td>right click</td><td>right click</td></tr>
+  <tr><td>Three-finger tap</td><td>middle click</td><td>middle click</td></tr>
+  <tr><td>Two fingers moving</td><td>scroll</td><td>scroll</td></tr>
+  <tr><td>Pinch</td><td>zoom around the pointer</td><td>zoom and pan</td></tr>
+</table>
+<p>The bar at the bottom is the keyboard. Type in its field with the phone's keyboard, then Send types it on the
+machine in one go. The keyboard button beside it swaps in a PC keyboard with Ctrl, Alt, Win, Shift, F-keys and
+arrows.</p>
+
+<h2 id="manage">Paired browsers</h2>
+<p>On the machine:</p>
+<pre><code>peek clients        # list the browsers paired with it
+peek unpair &lt;id&gt;    # unpair one; it can no longer connect</code></pre>
+<p>On this site, the × on a machine forgets it in this browser. Pairing it again needs a new code.</p>
+
+<h2 id="security">Security</h2>
+<ul>
+  <li>Machines are reached only over Tailscale, so your tailnet decides which devices can get to them at all.</li>
+  <li>From this site, a machine accepts only browsers paired with it. Each browser has its own key; the machine
+    keeps only a hash of it.</li>
+  <li>Pairing codes work once, for five minutes, and guessing is rate-limited.</li>
+  <li>Never expose peek's port with <code>tailscale funnel</code>: that would put it on the internet.</li>
+</ul>
+
+<h2 id="trouble">Troubleshooting</h2>
+<h3>"Cannot reach" a machine</h3>
+<ul>
+  <li>Check that Tailscale is connected on this device and that the machine is on.</li>
+  <li>Check that peek is running there and that <code>peek pair</code> set up Tailscale Serve
+    (<code>tailscale serve status</code>).</li>
+  <li>In Chrome, check the site may access your local network: the icon left of the address bar.</li>
+  <li>The very first connection to a machine can take a few seconds while Tailscale fetches its certificate.</li>
+</ul>
+<h3>"No longer paired"</h3>
+<p>The machine unpaired this browser, or its pairing data was reset. Run <code>peek pair</code> there again.</p>
+
+<p style="margin-top: 40px">Everything else, including every option and how peek works inside, is in the
+<a href="https://github.com/peculiarnewbie/peek#readme">README on GitHub</a>.</p>
+</main>
+</body>
+</html>

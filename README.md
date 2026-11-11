@@ -249,7 +249,8 @@ On the machine's side:
 - Chrome may ask once whether the site may access devices on your local
   network: allow it, since that is how it reaches your machines.
 
-The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
+The site also serves short setup docs at `/docs/` (`client/docs/index.html`),
+and machine pages never take that path. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
 deploy:hosted` (the script runs `cf` under Node, which it needs; Bun cannot
 load its config). To run your own copy, set your worker name and domain in
 `client/cloudflare.config.ts`, deploy, and start peek with `--web

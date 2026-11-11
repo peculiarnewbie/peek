@@ -46,6 +46,8 @@ export function pairFromUrl() {
   submit(link.host, link.code);
 }
 
+const GITHUB = 'https://github.com/peculiarnewbie/peek';
+
 const STATUS = { up: 'Online', down: 'Offline', checking: 'Checking…' } as const;
 
 function Card(props: { m: Machine }) {
@@ -116,8 +118,17 @@ export function Devices() {
           <p class="err banner">{BLOCKED_HELP}</p>
         </Show>
         <Show when={machines().length} fallback={
-          <p class="hint lead">Your computers, one click away. This browser connects straight to each one over
-            Tailscale; pair it with each machine once.</p>
+          <section class="intro">
+            <p class="tagline">Your computers' screens in a browser tab, connected in an instant.</p>
+            <p class="hint lead">peek is a small remote desktop for your own machines. Run it on a computer
+              (Windows, or Linux on Wayland) that is on your <a href="https://tailscale.com">Tailscale</a> network,
+              pair this browser with it once, and its screen is a click away, with mouse, keyboard and clipboard.
+              This site only serves the page: your browser connects straight to each machine over Tailscale.</p>
+            <div class="links">
+              <a class="btn alt" href="/docs/">Docs</a>
+              <a class="btn alt" href={GITHUB}>GitHub</a>
+            </div>
+          </section>
         }>
           <div class="dgrid">
             <For each={machines()}>{m => <Card m={m} />}</For>
@@ -160,7 +171,8 @@ export function Devices() {
           }} />
         </Show>
         <p class="hint small foot">The list of machines and their keys stay in this browser. Nothing about them is
-          stored on this site.</p>
+          stored on this site.<Show when={machines().length}>{' '}<a href="/docs/">Docs</a> ·{' '}
+          <a href={GITHUB}>GitHub</a></Show></p>
       </main>
     </Show>
   );

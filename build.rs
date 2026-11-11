@@ -12,10 +12,10 @@ fn main() {
     }
     let client = Path::new("client");
     let tool = package_manager();
-    if !client.join("node_modules").exists() {
-        let install = if tool == "bun" { vec!["install", "--frozen-lockfile"] } else { vec!["install"] };
-        run(&tool, &install, client);
-    }
+    // Every time, not only when node_modules is missing: a pull can add a
+    // package. With nothing to do this takes a moment.
+    let install = if tool == "bun" { vec!["install", "--frozen-lockfile"] } else { vec!["install"] };
+    run(&tool, &install, client);
     run(&tool, &["run", "build"], client);
 }
 

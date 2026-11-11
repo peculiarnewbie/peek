@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig, type Plugin } from 'vite';
 import solid from 'vite-plugin-solid';
 import { viteSingleFile } from 'vite-plugin-singlefile';
@@ -13,11 +14,18 @@ const HOSTED_HEADERS = `/*
   Cache-Control: no-cache
 /sw.js
   Cache-Control: no-cache
+/docs/*
+  Cache-Control: no-cache
 `;
 
-const hostedHeaders = (): Plugin => ({
-  name: 'peek-hosted-headers',
-  generateBundle() { this.emitFile({ type: 'asset', fileName: '_headers', source: HOSTED_HEADERS }); },
+// Files only the hosted site has: its headers, and the docs at /docs/ (a
+// static page; machine pages never take that path, see hosted.ts).
+const hostedFiles = (): Plugin => ({
+  name: 'peek-hosted-files',
+  generateBundle() {
+    this.emitFile({ type: 'asset', fileName: '_headers', source: HOSTED_HEADERS });
+    this.emitFile({ type: 'asset', fileName: 'docs/index.html', source: readFileSync('docs/index.html', 'utf8') });
+  },
 });
 
 // Two builds of the same client:
@@ -28,7 +36,7 @@ const hostedHeaders = (): Plugin => ({
 export default defineConfig(async ({ mode }) => ({
   plugins: [
     solid(), viteSingleFile(),
-    ...(mode === 'hosted' ? [hostedHeaders(), (await import('@cloudflare/vite-plugin')).cloudflare()] : []),
+    ...(mode === 'hosted' ? [hostedFiles(), (await import('@cloudflare/vite-plugin')).cloudflare()] : []),
   ],
   // (The Cloudflare plugin puts the hosted build in .cloudflare/output.)
   build: { target: 'es2022', outDir: 'dist', emptyOutDir: true },
