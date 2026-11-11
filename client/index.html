@@ -310,7 +310,9 @@ function connect() {
                                   soft: cfg.soft ? 1 : 0, mon: cfg.mon, vis: active() ? 1 : 0 });
   const sock = ws = new WebSocket(`${proto}://${location.host}/ws?${q}`);
   sock.binaryType = 'arraybuffer';
-  sock.onopen = () => { retry = 250; message(''); refreshBar(); };
+  // Pausing or resuming while the socket was still connecting (focus often
+  // arrives just after a reload) could not be sent; restate where we are now.
+  sock.onopen = () => { retry = 250; message(''); send({ t: 'vis', v: active() }); refreshBar(); };
   sock.onmessage = e => {
     const size = typeof e.data === 'string' ? e.data.length : e.data.byteLength;
     S.bytesIn += size; S.totalIn += size;
