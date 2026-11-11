@@ -446,6 +446,7 @@ enum ClientMsg {
         scale: Option<usize>,
         fps: Option<u32>,
         soft: Option<bool>,
+        lossless: Option<bool>,
     },
     #[serde(rename = "m")]
     Move { x: f64, y: f64 },
@@ -538,6 +539,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             scale: scale(param(&query, "scale")).unwrap_or(1),
             fps: fps(param(&query, "fps")).unwrap_or(0),
             soft: query.get("soft").is_some_and(|v| v == "1"),
+            lossless: query.get("lossless").is_some_and(|v| v == "1"),
         },
         visible: query.get("vis").is_none_or(|v| v != "0"),
     });
@@ -588,7 +590,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             ClientMsg::Visible { v } => {
                 let _ = shared.engine.send(Cmd::Visible { id, visible: v });
             }
-            ClientMsg::Configure { mon: m, q, scale: s, fps: f, soft } => {
+            ClientMsg::Configure { mon: m, q, scale: s, fps: f, soft, lossless } => {
                 mon = m.unwrap_or(mon);
                 let change = ViewChange {
                     mon: m,
@@ -596,6 +598,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                     scale: scale(s),
                     fps: fps(f),
                     soft,
+                    lossless,
                 };
                 let _ = shared.engine.send(Cmd::Configure { id, change });
             }

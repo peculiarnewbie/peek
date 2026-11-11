@@ -108,7 +108,7 @@ export function Stats() {
       ['Browser', `${ms(L.client)} from receive to draw`],
       ['First frame', first.connect == null ? '–'
         : `${ms(first.connect)} after connecting` + (first.page == null ? '' : `, ${ms(first.page)} after opening the page`)],
-      ['Stream', `${cv.width} × ${cv.height}, ${cfg.quality} quality, ${cfg.soft ? 'soft' : 'sharp'} motion, ≤ ${cfg.fps} fps`],
+      ['Stream', `${cv.width} × ${cv.height}, ${cfg.quality} quality, ${cfg.soft ? 'soft' : 'sharp'} motion, ${cfg.lossless ? 'lossless' : 'JPEG'} text, ≤ ${cfg.fps} fps`],
       ['State', state],
     ];
   };

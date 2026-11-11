@@ -9,6 +9,7 @@ mod install;
 mod pairing;
 mod platform;
 mod server;
+mod webp;
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};

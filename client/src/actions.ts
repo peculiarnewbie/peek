@@ -24,8 +24,9 @@ export function setSleep(v: boolean, auto = false) {
 export function applyCfg(change: Partial<Cfg>) {
   setCfg(change);
   store.set('q', cfg.quality); store.set('scale', cfg.scale); store.set('soft', cfg.soft ? 1 : 0);
-  store.set('fps', cfg.fps); store.set('mon', cfg.mon); store.set('autosleep', cfg.autoSleep ? 1 : 0);
-  send({ t: 'cfg', q: cfg.quality, scale: cfg.scale, mon: cfg.mon, fps: cfg.fps, soft: cfg.soft });
+  store.set('lossless', cfg.lossless ? 1 : 0);
+  store.set('fps', cfg.fps); store.set('mon', cfg.mon); store.set('pause', cfg.autoSleep ? 1 : 0);
+  send({ t: 'cfg', q: cfg.quality, scale: cfg.scale, mon: cfg.mon, fps: cfg.fps, soft: cfg.soft, lossless: cfg.lossless });
 }
 
 export function showSettings(open: boolean) {

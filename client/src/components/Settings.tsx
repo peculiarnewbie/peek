@@ -28,6 +28,8 @@ const CONTROLS: Control[] = [
       return m ? `${Math.ceil(m.w / cfg.scale)} × ${Math.ceil(m.h / cfg.scale)}` : '';
     } },
   { key: 'soft', label: 'Motion', options: () => [[false, 'Sharp'], [true, 'Soft']], value: () => '' },
+  { key: 'lossless', label: 'Lossless text', options: () => [[false, 'Off'], [true, 'On']],
+    value: () => cfg.lossless ? 'photos stay JPEG' : '' },
   { key: 'fps', label: 'Frame rate', options: () => FPS_STEPS.map(f => [f, String(f)]), value: () => '' },
   { key: 'mon', label: 'Monitor', options: () => monitors().map((_, i) => [i, String(i + 1)]),
     value: () => { const m = monitors()[cfg.mon]; return m ? `${m.w} × ${m.h}` : ''; },

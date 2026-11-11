@@ -6,8 +6,11 @@
 //!
 //! The screen is cut into 64-pixel tiles. Each captured frame is compared
 //! against the previous one tile by tile, changed tiles are merged into
-//! rectangles, and each rectangle is sent as a JPEG.
+//! rectangles, and each rectangle is sent as a JPEG. With the "lossless"
+//! setting, tiles that look like text or flat UI go out as lossless WebP
+//! instead, and only photo-like tiles as JPEG.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -19,6 +22,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::platform::{self, Capture, Pixels};
 use crate::server::Shared;
+use crate::webp;
 
 /// Tile edge in pixels. A multiple of 16 so JPEG blocks line up at the seams.
 pub const TILE: usize = 64;
@@ -100,6 +104,9 @@ pub struct View {
     /// Send changing regions at half this resolution; they are re-sent at
     /// full resolution once still.
     pub soft: bool,
+    /// Send text and flat UI losslessly (WebP), so it needs no sharp
+    /// re-send; photo-like regions still go out as JPEG.
+    pub lossless: bool,
 }
 
 /// A partial update to a [`View`]; `None` keeps the current value.
@@ -110,6 +117,7 @@ pub struct ViewChange {
     pub scale: Option<usize>,
     pub fps: Option<u32>,
     pub soft: Option<bool>,
+    pub lossless: Option<bool>,
 }
 
 pub enum Cmd {
@@ -263,59 +271,62 @@ struct Rect {
 /// Merge flagged tiles into rectangles: horizontal runs per tile row, then
 /// runs with identical extents on consecutive rows are stacked.
 fn merge(tiles: &[bool], cols: usize, rows: usize, width: usize, height: usize) -> Vec<Rect> {
-    let build = |coarse: bool| {
-        let mut done: Vec<Rect> = Vec::new();
-        let mut open: Vec<(usize, usize, usize)> = Vec::new(); // (col0, col1, row0)
-        for r in 0..=rows {
-            let mut runs: Vec<(usize, usize)> = Vec::new();
-            if r < rows {
-                let row = &tiles[r * cols..(r + 1) * cols];
-                if coarse {
-                    let first = row.iter().position(|&t| t);
-                    let last = row.iter().rposition(|&t| t);
-                    if let (Some(a), Some(b)) = (first, last) {
-                        runs.push((a, b + 1));
-                    }
-                } else {
-                    let mut c = 0;
-                    while c < cols {
-                        if row[c] {
-                            let start = c;
-                            while c < cols && row[c] {
-                                c += 1;
-                            }
-                            runs.push((start, c));
-                        } else {
+    let rects = stack(tiles, cols, rows, width, height, false);
+    if rects.len() > MAX_RECTS { stack(tiles, cols, rows, width, height, true) } else { rects }
+}
+
+/// Rectangles of flagged tiles: runs per tile row (`coarse`: one run from the
+/// first flagged tile to the last), stacked while consecutive rows match.
+fn stack(tiles: &[bool], cols: usize, rows: usize, width: usize, height: usize, coarse: bool) -> Vec<Rect> {
+    let mut done: Vec<Rect> = Vec::new();
+    let mut open: Vec<(usize, usize, usize)> = Vec::new(); // (col0, col1, row0)
+    for r in 0..=rows {
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        if r < rows {
+            let row = &tiles[r * cols..(r + 1) * cols];
+            if coarse {
+                let first = row.iter().position(|&t| t);
+                let last = row.iter().rposition(|&t| t);
+                if let (Some(a), Some(b)) = (first, last) {
+                    runs.push((a, b + 1));
+                }
+            } else {
+                let mut c = 0;
+                while c < cols {
+                    if row[c] {
+                        let start = c;
+                        while c < cols && row[c] {
                             c += 1;
                         }
+                        runs.push((start, c));
+                    } else {
+                        c += 1;
                     }
                 }
             }
-            let mut next = Vec::with_capacity(runs.len());
-            for &(c0, c1, r0) in &open {
-                if runs.contains(&(c0, c1)) {
-                    next.push((c0, c1, r0));
-                } else {
-                    let (x, y) = (c0 * TILE, r0 * TILE);
-                    done.push(Rect {
-                        x,
-                        y,
-                        w: (c1 * TILE).min(width) - x,
-                        h: (r * TILE).min(height) - y,
-                    });
-                }
-            }
-            for &(c0, c1) in &runs {
-                if !open.iter().any(|&(a, b, _)| (a, b) == (c0, c1)) {
-                    next.push((c0, c1, r));
-                }
-            }
-            open = next;
         }
-        done
-    };
-    let rects = build(false);
-    if rects.len() > MAX_RECTS { build(true) } else { rects }
+        let mut next = Vec::with_capacity(runs.len());
+        for &(c0, c1, r0) in &open {
+            if runs.contains(&(c0, c1)) {
+                next.push((c0, c1, r0));
+            } else {
+                let (x, y) = (c0 * TILE, r0 * TILE);
+                done.push(Rect {
+                    x,
+                    y,
+                    w: (c1 * TILE).min(width) - x,
+                    h: (r * TILE).min(height) - y,
+                });
+            }
+        }
+        for &(c0, c1) in &runs {
+            if !open.iter().any(|&(a, b, _)| (a, b) == (c0, c1)) {
+                next.push((c0, c1, r));
+            }
+        }
+        open = next;
+    }
+    done
 }
 
 /// Average `f`x`f` blocks of a region into a smaller BGRA buffer. Blocks cut
@@ -350,26 +361,35 @@ fn downscale(screen: &Screen, r: Rect, f: usize) -> (Vec<u8>, usize, usize) {
     (out, ow, oh)
 }
 
-/// JPEG-encode one region, shrunk by `factor`. Returns where it goes in the
-/// client's canvas (which is the screen shrunk by `scale`) and the bytes; the
-/// client stretches the image to fill that rectangle.
-fn encode_piece(screen: &Screen, r: Rect, scale: usize, factor: usize, quality: u8, full_chroma: bool) -> (Rect, Vec<u8>) {
+/// A region shrunk by `factor`, as packed BGRA rows: borrowed from the
+/// screen when it already is (full-width rows at full size), else copied.
+fn region(screen: &Screen, r: Rect, factor: usize) -> (Cow<'_, [u8]>, usize, usize) {
     let stride = screen.width * 4;
-    let owned;
-    let (pixels, ow, oh): (&[u8], usize, usize) = if factor > 1 {
+    if factor > 1 {
         let (buf, ow, oh) = downscale(screen, r, factor);
-        owned = buf;
-        (&owned, ow, oh)
+        (Cow::Owned(buf), ow, oh)
     } else if r.x == 0 && r.w == screen.width {
-        (&screen.buf[r.y * stride..(r.y + r.h) * stride], r.w, r.h)
+        (Cow::Borrowed(&screen.buf[r.y * stride..(r.y + r.h) * stride]), r.w, r.h)
     } else {
         let mut buf = Vec::with_capacity(r.w * r.h * 4);
         for y in r.y..r.y + r.h {
             buf.extend_from_slice(&screen.buf[y * stride + r.x * 4..][..r.w * 4]);
         }
-        owned = buf;
-        (&owned, r.w, r.h)
-    };
+        (Cow::Owned(buf), r.w, r.h)
+    }
+}
+
+/// Where a region shrunk by `scale` goes in the client's canvas.
+/// Rectangles start on tile (or chunk) boundaries, so x and y divide evenly.
+fn on_canvas(r: Rect, scale: usize) -> Rect {
+    Rect { x: r.x / scale, y: r.y / scale, w: r.w.div_ceil(scale), h: r.h.div_ceil(scale) }
+}
+
+/// JPEG-encode one region, shrunk by `factor`. Returns where it goes in the
+/// client's canvas (which is the screen shrunk by `scale`) and the bytes; the
+/// client stretches the image to fill that rectangle.
+fn encode_piece(screen: &Screen, r: Rect, scale: usize, factor: usize, quality: u8, full_chroma: bool) -> (Rect, Vec<u8>) {
+    let (pixels, ow, oh) = region(screen, r, factor);
     let mut out = Vec::with_capacity(ow * oh / 3 + 1024);
     let mut encoder = Encoder::new(&mut out, quality);
     encoder.set_sampling_factor(if full_chroma {
@@ -378,10 +398,105 @@ fn encode_piece(screen: &Screen, r: Rect, scale: usize, factor: usize, quality: 
         SamplingFactor::R_4_2_0
     });
     encoder
-        .encode(pixels, ow as u16, oh as u16, ColorType::Bgra)
+        .encode(&pixels, ow as u16, oh as u16, ColorType::Bgra)
         .expect("JPEG encoding into memory cannot fail");
-    // Rectangles start on tile (or chunk) boundaries, so x and y divide evenly.
-    (Rect { x: r.x / scale, y: r.y / scale, w: r.w.div_ceil(scale), h: r.h.div_ceil(scale) }, out)
+    (on_canvas(r, scale), out)
+}
+
+/// Colour of tiles painted over in a lossless piece (they go out as JPEG).
+const FLAT: [u8; 3] = [128, 128, 128];
+
+/// Losslessly encode one region at the canvas scale as WebP. Tiles not in
+/// `exact` are painted flat: they are sent as JPEG and drawn over it. At full
+/// size the pixels are read from the screen in place, with no copy; at half
+/// size from the shrunk copy, a quarter of the region.
+fn encode_lossless(screen: &Screen, r: Rect, scale: usize, exact: &[bool]) -> (Rect, Vec<u8>) {
+    let (pixels, stride) = if scale > 1 {
+        let (buf, ow, _) = downscale(screen, r, scale);
+        (Cow::Owned(buf), ow * 4)
+    } else {
+        (Cow::Borrowed(&screen.buf[(r.y * screen.width + r.x) * 4..]), screen.width * 4)
+    };
+    let (ow, oh) = (r.w.div_ceil(scale), r.h.div_ceil(scale));
+    let out = webp::encode(ow, oh, |oy, row| {
+        let line = &pixels[oy * stride..][..ow * 4];
+        let tiles = &exact[(r.y + oy * scale) / TILE * screen.cols..];
+        for (ox, (dst, px)) in row.iter_mut().zip(line.chunks_exact(4)).enumerate() {
+            // BGRA in, with an undefined 4th byte; RGB out.
+            *dst = if tiles[(r.x + ox * scale) / TILE] { [px[2], px[1], px[0]] } else { FLAT };
+        }
+    });
+    (on_canvas(r, scale), out)
+}
+
+/// Whether a tile looks like text or flat UI, which lossless compression
+/// packs smaller than JPEG: at least three quarters of its pixels repeat the
+/// one to their left or above. Photos, and gradients with dithering noise,
+/// have few repeats however few colours they use.
+fn looks_flat(screen: &Screen, tile: usize) -> bool {
+    let (x0, y0) = (tile % screen.cols * TILE, tile / screen.cols * TILE);
+    let (w, h) = (TILE.min(screen.width - x0), TILE.min(screen.height - y0));
+    let stride = screen.width * 4;
+    // The 4th byte of a captured pixel is undefined.
+    let px = |x: usize, y: usize| u32::from_le_bytes(screen.buf[y * stride + x * 4..][..4].try_into().unwrap()) & 0xFF_FFFF;
+    let mut repeats = 0;
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            let v = px(x, y);
+            if (x > x0 && v == px(x - 1, y)) || (y > y0 && v == px(x, y - 1)) {
+                repeats += 1;
+            }
+        }
+    }
+    repeats * 4 >= w * h * 3
+}
+
+/// Photo tiles widened, within each row's runs of covered tiles, to span from
+/// the first photo tile to the last: fewer, larger JPEGs, never over a tile
+/// the frame does not send.
+fn photo_spans(covered: &[bool], photo: &[bool], cols: usize) -> Vec<bool> {
+    let mut spans = vec![false; covered.len()];
+    for row in (0..covered.len()).step_by(cols) {
+        let mut c = 0;
+        while c < cols {
+            if !covered[row + c] {
+                c += 1;
+                continue;
+            }
+            let start = c;
+            while c < cols && covered[row + c] {
+                c += 1;
+            }
+            let run = row + start..row + c;
+            if let (Some(a), Some(b)) = (run.clone().position(|t| photo[t]), run.clone().rposition(|t| photo[t])) {
+                spans[run.start + a..=run.start + b].fill(true);
+            }
+        }
+    }
+    spans
+}
+
+/// Mark the tiles a list of rectangles covers.
+fn cover(rects: &[Rect], cols: usize, tiles: &mut [bool]) {
+    for r in rects {
+        for ty in r.y / TILE..(r.y + r.h).div_ceil(TILE) {
+            tiles[ty * cols + r.x / TILE..ty * cols + (r.x + r.w).div_ceil(TILE)].fill(true);
+        }
+    }
+}
+
+/// Cut rectangles into pieces at most CHUNK_ROWS high, to encode in parallel.
+fn chunks(rects: Vec<Rect>) -> Vec<Rect> {
+    let mut pieces = Vec::new();
+    for r in rects {
+        let mut y = r.y;
+        while y < r.y + r.h {
+            let h = CHUNK_ROWS.min(r.y + r.h - y);
+            pieces.push(Rect { y, h, ..r });
+            y += h;
+        }
+    }
+    pieces
 }
 
 /// Bytes before the first rectangle.
@@ -392,32 +507,64 @@ const FLAG_FULL_CHROMA: u8 = 1;
 const FLAG_REFINE: u8 = 2;
 /// Frame flag: encoded at half the canvas resolution, to be stretched.
 const FLAG_SOFT: u8 = 4;
+/// Frame flag: each rectangle carries a format byte (0 JPEG, 1 lossless
+/// WebP) between its position and its length.
+const FLAG_LOSSLESS: u8 = 8;
 
 /// Build one frame message for a canvas of the screen shrunk by `scale`.
+/// Also returns the tiles that went out losslessly (none without
+/// FLAG_LOSSLESS), which need no sharp re-send.
 ///
 /// Layout (little-endian): u8 kind = 1, u32 seq, u16 width, u16 height,
 /// u16 count, u32 host time in microseconds (filled in by the caller once
 /// encoding is done), u8 JPEG quality, u8 flags; then per rectangle u16 x,
-/// u16 y, u16 w, u16 h (where to draw it on the canvas), u32 length and the
-/// JPEG bytes. The JPEG may be smaller than w x h; it is stretched to fit.
-fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, flags: u8, seq: u32) -> Vec<u8> {
+/// u16 y, u16 w, u16 h (where to draw it on the canvas), with FLAG_LOSSLESS
+/// a u8 format (0 JPEG, 1 WebP), then u32 length and the image bytes. A JPEG
+/// may be smaller than w x h; it is stretched to fit. Rectangles are drawn
+/// in order: lossless pieces come first, with their photo-like tiles painted
+/// flat, and JPEG rectangles over those tiles after.
+fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, flags: u8, seq: u32) -> (Vec<u8>, Vec<bool>) {
     let full_chroma = flags & FLAG_FULL_CHROMA != 0;
     let factor = if flags & FLAG_SOFT != 0 { scale * 2 } else { scale };
-    let mut pieces = Vec::new();
-    for r in merge(tiles, screen.cols, screen.rows, screen.width, screen.height) {
-        let mut y = r.y;
-        while y < r.y + r.h {
-            let h = CHUNK_ROWS.min(r.y + r.h - y);
-            pieces.push(Rect { y, h, ..r });
-            y += h;
+    let rects = merge(tiles, screen.cols, screen.rows, screen.width, screen.height);
+    let (lossless, jpeg, exact) = if flags & FLAG_LOSSLESS != 0 {
+        // Every tile the rectangles cover (more than `tiles` after a coarse merge).
+        let mut covered = vec![false; tiles.len()];
+        cover(&rects, screen.cols, &mut covered);
+        let mut exact: Vec<bool> = (0..tiles.len()).into_par_iter().map(|t| covered[t] && looks_flat(screen, t)).collect();
+        let photo: Vec<bool> = covered.iter().zip(&exact).map(|(&c, &e)| c && !e).collect();
+        // Many small JPEGs would cost more in headers and seams than drawing
+        // over some flat tiles, which are then not exact after all.
+        let spans = photo_spans(&covered, &photo, screen.cols);
+        let jpeg = stack(&spans, screen.cols, screen.rows, screen.width, screen.height, false);
+        let mut drawn_over = vec![false; tiles.len()];
+        cover(&jpeg, screen.cols, &mut drawn_over);
+        for (e, &d) in exact.iter_mut().zip(&drawn_over) {
+            *e &= !d;
         }
-    }
-    let parts: Vec<(Rect, Vec<u8>)> = pieces
+        let has_exact = |r: &Rect| {
+            (r.y / TILE..(r.y + r.h).div_ceil(TILE))
+                .any(|ty| exact[ty * screen.cols + r.x / TILE..ty * screen.cols + (r.x + r.w).div_ceil(TILE)].contains(&true))
+        };
+        let lossless: Vec<Rect> = chunks(rects).into_iter().filter(has_exact).collect();
+        (lossless, chunks(jpeg), exact)
+    } else {
+        (Vec::new(), chunks(rects), Vec::new())
+    };
+    let jobs: Vec<(Rect, bool)> = lossless.iter().map(|&r| (r, true)).chain(jpeg.iter().map(|&r| (r, false))).collect();
+    let parts: Vec<(Rect, bool, Vec<u8>)> = jobs
         .par_iter()
-        .map(|&r| encode_piece(screen, r, scale, factor, quality, full_chroma))
+        .map(|&(r, webp)| {
+            let (at, data) = if webp {
+                encode_lossless(screen, r, scale, &exact)
+            } else {
+                encode_piece(screen, r, scale, factor, quality, full_chroma)
+            };
+            (at, webp, data)
+        })
         .collect();
 
-    let mut msg = Vec::with_capacity(HEADER + parts.iter().map(|(_, d)| d.len() + 12).sum::<usize>());
+    let mut msg = Vec::with_capacity(HEADER + parts.iter().map(|(_, _, d)| d.len() + 13).sum::<usize>());
     msg.push(1u8);
     msg.extend_from_slice(&seq.to_le_bytes());
     msg.extend_from_slice(&(screen.width.div_ceil(scale) as u16).to_le_bytes());
@@ -426,14 +573,17 @@ fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, fla
     msg.extend_from_slice(&0u32.to_le_bytes());
     msg.push(quality);
     msg.push(flags);
-    for (r, data) in &parts {
+    for (r, webp, data) in &parts {
         for v in [r.x, r.y, r.w, r.h] {
             msg.extend_from_slice(&(v as u16).to_le_bytes());
+        }
+        if flags & FLAG_LOSSLESS != 0 {
+            msg.push(*webp as u8);
         }
         msg.extend_from_slice(&(data.len() as u32).to_le_bytes());
         msg.extend_from_slice(data);
     }
-    msg
+    (msg, exact)
 }
 
 #[derive(Default)]
@@ -613,7 +763,9 @@ impl Engine {
                     v.scale = change.scale.unwrap_or(v.scale);
                     v.fps = change.fps.unwrap_or(v.fps);
                     v.soft = change.soft.unwrap_or(v.soft);
-                    if (v.mon, v.quality, v.scale) != (before.mon, before.quality, before.scale) {
+                    v.lossless = change.lossless.unwrap_or(v.lossless);
+                    let resend = |v: &View| (v.mon, v.quality, v.scale, v.lossless);
+                    if resend(v) != resend(&before) {
                         self.hello(i); // clamps the monitor index and forces a full resend
                     }
                 }
@@ -728,7 +880,7 @@ impl Engine {
             let (quality, full_chroma) = s.view.quality.still();
             (quality, FLAG_REFINE | if full_chroma { FLAG_FULL_CHROMA } else { 0 })
         };
-        let ((quality, flags), since) = match pass {
+        let ((quality, mut flags), since) = match pass {
             Pass::Fresh => (sharp(), s.pending_since.take()),
             Pass::Refine => (sharp(), None),
             Pass::Moving => {
@@ -736,10 +888,18 @@ impl Engine {
                 ((s.view.quality.moving(), flags), s.pending_since.take())
             }
         };
+        // Soft motion is the cheaper way to send what keeps changing; the
+        // lossless re-send follows once it stops.
+        if s.view.lossless && flags & FLAG_SOFT == 0 {
+            flags |= FLAG_LOSSLESS;
+        }
 
         s.seq = s.seq.wrapping_add(1);
         let started = Instant::now();
-        let mut msg = frame_message(screen, &tiles, s.view.scale, quality, flags, s.seq);
+        let (mut msg, exact) = frame_message(screen, &tiles, s.view.scale, quality, flags, s.seq);
+        for (lossy, &e) in s.tiles.lossy.iter_mut().zip(&exact) {
+            *lossy &= !e;
+        }
         let done = Instant::now();
         let host = done.duration_since(since.unwrap_or(started).min(started));
         msg[11..15].copy_from_slice(&(host.as_micros().min(u32::MAX as u128) as u32).to_le_bytes());
@@ -858,7 +1018,8 @@ mod tests {
         let mut s = screen(200, 150);
         let data = frame(150, 800, &[(5, 5)]);
         s.update(Pixels { width: 200, height: 150, stride: 800, data: &data });
-        let msg = frame_message(&s, &s.changed, 1, 70, FLAG_REFINE, 7);
+        let (msg, exact) = frame_message(&s, &s.changed, 1, 70, FLAG_REFINE, 7);
+        assert!(exact.is_empty(), "nothing is lossless without the flag");
         assert_eq!(msg[0], 1);
         assert_eq!(u32::from_le_bytes(msg[1..5].try_into().unwrap()), 7);
         assert_eq!(u16::from_le_bytes(msg[5..7].try_into().unwrap()), 200);
@@ -875,18 +1036,18 @@ mod tests {
         assert_eq!(jpeg_size(&msg[HEADER + 12..]), (64, 64));
 
         // half resolution: same tile, half the size
-        let half = frame_message(&s, &s.changed, 2, 70, 0, 8);
+        let half = frame_message(&s, &s.changed, 2, 70, 0, 8).0;
         assert_eq!(u16::from_le_bytes(half[5..7].try_into().unwrap()), 100);
         assert_eq!((0..4).map(|i| at(&half, i)).collect::<Vec<_>>(), vec![0, 0, 32, 32]);
         assert_eq!(jpeg_size(&half[HEADER + 12..]), (32, 32));
 
         // soft: drawn at full size, encoded at half
-        let soft = frame_message(&s, &s.changed, 1, 70, FLAG_SOFT, 9);
+        let soft = frame_message(&s, &s.changed, 1, 70, FLAG_SOFT, 9).0;
         assert_eq!((0..4).map(|i| at(&soft, i)).collect::<Vec<_>>(), vec![0, 0, 64, 64]);
         assert_eq!(jpeg_size(&soft[HEADER + 12..]), (32, 32));
 
         // soft at half resolution: drawn at half, encoded at a quarter
-        let both = frame_message(&s, &s.changed, 2, 70, FLAG_SOFT, 10);
+        let both = frame_message(&s, &s.changed, 2, 70, FLAG_SOFT, 10).0;
         assert_eq!((0..4).map(|i| at(&both, i)).collect::<Vec<_>>(), vec![0, 0, 32, 32]);
         assert_eq!(jpeg_size(&both[HEADER + 12..]), (16, 16));
     }
@@ -902,19 +1063,26 @@ mod tests {
         assert!(cap.acquire(0, Duration::ZERO, |px| s.update(px)).unwrap());
         let all = vec![true; s.cols * s.rows];
         println!("{}x{} screen, whole screen changed:", s.width, s.height);
-        println!("{:<8} {:<5} {:>16} {:>16} {:>16}", "quality", "res", "moving", "moving, soft", "sharp");
+        let heads = ["moving", "moving, soft", "sharp", "moving, lossless", "sharp, lossless"];
+        println!("{:<8} {:<5} {}", "quality", "res", heads.map(|h| format!("{h:>18}")).join(""));
         for q in [Quality::Lowest, Quality::Low, Quality::Med, Quality::High] {
             for scale in [1, 2] {
                 let mut cells = Vec::new();
                 let (still_q, chroma) = q.still();
                 let still_flags = FLAG_REFINE | if chroma { FLAG_FULL_CHROMA } else { 0 };
-                for (quality, flags) in [(q.moving(), 0), (q.moving(), FLAG_SOFT), (still_q, still_flags)] {
+                for (quality, flags) in [
+                    (q.moving(), 0),
+                    (q.moving(), FLAG_SOFT),
+                    (still_q, still_flags),
+                    (q.moving(), FLAG_LOSSLESS),
+                    (still_q, still_flags | FLAG_LOSSLESS),
+                ] {
                     let t = Instant::now();
-                    let n = frame_message(&s, &all, scale, quality, flags, 1).len();
-                    cells.push(format!("{:>6.0} KB {:>4.1} ms", n as f64 / 1024.0, t.elapsed().as_secs_f64() * 1e3));
+                    let n = frame_message(&s, &all, scale, quality, flags, 1).0.len();
+                    cells.push(format!("{:>9.0} KB {:>4.1} ms", n as f64 / 1024.0, t.elapsed().as_secs_f64() * 1e3));
                 }
                 let res = if scale == 1 { "full" } else { "half" };
-                println!("{:<8} {:<5} {:>16} {:>16} {:>16}", format!("{q:?}"), res, cells[0], cells[1], cells[2]);
+                println!("{:<8} {:<5} {}", format!("{q:?}"), res, cells.concat());
             }
         }
     }
@@ -1000,5 +1168,124 @@ mod tests {
         assert_eq!((ow, oh), (2, 1));
         // first block: x 0..4, y 0..3 -> mean of x*10+y = 15 + 1 = 16; second: x = 4 -> 40 + 1 = 41
         assert_eq!(out.chunks(4).map(|p| p[0]).collect::<Vec<_>>(), vec![16, 41]);
+    }
+
+    /// A BGRA screen whose pixels come from `paint(x, y)`, with the 4th byte
+    /// left as junk the way capture may hand it over.
+    fn painted(width: usize, height: usize, paint: impl Fn(usize, usize) -> [u8; 3]) -> Screen {
+        let mut data = Vec::with_capacity(width * height * 4);
+        for y in 0..height {
+            for x in 0..width {
+                let [b, g, r] = paint(x, y);
+                data.extend_from_slice(&[b, g, r, 7]);
+            }
+        }
+        let mut s = Screen::default();
+        s.update(Pixels { width, height, stride: width * 4, data: &data });
+        s
+    }
+
+    /// Noise: every pixel a different colour from its neighbours.
+    fn noise(x: usize, y: usize) -> [u8; 3] {
+        let v = ((x * 7919 + y * 104_729) as u32).wrapping_mul(2_654_435_761);
+        [(v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8]
+    }
+
+    /// (x, y, w, h, format, image bytes) of each rectangle of a lossless frame.
+    fn parts(msg: &[u8]) -> Vec<(usize, usize, usize, usize, u8, &[u8])> {
+        let u16at = |i: usize| u16::from_le_bytes([msg[i], msg[i + 1]]) as usize;
+        let mut at = HEADER;
+        let out = (0..u16at(9))
+            .map(|_| {
+                let len = u32::from_le_bytes(msg[at + 9..at + 13].try_into().unwrap()) as usize;
+                let part = (u16at(at), u16at(at + 2), u16at(at + 4), u16at(at + 6), msg[at + 8], &msg[at + 13..at + 13 + len]);
+                at += 13 + len;
+                part
+            })
+            .collect();
+        assert_eq!(at, msg.len());
+        out
+    }
+
+    fn webp_rgba(data: &[u8]) -> (usize, usize, Vec<u8>) {
+        let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(data)).unwrap();
+        let (w, h) = d.dimensions();
+        let mut buf = vec![0; d.output_buffer_size().unwrap()];
+        d.read_image(&mut buf).unwrap();
+        let rgba = if d.has_alpha() { buf } else { buf.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
+        (w as usize, h as usize, rgba)
+    }
+
+    #[test]
+    fn lossless_frames_are_exact_and_leave_photos_to_jpeg() {
+        // 3 x 2 tiles of text-like stripes, with noise (a "photo") in the top middle one.
+        let stripes = |x: usize, y: usize| if (x / 3 + y / 5) % 4 == 0 { [20, 30, 40] } else { [250, 245, 240] };
+        let s = painted(192, 100, |x, y| if (64..128).contains(&x) && y < 64 { noise(x, y) } else { stripes(x, y) });
+        let flags = FLAG_REFINE | FLAG_FULL_CHROMA | FLAG_LOSSLESS;
+        let (msg, exact) = frame_message(&s, &s.changed, 1, 90, flags, 3);
+        assert_eq!(msg[16], flags);
+        assert_eq!(exact, vec![true, false, true, true, true, true]);
+        let p = parts(&msg);
+        // The whole screen losslessly, then the photo tile as JPEG on top.
+        assert_eq!(p.iter().map(|q| (q.0, q.1, q.2, q.3, q.4)).collect::<Vec<_>>(), vec![(0, 0, 192, 100, 1), (64, 0, 64, 64, 0)]);
+        assert_eq!(&p[0].5[..4], b"RIFF");
+        assert_eq!(&p[1].5[..2], &[0xFF, 0xD8]);
+        let (w, h, rgba) = webp_rgba(p[0].5);
+        assert_eq!((w, h), (192, 100));
+        for y in 0..100 {
+            for x in 0..192 {
+                let got = &rgba[(y * 192 + x) * 4..][..4];
+                let [b, g, r] = if (64..128).contains(&x) && y < 64 { [128, 128, 128] } else { stripes(x, y) };
+                assert_eq!(got, [r, g, b, 255], "pixel {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn photo_jpegs_span_flat_tiles_only_within_what_is_sent() {
+        // Photos in tiles 0 and 2 of a row of four, text in 1 and 3.
+        let s = painted(256, 64, |x, y| if x / 64 % 2 == 0 { noise(x, y) } else { [255, 255, (x / 3 % 2 * 255) as u8] });
+        let jpegs = |tiles: &[bool]| {
+            let (msg, exact) = frame_message(&s, tiles, 1, 70, FLAG_LOSSLESS, 6);
+            let rects = parts(&msg).iter().filter(|p| p.4 == 0).map(|p| (p.0, p.2)).collect::<Vec<_>>();
+            (rects, exact)
+        };
+        // All sent: one JPEG over tiles 0 to 2, so tile 1 is not exact.
+        assert_eq!(jpegs(&[true; 4]), (vec![(0, 192)], vec![false, false, false, true]));
+        // Tile 1 not sent: it must not be drawn over.
+        assert_eq!(jpegs(&[true, false, true, false]), (vec![(0, 64), (128, 64)], vec![false, false, false, false]));
+    }
+
+    #[test]
+    fn lossless_at_half_resolution_is_the_downscaled_image() {
+        let s = painted(128, 64, |x, _| if x < 64 { [0, 0, 0] } else { [200, 100, 50] });
+        let (msg, exact) = frame_message(&s, &s.changed, 2, 70, FLAG_LOSSLESS, 4);
+        assert_eq!(exact, vec![true, true]);
+        let p = parts(&msg);
+        assert_eq!(p.iter().map(|q| (q.0, q.1, q.2, q.3, q.4)).collect::<Vec<_>>(), vec![(0, 0, 64, 32, 1)]);
+        let (w, h, rgba) = webp_rgba(p[0].5);
+        assert_eq!((w, h), (64, 32));
+        assert_eq!((&rgba[..4], &rgba[63 * 4..64 * 4]), (&[0, 0, 0, 255][..], &[50, 100, 200, 255][..]));
+    }
+
+    #[test]
+    fn soft_frames_stay_jpeg_and_flagless_frames_are_unchanged() {
+        let s = painted(64, 64, |x, y| if (x + y) % 9 == 0 { [0, 0, 0] } else { [255, 255, 255] });
+        let (msg, exact) = frame_message(&s, &s.changed, 1, 70, 0, 5);
+        assert!(exact.is_empty());
+        assert_eq!(&msg[HEADER + 12..HEADER + 14], &[0xFF, 0xD8], "no format byte without the flag");
+    }
+
+    #[test]
+    fn text_and_flat_ui_look_flat_and_photos_do_not() {
+        let flat = |s: &Screen| (0..s.cols * s.rows).map(|t| looks_flat(s, t)).collect::<Vec<_>>();
+        // Fine vertical stripes: every pixel repeats the one above.
+        assert_eq!(flat(&painted(64, 64, |x, _| [x as u8 % 2 * 255; 3])), vec![true]);
+        // Noise, in a full tile and in a partial one at the screen's edge.
+        assert_eq!(flat(&painted(100, 64, noise)), vec![false, false]);
+        // ClearType-like: 513 colours, all on a few lines, background elsewhere.
+        assert_eq!(flat(&painted(64, 64, |x, y| if y % 16 < 2 { [x as u8, y as u8, 0] } else { [255; 3] })), vec![true]);
+        // A dark gradient dithered with four levels of noise: few colours, but no text.
+        assert_eq!(flat(&painted(64, 64, |x, y| [20, 10, 40 + (noise(x, y)[0] % 4)])), vec![false]);
     }
 }
