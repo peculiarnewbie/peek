@@ -6,6 +6,10 @@
 //! Windows a running executable cannot be replaced. The logon task, firewall
 //! rule or systemd unit point at the copy instead, and installing again
 //! replaces it.
+//!
+//! On Windows, `peek install --service` installs a service instead of the
+//! logon task (see `platform::windows::service`). Its copy goes under
+//! Program Files, where only administrators can replace what SYSTEM runs.
 
 use std::path::PathBuf;
 
@@ -48,37 +52,56 @@ mod windows {
     /// also serves people running from a source checkout.
     const SCRIPT: &str = include_str!("../scripts/install-autostart.ps1");
 
-    /// %LOCALAPPDATA%\Programs\peek\peek.exe, the per-user programs folder.
+    /// %LOCALAPPDATA%\Programs\peek\peek.exe, the per-user programs folder,
+    /// for the logon task.
     fn installed_exe() -> Result<PathBuf, String> {
         let base = env_path("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
         Ok(base.join("Programs").join("peek").join("peek.exe"))
     }
 
-    pub fn install(service_args: &[String]) -> Result<(), String> {
-        let source = std::env::current_exe().map_err(|e| e.to_string())?;
-        let target = installed_exe()?;
-        let log = env_path("APPDATA").ok_or("APPDATA is not set")?.join("peek").join("peek.log");
-        let config = serde_json::json!({
-            "source": source,
-            "exe": target,
-            "user": current_user()?,
-            "log": log,
-            "peekArgs": service_args,
+    /// %ProgramFiles%\peek\peek.exe, for the service: SYSTEM runs it, so no
+    /// user may be able to replace it.
+    fn service_exe() -> PathBuf {
+        env_path("ProgramFiles").unwrap_or_else(|| PathBuf::from(r"C:\Program Files")).join("peek").join("peek.exe")
+    }
+
+    /// Paths the script needs whichever way peek is installed, since
+    /// installing one way removes the other.
+    fn paths() -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({
+            "userExe": installed_exe()?,
+            "serviceExe": service_exe(),
+            "userConfig": crate::user_config_dir(),
+            "machineConfig": crate::machine_config_dir(),
             "callerPid": std::process::id(),
-            "remove": false,
-        });
+        }))
+    }
+
+    pub fn install(service_args: &[String]) -> Result<(), String> {
+        let service = service_args.iter().any(|a| a == "--service");
+        let peek_args: Vec<&String> = service_args.iter().filter(|a| *a != "--service").collect();
+        let source = std::env::current_exe().map_err(|e| e.to_string())?;
+        let mut config = paths()?;
+        config["source"] = serde_json::json!(source);
+        config["user"] = serde_json::json!(current_user()?);
+        config["peekArgs"] = serde_json::json!(peek_args);
+        config["service"] = serde_json::json!(service);
+        config["remove"] = serde_json::json!(false);
         run_script(&config)?;
-        println!("peek now starts at logon from {}, as administrator.", target.display());
+        if service {
+            println!("peek now runs as a Windows service from {}, as SYSTEM.", service_exe().display());
+            println!("It shows the login and lock screens and UAC prompts too, so anyone with its");
+            println!("token or a paired browser controls this PC there as well.");
+        } else {
+            println!("peek now starts at logon from {}, as administrator.", installed_exe()?.display());
+        }
         println!("Run `peek install` again after updating peek, and `peek uninstall` to remove it.");
         Ok(())
     }
 
     pub fn uninstall() -> Result<(), String> {
-        let config = serde_json::json!({
-            "exe": installed_exe()?,
-            "callerPid": std::process::id(),
-            "remove": true,
-        });
+        let mut config = paths()?;
+        config["remove"] = serde_json::json!(true);
         run_script(&config)
     }
 
@@ -145,7 +168,7 @@ mod windows {
                 .map_err(|e| format!("could not run PowerShell: {e}"))?;
             return Ok(status.code().unwrap_or(1) as u32);
         }
-        println!("Windows will ask for administrator rights, to add the firewall rule and the logon task.");
+        println!("Windows will ask for administrator rights, to set up the firewall rule and how peek starts.");
         let params = HSTRING::from(params);
         let mut info = SHELLEXECUTEINFOW {
             cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
@@ -291,6 +314,13 @@ mod tests {
     fn accepts_peek_flags() {
         assert!(check_service_args(&[]).is_ok());
         assert!(check_service_args(&args(&["--no-token", "--port", "9000", "--fps", "30"])).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn accepts_service_but_not_detach() {
+        assert!(check_service_args(&args(&["--service", "--no-token"])).is_ok());
+        assert!(check_service_args(&args(&["--service", "--detach"])).is_err());
     }
 
     #[test]

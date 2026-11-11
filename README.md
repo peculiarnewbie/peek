@@ -111,6 +111,7 @@ tailnet decides who can connect (see [Security](#security)).
 | `--no-clipboard` | Do not synchronise the clipboard |
 | `--detach` | Windows: start in the background with no window, then return |
 | `--keep-gpu` | Windows: keep the GPU device open while idle, so connecting from idle is faster (costs some memory; on a laptop it can keep a discrete GPU awake) |
+| `--service` | Windows: run as a service, for the login and lock screens and UAC prompts; set it up with `peek install --service` ([details](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts)) |
 | `--log <file>` | Also append log lines to a file |
 | `-v` | Log every input event and periodic throughput |
 
@@ -225,7 +226,10 @@ Windows asks for administrator rights once. peek is copied to
 (private and Tailscale addresses only), and started elevated and hidden by a
 logon task, logging to `%APPDATA%\peek\peek.log`. Flags after `install` are
 for that peek: with `peek install --no-token` the firewall rule admits
-Tailscale addresses only. `peek uninstall` undoes all of it.
+Tailscale addresses only. `peek uninstall` undoes all of it. To reach the
+login screen, the lock screen and UAC prompts as well, install it as a
+[service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts)
+instead.
 
 From a source checkout, the same from an elevated PowerShell, running
 `target\release\peek.exe` in place:
@@ -235,6 +239,49 @@ From a source checkout, the same from an elevated PowerShell, running
 ```
 
 `-Remove` undoes it, and flags for peek go in `-PeekArgs`.
+
+### Run as a Windows service: login screen, lock screen and UAC prompts
+
+peek started at logon runs inside your session, so it stops at the edges of
+it: Windows shows the login screen, the lock screen and UAC prompts on a
+secure desktop of its own, which peek cannot see or type into, and while
+nobody is signed in there is no peek at all. A service gets past both, the
+way [Sunshine](https://github.com/LizardByte/Sunshine) does:
+
+```
+peek install --service
+```
+
+This installs a Windows service named `peek` in place of the logon task. The
+service runs as SYSTEM in session 0, which has no screen, so it starts peek
+in the session at the console, also as SYSTEM, and starts it again in the
+new one when someone signs out or switches users. That peek follows Windows
+onto the secure desktop and back, so the login screen, the lock screen and
+UAC prompts show up and take input like anything else.
+
+- peek is copied to `%ProgramFiles%\peek\peek.exe`, where only
+  administrators can replace what SYSTEM runs.
+- Its token, paired browsers and log (`peek.log`) are in
+  `%ProgramData%\peek`. Only administrators and the user who ran
+  `peek install --service` can read that folder, so `peek pair`,
+  `peek clients` and `peek logs` work for that user without administrator
+  rights; anyone else needs an administrator terminal.
+- The token and paired browsers move over from `%APPDATA%\peek`, so
+  bookmarks and paired browsers keep working. `peek install` without
+  `--service` goes back to the logon task and takes them back.
+- `peek uninstall` removes the service; the settings folder stays.
+
+To reach the login screen over Tailscale, turn on **Run unattended** in
+Tailscale's settings on this PC: otherwise Tailscale disconnects while
+nobody is signed in.
+
+**The risk:** anyone with the token or a paired browser can then do
+anything someone at the keyboard could, at the login screen too: sign in
+with any password they know, and answer UAC prompts. Keep the token and
+paired browsers to devices you trust as much as the PC itself.
+
+Ctrl+Alt+Del cannot be sent yet, so a PC set to ask for it before signing
+in (common on a domain) stays at that prompt.
 
 ### Install on Linux: key access, start at login, firewall
 
@@ -386,6 +433,7 @@ https://your.domain`.
 ## Security
 
 - Every socket needs the access token, stored in `%APPDATA%\peek\token`
+  (`%ProgramData%\peek\token` for the [service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts))
   (Windows) or `~/.config/peek/token` (Linux).
 - Connections from anything but private, link-local and Tailscale addresses
   are refused.
@@ -411,7 +459,9 @@ With `--no-token`:
 
 ## Limits
 
-- The lock screen and UAC prompts cannot be seen or controlled.
+- The lock screen, the login screen and UAC prompts can be seen and
+  controlled only with peek installed as a [service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts)
+  (Windows; Ctrl+Alt+Del cannot be sent).
 - On Wayland the drawn pointer is always an arrow: other programs cannot
   learn the pointer's shape there. niri shows peek as a screencast while a
   client is watching.
@@ -431,10 +481,10 @@ With `--no-token`:
 src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
 src/server.rs             HTTP + WebSocket, authentication, pairing endpoints, input dispatch, clipboard watcher
 src/pairing.rs            one-time codes, paired browsers' token hashes
-src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task or systemd unit
+src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task, service or systemd unit
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
 src/platform/mod.rs       the interface a backend provides
-src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape
+src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape, the service
 src/platform/linux/       wlr-screencopy, virtual pointer, uinput, data-control
 build.rs                  builds the client before the host is compiled
 bench/first-frame.ts      time from connecting to the first frame (`bun bench/first-frame.ts`)

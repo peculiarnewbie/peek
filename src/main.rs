@@ -98,6 +98,12 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     keep_gpu: bool,
+    /// Run as a Windows service, which starts peek as SYSTEM in the session
+    /// at the console, so it also shows the login and lock screens and UAC
+    /// prompts. Set it up with `peek install --service`
+    #[cfg(windows)]
+    #[arg(long)]
+    service: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -122,7 +128,9 @@ enum Command {
     /// Start peek in the background at logon: copies it to a fixed place and
     /// registers a logon task and firewall rule (Windows, asks for
     /// administrator) or a systemd user service (Linux). Flags after it are
-    /// for that peek, like `peek install --no-token`. Run again after an update
+    /// for that peek, like `peek install --no-token`; on Windows, `--service`
+    /// installs a service instead, which also works at the login screen.
+    /// Run again after an update
     Install {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
         args: Vec<String>,
@@ -131,9 +139,27 @@ enum Command {
     Uninstall,
 }
 
-/// Where the access token lives: %APPDATA%\peek on Windows, otherwise
-/// $XDG_CONFIG_HOME/peek or ~/.config/peek.
+/// Where the access token and pairing data live: %APPDATA%\peek on Windows
+/// (%ProgramData%\peek for the service), otherwise $XDG_CONFIG_HOME/peek or
+/// ~/.config/peek.
 fn config_dir() -> PathBuf {
+    #[cfg(windows)]
+    if platform::is_system() {
+        return machine_config_dir();
+    }
+    user_config_dir()
+}
+
+/// %ProgramData%\peek: the service's settings, as it runs as no user.
+#[cfg(windows)]
+fn machine_config_dir() -> PathBuf {
+    std::env::var_os("ProgramData")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from)
+        .join("peek")
+}
+
+fn user_config_dir() -> PathBuf {
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else {
@@ -194,11 +220,46 @@ fn web_origin(arg: &str) -> Result<Option<String>, String> {
 }
 
 /// One request to the peek running on this machine, as its owner: the
-/// secret in the config folder proves it. Returns the status and body.
+/// secret in its config folder proves it. Returns the status and body.
 fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u16, String), String> {
+    // The service keeps its secret machine-wide, readable by administrators
+    // and whoever installed it; any other peek keeps it in the user's folder.
+    #[cfg(windows)]
+    let folders = [machine_config_dir(), user_config_dir()];
+    #[cfg(not(windows))]
+    let folders = [user_config_dir()];
+    let secrets: Vec<String> = folders
+        .iter()
+        .filter_map(|dir| fs::read_to_string(dir.join("local-secret")).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    // The service's folder exists, but this account cannot read it.
+    #[cfg(windows)]
+    let shut_out = machine_config_dir().is_dir() && fs::read_to_string(machine_config_dir().join("local-secret")).is_err();
+    #[cfg(not(windows))]
+    let shut_out = false;
+    let refused = if shut_out {
+        "the running peek refused. If it is the peek service, this account may not use it: \
+         try again from an administrator terminal"
+    } else {
+        "the running peek refused: it was started by another user or with another config folder"
+    };
+    if secrets.is_empty() {
+        return Err(if shut_out { refused } else { "peek has not run on this machine yet (as this user)" }.into());
+    }
+    for (i, secret) in secrets.iter().enumerate() {
+        match local_request_with(args, method, path, body, secret)? {
+            (403, _) if i + 1 < secrets.len() => continue,
+            (403, _) => return Err(refused.into()),
+            reply => return Ok(reply),
+        }
+    }
+    unreachable!("the last secret returns either way")
+}
+
+fn local_request_with(args: &Args, method: &str, path: &str, body: &str, secret: &str) -> Result<(u16, String), String> {
     use std::io::Read;
-    let secret = fs::read_to_string(config_dir().join("local-secret"))
-        .map_err(|_| "peek has not run on this machine yet (as this user)".to_string())?;
     let ip = if args.bind.is_unspecified() { IpAddr::from([127, 0, 0, 1]) } else { args.bind };
     let addr = SocketAddr::new(ip, args.port);
     let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3))
@@ -206,9 +267,8 @@ fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: text/plain\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {secret}\r\nContent-Type: text/plain\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        secret.trim(),
         body.len()
     )
     .map_err(|e| e.to_string())?;
@@ -216,9 +276,6 @@ fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u
     stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
     let status = response.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let body = response.split_once("\r\n\r\n").map_or("", |(_, b)| b).to_string();
-    if status == 403 {
-        return Err("the running peek refused: it was started by another user or with another config folder".into());
-    }
     Ok((status, body))
 }
 
@@ -392,6 +449,11 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             let given = |name: &str| flags.iter().any(|f| f == name || f.starts_with(&format!("{name}=")));
             let (add_bind, add_port) = (!args.bind.is_unspecified() && !given("--bind"), args.port != 9182 && !given("--port"));
             let mut flags = flags.clone();
+            // So is --service, when it comes before `install`.
+            #[cfg(windows)]
+            if args.service && !given("--service") {
+                flags.push("--service".into());
+            }
             if add_bind {
                 flags.extend(["--bind".into(), args.bind.to_string()]);
             }
@@ -424,12 +486,27 @@ fn main() {
     };
 
     #[cfg(windows)]
+    if args.detach && args.service {
+        eprintln!("--detach and --service do not go together: Windows starts the service itself");
+        std::process::exit(2);
+    }
+    #[cfg(windows)]
     if args.detach {
         if let Err(e) = detach() {
             eprintln!("could not start in the background: {e}");
             std::process::exit(1);
         }
         return;
+    }
+
+    // SYSTEM's settings go in a folder of their own, which must not be
+    // readable by every user (as a new folder under ProgramData would be).
+    #[cfg(windows)]
+    if platform::is_system()
+        && let Err(e) = platform::create_private_dir(&config_dir())
+    {
+        eprintln!("cannot create {}: {e}", config_dir().display());
+        std::process::exit(1);
     }
 
     if let Some(path) = &args.log {
@@ -440,6 +517,15 @@ fn main() {
             }
             Err(e) => eprintln!("cannot write log file {}: {e}", path.display()),
         }
+    }
+
+    #[cfg(windows)]
+    if args.service {
+        if let Err(e) = platform::service::run() {
+            log!("{e}");
+            std::process::exit(1);
+        }
+        return;
     }
 
     platform::init();
