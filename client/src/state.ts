@@ -14,6 +14,8 @@ export interface Cfg {
   scale: 1 | 2;
   /** Changing regions at half resolution. */
   soft: boolean;
+  /** Text and flat UI as lossless WebP; photo-like regions stay JPEG. */
+  lossless: boolean;
   fps: number;
   mon: number;
   /** Pause while the window is in the background. This browser only; never sent to the host. */
@@ -25,6 +27,7 @@ export const [cfg, setCfg] = createStore<Cfg>({
   quality: savedQuality && savedQuality in QUALITY ? savedQuality as Quality : 'med',
   scale: store.get('scale') === '2' ? 2 : 1,
   soft: store.get('soft') === '1',
+  lossless: store.get('lossless') === '1',
   fps: FPS_STEPS.includes(Number(store.get('fps'))) ? Number(store.get('fps')) : 60,
   mon: parseInt(store.get('mon') ?? '', 10) || 0,
   autoSleep: store.get('autosleep') === '1',

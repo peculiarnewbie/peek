@@ -88,7 +88,7 @@ export function connect() {
   if (!t) { setMessage(''); return; }
   const q = new URLSearchParams({
     v: String(PROTOCOL), token: t.token, q: cfg.quality, scale: String(cfg.scale), fps: String(cfg.fps),
-    soft: cfg.soft ? '1' : '0', mon: String(cfg.mon), vis: active() ? '1' : '0',
+    soft: cfg.soft ? '1' : '0', lossless: cfg.lossless ? '1' : '0', mon: String(cfg.mon), vis: active() ? '1' : '0',
   });
   firstFrameFrom = active() ? performance.now() : null;
   fromPageLoad = startup;
@@ -188,9 +188,11 @@ function onJson(m: HostMsg) {
 
 // Frame: u8 kind, u32 seq, u16 width, u16 height, u16 count, u32 host time
 // (µs from capture to send), u8 JPEG quality, u8 flags (1 = full colour
-// resolution, 2 = sharp, 4 = encoded at half size), then per rectangle
-// u16 x, u16 y, u16 w, u16 h (where on the canvas), u32 length, JPEG bytes.
-// A JPEG smaller than its rectangle is stretched to fill it.
+// resolution, 2 = sharp, 4 = encoded at half size, 8 = format bytes), then
+// per rectangle u16 x, u16 y, u16 w, u16 h (where on the canvas), with flag 8
+// a u8 format (0 JPEG, 1 lossless WebP), u32 length, image bytes. A JPEG
+// smaller than its rectangle is stretched to fill it. Rectangles are drawn in
+// order: JPEGs over the flat-painted tiles of the lossless pieces before them.
 async function onFrame(sock: WebSocket, buf: ArrayBuffer, arrived: number) {
   const dv = new DataView(buf);
   const seq = dv.getUint32(1, true), W = dv.getUint16(5, true), H = dv.getUint16(7, true);
@@ -201,9 +203,11 @@ async function onFrame(sock: WebSocket, buf: ArrayBuffer, arrived: number) {
   for (let i = 0; i < n; i++) {
     const x = dv.getUint16(off, true), y = dv.getUint16(off + 2, true);
     const w = dv.getUint16(off + 4, true), h = dv.getUint16(off + 6, true);
-    const len = dv.getUint32(off + 8, true);
-    off += 12;
-    const blob = new Blob([new Uint8Array(buf, off, len)], { type: 'image/jpeg' });
+    const format = flags & 8 ? dv.getUint8(off + 8) : 0;
+    off += flags & 8 ? 9 : 8;
+    const len = dv.getUint32(off, true);
+    off += 4;
+    const blob = new Blob([new Uint8Array(buf, off, len)], { type: format === 1 ? 'image/webp' : 'image/jpeg' });
     jobs.push(createImageBitmap(blob).then(bm => ({ x, y, w, h, bm })));
     off += len;
   }
@@ -225,7 +229,7 @@ async function onFrame(sock: WebSocket, buf: ArrayBuffer, arrived: number) {
   S.host += hostUs / 1000; S.client += performance.now() - arrived;
   S.lastSize = buf.byteLength;
   S.lastKind = `q${jpegQ} ${flags & 1 ? '4:4:4' : '4:2:0'}, ${flags & 2 ? 'sharp' : 'moving'}` +
-    (flags & 4 ? ', half size' : '');
+    (flags & 4 ? ', half size' : '') + (flags & 8 ? ', lossless text' : '');
 }
 
 // Round-trip probe, only while someone is looking at the numbers.

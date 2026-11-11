@@ -133,6 +133,12 @@ Hover the dot at the top to show the toolbar; the pin keeps it open.
   - **Resolution**: full, or half in each direction.
   - **Motion**: `soft` sends regions at half resolution while they change;
     they are re-sent at full resolution a quarter second after they stop.
+  - **Lossless text**: text and flat UI go out as lossless WebP, exact the
+    first time, so they need no sharp re-send; tiles that look like photos
+    or gradients stay JPEG. A first frame of text is 10 to 60% smaller and
+    a typed character about 240 bytes instead of 1.7 KB. Off by default: it
+    takes more host memory while encoding. With soft motion, changing
+    regions still go soft and the lossless copy follows once they stop.
   - **Frame rate**: at most 60, 30, 15 or 10 per second. Changes in between
     are combined, not dropped.
   - **Monitor**, when the host has more than one.
@@ -355,6 +361,9 @@ https://your.domain`.
   with the last. Changed tiles are merged into rectangles.
 - **Encode**: each rectangle is sent as a JPEG, encoded in parallel. Regions
   go out at lower quality while changing and are re-sent sharply once still.
+  With lossless text, tiles where at least three quarters of the pixels
+  repeat their left or upper neighbour (text, flat UI) are sent as lossless
+  WebP instead, with the other tiles painted flat and sent as JPEG on top.
 - **Backpressure**: the client acknowledges each frame after drawing it, and
   the host keeps at most two unacknowledged. A slow link gets fewer frames,
   not growing lag.
