@@ -5,6 +5,7 @@
 //! WebSocket handshake plus one frame.
 
 mod engine;
+mod pairing;
 mod platform;
 mod server;
 
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
 
@@ -37,10 +38,14 @@ macro_rules! log {
 #[command(version, about = "Instant-connect remote desktop host for LAN and Tailscale.")]
 struct Args {
     /// Address to listen on
-    #[arg(long, default_value = "0.0.0.0")]
+    #[arg(long, default_value = "0.0.0.0", global = true)]
     bind: IpAddr,
-    #[arg(long, default_value_t = 9182)]
+    #[arg(long, default_value_t = 9182, global = true)]
     port: u16,
+    /// Origin of the hosted client, whose pages may connect with a paired
+    /// token ("none" to refuse them)
+    #[arg(long, value_name = "ORIGIN", default_value = "https://peek.peculiarnewbie.com")]
+    web: String,
     /// Maximum frames per second
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
     fps: u32,
@@ -63,6 +68,18 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     detach: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Show a one-time code that pairs a browser with this machine (peek must be running)
+    Pair,
+    /// List the browsers paired with this machine
+    Clients,
+    /// Unpair a browser, by the id `peek clients` shows
+    Unpair { id: String },
 }
 
 /// Where the access token lives: %APPDATA%\peek on Windows, otherwise
@@ -111,8 +128,204 @@ fn detach() -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// The hosted client's origin from `--web`, or `None` for "none".
+fn web_origin(arg: &str) -> Result<Option<String>, String> {
+    let arg = arg.trim().trim_end_matches('/');
+    if arg.eq_ignore_ascii_case("none") || arg.is_empty() {
+        return Ok(None);
+    }
+    let rest = arg
+        .strip_prefix("https://")
+        .or_else(|| arg.strip_prefix("http://").filter(|r| r.starts_with("localhost") || r.starts_with("127.0.0.1")))
+        .ok_or("--web must be an https:// origin (or http://localhost for development)")?;
+    if rest.is_empty() || rest.contains('/') {
+        return Err("--web takes an origin only, like https://peek.example.com".into());
+    }
+    Ok(Some(arg.to_ascii_lowercase()))
+}
+
+/// One request to the peek running on this machine, as its owner: the
+/// secret in the config folder proves it. Returns the status and body.
+fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u16, String), String> {
+    use std::io::Read;
+    let secret = fs::read_to_string(config_dir().join("local-secret"))
+        .map_err(|_| "peek has not run on this machine yet (as this user)".to_string())?;
+    let ip = if args.bind.is_unspecified() { IpAddr::from([127, 0, 0, 1]) } else { args.bind };
+    let addr = SocketAddr::new(ip, args.port);
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3))
+        .map_err(|e| format!("peek is not running on port {} ({e}). Start it first.", args.port))?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: text/plain\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        secret.trim(),
+        body.len()
+    )
+    .map_err(|e| e.to_string())?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
+    let status = response.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, b)| b).to_string();
+    if status == 403 {
+        return Err("the running peek refused: it was started by another user or with another config folder".into());
+    }
+    Ok((status, body))
+}
+
+/// What Tailscale Serve does with HTTPS on this machine (port 443).
+enum Serve {
+    /// It forwards to peek.
+    Peek,
+    /// It forwards somewhere else, which we leave alone.
+    Other(String),
+    Unset,
+}
+
+fn serve_state(tailscale: &str, host: &str, target: &str) -> Result<Serve, String> {
+    let out = std::process::Command::new(tailscale)
+        .args(["serve", "status", "--json"])
+        .output()
+        .map_err(|e| format!("could not run tailscale: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("`tailscale serve status` failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let web = &status["Web"][format!("{host}:443")]["Handlers"];
+    if let Some(handlers) = web.as_object() {
+        let proxy = |h: &serde_json::Value| h["Proxy"].as_str().unwrap_or("").trim_end_matches('/').to_string();
+        return Ok(match handlers.get("/").map(proxy) {
+            Some(p) if p == target || p == target.replace("127.0.0.1", "localhost") => Serve::Peek,
+            Some(p) if !p.is_empty() => Serve::Other(p),
+            _ => Serve::Other(format!("{} path(s)", handlers.len())),
+        });
+    }
+    if !status["TCP"]["443"].is_null() {
+        return Ok(Serve::Other("a TCP forward".into()));
+    }
+    Ok(Serve::Unset)
+}
+
+/// Make Tailscale Serve pass `https://<this machine>.ts.net` to peek, which
+/// is how the hosted client reaches it. Tailscale itself asks for whatever
+/// is missing (Serve and HTTPS on the tailnet, or permission on Linux), so
+/// its output goes straight to the terminal.
+fn ensure_serve(args: &Args, tailscale: &str, host: &str) -> Result<(), String> {
+    let ip = if args.bind.is_unspecified() || args.bind.is_loopback() { IpAddr::from([127, 0, 0, 1]) } else { args.bind };
+    let target = format!("http://{}", SocketAddr::new(ip, args.port));
+    match serve_state(tailscale, host, &target)? {
+        Serve::Peek => return Ok(()),
+        Serve::Other(what) => {
+            return Err(format!(
+                "Tailscale Serve already uses HTTPS on this machine (for {what}), so peek leaves it alone. \
+                 To give it to peek: tailscale serve --bg {target}"
+            ))
+        }
+        Serve::Unset => {}
+    }
+    println!("Setting up Tailscale Serve, so browsers can reach peek at https://{host} …");
+    let ok = std::process::Command::new(tailscale)
+        .args(["serve", "--bg", &target])
+        .status()
+        .map_err(|e| format!("could not run tailscale: {e}"))?
+        .success();
+    if !ok {
+        let mut why = "`tailscale serve` failed (see above).".to_string();
+        if cfg!(target_os = "linux") {
+            why += "\nIf it was refused, allow this user to change Tailscale once, then run `peek pair` again:\n  \
+                    sudo tailscale set --operator=$USER";
+        }
+        return Err(why);
+    }
+    println!();
+    Ok(())
+}
+
+fn run_command(args: &Args, command: &Command) -> Result<(), String> {
+    match command {
+        Command::Pair => {
+            match pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
+                Some((tailscale, host)) => ensure_serve(args, tailscale, &host)?,
+                None => {
+                    return Err("Tailscale is not running here, and the hosted client reaches machines through it. \
+                                Start Tailscale and try again."
+                        .into())
+                }
+            }
+            let (_, body) = local_request(args, "POST", "/api/pair-code", "")?;
+            let offer: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+            if let Some(e) = offer["error"].as_str() {
+                return Err(e.to_string());
+            }
+            let (code, name) = (offer["code"].as_str().unwrap_or(""), offer["name"].as_str().unwrap_or("this machine"));
+            let Some(web) = offer["web"].as_str() else {
+                return Err("this peek was started with --web none, so there is no hosted client to pair".into());
+            };
+            let Some(link) = offer["link"].as_str() else {
+                return Err(format!("peek could not find {name}'s Tailscale name. Is Tailscale up?"));
+            };
+            println!("Pair a browser with {name}:\n\n  {link}\n");
+            if let Ok(qr) = qrcode::QrCode::new(link.as_bytes()) {
+                let art = qr
+                    .render::<qrcode::render::unicode::Dense1x2>()
+                    .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                    .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                    .build();
+                println!("{art}\n");
+            }
+            println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
+            println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
+            Ok(())
+        }
+        Command::Clients => {
+            let (_, body) = local_request(args, "GET", "/api/clients", "")?;
+            let clients: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+            if clients.is_empty() {
+                println!("No browsers are paired. `peek pair` pairs one.");
+            }
+            let when = |v: &serde_json::Value| {
+                chrono::DateTime::from_timestamp(v.as_i64().unwrap_or(0), 0)
+                    .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_default()
+            };
+            for c in &clients {
+                println!(
+                    "{}  {:<24}  paired {}  last seen {}",
+                    c["id"].as_str().unwrap_or(""),
+                    c["label"].as_str().unwrap_or(""),
+                    when(&c["created"]),
+                    when(&c["last_seen"])
+                );
+            }
+            Ok(())
+        }
+        Command::Unpair { id } => match local_request(args, "POST", "/api/clients/revoke", id)?.0 {
+            204 => {
+                println!("Unpaired {id}. It can no longer connect; a session it has open stays until it disconnects.");
+                Ok(())
+            }
+            _ => Err(format!("no paired browser has the id {id} (see `peek clients`)")),
+        },
+    }
+}
+
 fn main() {
     let args = Args::parse();
+
+    if let Some(command) = &args.command {
+        if let Err(e) = run_command(&args, command) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let web = match web_origin(&args.web) {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
 
     #[cfg(windows)]
     if args.detach {
@@ -147,9 +360,19 @@ fn main() {
         }
     };
 
+    let pairing = match pairing::Pairing::load(&config_dir()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cannot read or store pairing data in {}: {e}", config_dir().display());
+            std::process::exit(1);
+        }
+    };
+
     let (engine_tx, engine_rx) = std::sync::mpsc::channel();
     let shared = Arc::new(server::Shared {
         token,
+        web: web.clone(),
+        pairing,
         view_only: args.view_only,
         clipboard: !args.no_clipboard,
         verbose: args.verbose,
@@ -205,6 +428,9 @@ fn main() {
         if args.bind.is_unspecified() && hosts.iter().all(|h| h.is_loopback()) {
             println!("Tailscale is not up yet; connections are accepted as soon as it is.");
         }
+    }
+    if let Some(web) = &web {
+        println!("To use it from {web}, pair the browser: run `peek pair`.");
     }
     if !args.view_only {
         for note in platform::input_notes() {

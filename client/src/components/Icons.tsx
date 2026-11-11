@@ -1,7 +1,7 @@
 // Line icons, drawn once in a sprite and referenced by id.
 export type IconName =
   | 'moon' | 'play' | 'sliders' | 'chart' | 'expand' | 'shrink' | 'pin' | 'x' | 'chev' | 'shield'
-  | 'trackpad' | 'hand' | 'keyboard' | 'backspace' | 'enter';
+  | 'trackpad' | 'hand' | 'keyboard' | 'backspace' | 'enter' | 'monitor';
 
 export function IconSprite() {
   return (
@@ -20,6 +20,7 @@ export function IconSprite() {
       <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2" /><path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6" /></symbol>
       <symbol id="i-backspace" viewBox="0 0 24 24"><path d="M9 5.5h11a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5H9L3 12zM11.5 9.5l5 5M16.5 9.5l-5 5" /></symbol>
       <symbol id="i-enter" viewBox="0 0 24 24"><path d="M19 5v6a3 3 0 0 1-3 3H5M9 10l-4 4 4 4" /></symbol>
+      <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2" /><path d="M9 20h6M12 16.5V20" /></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM12 8v5M12 16h.01" /></symbol>
     </svg>
   );

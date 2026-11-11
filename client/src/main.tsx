@@ -2,6 +2,8 @@ import { render } from 'solid-js/web';
 import { setSleep } from './actions';
 import { App } from './App';
 import { connect } from './connection';
+import { pairFromUrl } from './components/Machines';
+import { HOSTED } from './hosted';
 import './input';
 import './touch';
 import { focusScreen, layout } from './screen';
@@ -16,7 +18,8 @@ addEventListener('resize', layout);
 // does: a tap anywhere else would close the phone's keyboard.
 document.addEventListener('pointerdown', e => {
   const target = e.target as Element;
-  if (target.closest?.('button') || (e.pointerType === 'touch' && target.id !== 'kbd-text')) e.preventDefault();
+  const field = !!target.closest?.('input, textarea') && target.id !== 'clipbuf';
+  if (target.closest?.('button') || (e.pointerType === 'touch' && !field)) e.preventDefault();
 }, true);
 document.addEventListener('fullscreenchange', () => setFullscreen(!!document.fullscreenElement));
 
@@ -27,5 +30,5 @@ layout();
 setMessage('Connecting…');
 // Opened in the background (a restored tab, a second monitor): start paused.
 if (cfg.autoSleep && !document.hasFocus()) setSleep(true, true);
-connect();
+if (HOSTED && location.pathname === '/pair') pairFromUrl(); else connect();
 focusScreen();

@@ -4,6 +4,7 @@ import { hooks, send } from './connection';
 import { cv, focusScreen } from './screen';
 import { active, autoSlept, cfg, clipboardOn, isTouch, settingsOpen, sleeping, viewOnly } from './state';
 import { clamp01 } from './util';
+import { current, machinesOpen, setMachinesOpen } from './hosted';
 
 // ---- mouse ----
 function pos(e: PointerEvent): [number, number] {
@@ -113,8 +114,12 @@ function copyViaSelection(text: string) {
 const PASTE_WAIT = 150;
 let pasteTimer: ReturnType<typeof setTimeout> | null = null, swallowV = false;
 function pressV() { send({ t: 'k', c: 'KeyV', d: 1 }); send({ t: 'k', c: 'KeyV', d: 0 }); }
-/** Typing in the keyboard bar's text field is not for the host (until it is sent). */
-const ownField = (e: Event) => (e.target as Element | null)?.id === 'kbd-text';
+/** Typing in this page's own text fields (the keyboard bar's, the machine
+ *  list's) is not for the host. */
+const ownField = (e: Event) => {
+  const t = e.target as Element | null;
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') && t.id !== 'clipbuf';
+};
 document.addEventListener('paste', e => {
   if (ownField(e)) return;
   e.preventDefault();
@@ -136,6 +141,9 @@ function key(e: KeyboardEvent, down: boolean) {
   if (!down && e.code === swallowKey) { swallowKey = null; e.preventDefault(); return; }
   if (down && settingsOpen() && e.code === 'Escape') {
     e.preventDefault(); swallowKey = e.code; showSettings(false); return;
+  }
+  if (down && machinesOpen() && current() && e.code === 'Escape') {
+    e.preventDefault(); swallowKey = e.code; setMachinesOpen(false); return;
   }
   if (sleeping()) {
     // Nothing goes to the host while asleep; browser shortcuts keep working.
