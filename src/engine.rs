@@ -18,10 +18,10 @@ use std::time::{Duration, Instant};
 
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use rayon::prelude::*;
-use tokio::sync::mpsc::UnboundedSender;
 
-use crate::platform::{self, Capture, Pixels};
-use crate::server::Shared;
+use crate::fake::Source;
+use crate::platform::{self, Pixels};
+use crate::screen::{Shared, Sink};
 use crate::webp;
 
 /// Tile edge in pixels. A multiple of 16 so JPEG blocks line up at the seams.
@@ -89,7 +89,9 @@ impl Quality {
 /// Something for a session's socket to send.
 pub enum Out {
     Text(String),
-    Binary(Vec<u8>),
+    /// A frame, with when the engine handed it over (`screen::now_us`), so
+    /// whoever writes it to the socket can say how long the way there took.
+    Binary(Vec<u8>, u64),
 }
 
 /// How a client wants to be sent the screen.
@@ -121,7 +123,7 @@ pub struct ViewChange {
 }
 
 pub enum Cmd {
-    Add { id: u64, tx: UnboundedSender<Out>, view: View, visible: bool },
+    Add { id: u64, tx: Sink, view: View, visible: bool },
     Remove { id: u64 },
     Ack { id: u64, seq: u32 },
     Visible { id: u64, visible: bool },
@@ -176,7 +178,7 @@ impl Screen {
 
 struct Session {
     id: u64,
-    tx: UnboundedSender<Out>,
+    tx: Sink,
     view: View,
     visible: bool,
     /// Screen size this session's tile state was built for; (0, 0) forces a
@@ -195,7 +197,7 @@ struct Session {
 
 impl Session {
     fn send_text(&self, text: String) {
-        let _ = self.tx.send(Out::Text(text));
+        (self.tx)(Out::Text(text));
     }
 }
 
@@ -615,7 +617,7 @@ struct Stats {
 }
 
 struct Engine {
-    cap: Capture,
+    cap: Source,
     screens: HashMap<usize, Screen>,
     sessions: Vec<Session>,
     shared: Arc<Shared>,
@@ -637,7 +639,7 @@ fn capture_interval(host: Duration, caps: impl Iterator<Item = u32>) -> Duration
 
 pub fn run(rx: Receiver<Cmd>, shared: Arc<Shared>, fps: u32) {
     let mut e = Engine {
-        cap: Capture::new(),
+        cap: Source::new(),
         screens: HashMap::new(),
         sessions: Vec::new(),
         shared,
@@ -925,7 +927,7 @@ impl Engine {
         self.stats.frames += 1;
         self.stats.bytes += msg.len();
         s.last_send = now;
-        let _ = s.tx.send(Out::Binary(msg));
+        (s.tx)(Out::Binary(msg, crate::screen::now_us()));
     }
 
     /// With --verbose, summarise throughput every couple of seconds.
@@ -1076,7 +1078,7 @@ mod tests {
     #[ignore]
     fn frame_sizes() {
         platform::init();
-        let mut cap = Capture::new();
+        let mut cap = platform::Capture::new();
         let mut s = Screen::default();
         assert!(cap.acquire(0, Duration::ZERO, |px| s.update(px)).unwrap());
         let all = vec![true; s.cols * s.rows];

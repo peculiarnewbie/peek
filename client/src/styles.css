@@ -98,6 +98,10 @@ body.touch #stats-sum { visibility: hidden; }
 .section-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;
   color: var(--ink-2); }
 .section-title .aside { font-size: 12px; color: var(--muted); }
+.meters { display: grid; grid-template-columns: auto 1fr auto; gap: 5px 8px; align-items: center; margin-top: 8px;
+  font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.meter { height: 6px; border-radius: 3px; overflow: hidden; background: var(--grid); }
+.meter div { height: 100%; background: var(--s1); }
 #chart-wrap { position: relative; }
 #chart { display: block; width: 100%; height: 72px; }
 .chart-foot { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; color: var(--muted); }

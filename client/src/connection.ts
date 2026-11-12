@@ -1,7 +1,7 @@
 // The WebSocket to the host: connecting, reconnecting, decoding frames.
 import {
-  active, cfg, setBlocked, setCfg, setClipboardOn, setLive, setMessage, setMonitors, setViewOnly,
-  statsMode, viewOnly, type Monitor,
+  active, cfg, setBlocked, setCfg, setClipboardOn, setLive, setMessage, setMonitors, setViewOnly, setVitals,
+  statsMode, viewOnly, type Monitor, type Vitals,
 } from './state';
 import { countIn, countOut, first, ping, S, tick } from './stats';
 import { cv, ctx, resizeScreen } from './screen';
@@ -77,6 +77,7 @@ export function disconnect() {
   sock?.close();
   setLive(false);
   setBlocked(false);
+  setVitals(null);
   setMonitors([]);
   chain = Promise.resolve();
   ctx.clearRect(0, 0, cv.width, cv.height);
@@ -118,6 +119,7 @@ export function connect() {
     if (ws !== sock) return;
     setLive(false);
     setBlocked(false);
+    setVitals(null);
     if (e.code === CLOSE_BAD_TOKEN) {
       if (HOSTED) {
         setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`);
@@ -160,6 +162,7 @@ type HostMsg =
   | { t: 'blocked'; v: boolean }
   | { t: 'clip'; s: string }
   | { t: 'pong'; n: number }
+  | ({ t: 'vitals' } & Vitals)
   | ({ t: 'paircode' } & PairOffer);
 
 function onJson(m: HostMsg) {
@@ -179,6 +182,9 @@ function onJson(m: HostMsg) {
       break;
     case 'paircode':
       hooks.paircode(m);
+      break;
+    case 'vitals':
+      setVitals(m);
       break;
     case 'pong':
       if (m.n === ping.n) { S.rtt += performance.now() - ping.at; S.pongs++; }

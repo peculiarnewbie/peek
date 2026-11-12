@@ -1,13 +1,18 @@
-import { createEffect, createSignal, For, onCleanup, onMount } from 'solid-js';
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { setStats, toggleStatsPin } from '../actions';
 import { cv, focusScreen } from '../screen';
-import { cfg, live, sleeping, statsMode, statsPinned } from '../state';
+import { cfg, live, sleeping, statsMode, statsPinned, vitals } from '../state';
 import { first, L, opened, RATE_SECONDS, rate, S, shown } from '../stats';
 import { bytes, duration, ms, perSec, store } from '../util';
 import { Icon } from './Icons';
 
 /** Title bar height: the part of the panel always kept inside the window. */
 const HEAD = 40;
+
+const GB = 2 ** 30;
+const percent = (used: number, total: number) => total ? `${Math.round(used / total * 100)} %` : '– %';
+const ofGb = (used: number, total: number) =>
+  `${(used / GB).toFixed(used < 100 * GB ? 1 : 0)} of ${(total / GB).toFixed(total < 100 * GB ? 1 : 0)} GB`;
 
 /** A value with its unit set smaller, for the stat tiles. */
 function Figure(props: { text: string }) {
@@ -205,6 +210,35 @@ export function Stats() {
           <div class="tile"><div class="k">Latency</div><div class="v">
             <Figure text={total() == null ? '– ms' : ms(total())} /></div></div>
         </div>
+
+        {/* SPIKE: from the vitals provider, a second process on the same socket. */}
+        <Show when={vitals()}>{v => {
+          const storage = () => v().disks.reduce((a, d) => ({ used: a.used + d.used, total: a.total + d.total }),
+            { used: 0, total: 0 });
+          const rows = () => [...(v().mem ? [{ name: 'Memory', ...v().mem! }] : []), ...v().disks];
+          return (
+            <div class="section" id="vitals">
+              <div class="section-title">
+                <span>This machine</span><span class="aside">{`up ${duration(v().up * 1000)}`}</span>
+              </div>
+              <div class="tiles">
+                <div class="tile"><div class="k">Processor</div><div class="v">
+                  <Figure text={v().cpu == null ? '– %' : `${Math.round(v().cpu!)} %`} /></div></div>
+                <div class="tile"><div class="k">Memory</div><div class="v">
+                  <Figure text={v().mem ? percent(v().mem!.used, v().mem!.total) : '– %'} /></div></div>
+                <div class="tile"><div class="k">Storage</div><div class="v">
+                  <Figure text={percent(storage().used, storage().total)} /></div></div>
+              </div>
+              <div class="meters">
+                <For each={rows()}>{r => <>
+                  <span>{r.name}</span>
+                  <div class="meter"><div style={{ width: `${r.total ? r.used / r.total * 100 : 0}%` }} /></div>
+                  <span>{ofGb(r.used, r.total)}</span>
+                </>}</For>
+              </div>
+            </div>
+          );
+        }}</Show>
 
         <div class="section">
           <div class="section-title">
