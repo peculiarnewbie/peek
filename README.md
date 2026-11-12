@@ -262,12 +262,16 @@ peek install --service
 ```
 
 This installs a Windows service named `peek` in place of the logon task. The
-service runs as SYSTEM in session 0, which has no screen, so it starts peek
-in the session at the console, also as SYSTEM, and starts it again in the
-new one when someone signs out or switches users. That peek follows Windows
-onto the secure desktop and back, so the login screen, the lock screen and
-UAC prompts show up and take input like anything else.
+service runs as SYSTEM in session 0, which has no screen. It listens there
+and keeps every connection, and starts a second peek, also as SYSTEM, in the
+session at the console to capture the screen and take input. That one
+follows Windows onto the secure desktop and back, so the login screen, the
+lock screen and UAC prompts show up and take input like anything else.
 
+- When someone signs out or switches users, the service starts the second
+  peek again in the new session. Connections stay open: the picture stops
+  for a few seconds and comes back on the login screen, with nothing to
+  reconnect.
 - peek is copied to `%ProgramFiles%\peek\peek.exe`, where only
   administrators can replace what SYSTEM runs.
 - Its token, paired browsers and log (`peek.log`) are in
@@ -492,6 +496,7 @@ With `--no-token`:
 src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
 src/server.rs             HTTP + WebSocket, authentication, pairing endpoints
 src/screen.rs             a client's session with the screen: its view, input dispatch, clipboard watcher
+src/provider.rs           the screen in a process of its own: the pipe protocol, the server's end and the screen's
 src/pairing.rs            one-time codes, paired browsers' token hashes
 src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task, service or systemd unit
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state

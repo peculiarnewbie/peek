@@ -1,5 +1,6 @@
 //! HTTP and WebSocket front end: serves the client page, authenticates
-//! sockets, and passes what clients say to the screen (`screen`).
+//! sockets, and passes what clients say to the screen: in this process
+//! (`screen`), or in a provider's (`provider`).
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -24,6 +25,7 @@ use tokio::sync::mpsc::unbounded_channel;
 
 use crate::engine::Out;
 use crate::pairing::{self, Pairing, RedeemError};
+use crate::provider::Link;
 use crate::screen;
 
 /// Close code telling the client its token is wrong (so it stops retrying).
@@ -48,9 +50,17 @@ pub struct Shared {
     /// whose pages may connect with a paired token.
     pub web: Option<String>,
     pub pairing: Pairing,
-    /// The engine, input and the clipboard.
-    pub screen: Arc<screen::Shared>,
+    pub screen: Screen,
     pub next_id: AtomicU64,
+}
+
+/// Where the engine, input and the clipboard are.
+pub enum Screen {
+    /// In this process.
+    Here(Arc<screen::Shared>),
+    /// In a provider process, in a session that has a display.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Provider(Arc<Link>),
 }
 
 pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Result<()> {
@@ -462,7 +472,13 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = unbounded_channel::<Out>();
     let reply = tx.clone();
-    let mut session = screen::open(&shared.screen, id, &query, Arc::new(move |out| drop(tx.send(out))));
+    let mut session = match &shared.screen {
+        Screen::Here(screen) => Some(screen::open(screen, id, &query, Arc::new(move |out| drop(tx.send(out))))),
+        Screen::Provider(link) => {
+            link.open(id, &query, tx);
+            None
+        }
+    };
     match &paired {
         Some(c) => crate::log!("client connected: {} ({})", addr.ip(), c.label),
         None => crate::log!("client connected: {}", addr.ip()),
@@ -508,11 +524,19 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                 // delay a fresh frame would see too.
                 let _ = reply.send(Out::Text(serde_json::json!({ "t": "pong", "n": n }).to_string()));
             }
-            Err(_) => session.message(&shared.screen, &text),
+            Err(_) => match (&shared.screen, &mut session) {
+                (Screen::Here(screen), Some(session)) => session.message(screen, &text),
+                (Screen::Provider(link), _) => link.text(id, &text),
+                (Screen::Here(_), None) => {}
+            },
         }
     }
 
-    session.close(&shared.screen);
+    match (&shared.screen, session) {
+        (Screen::Here(screen), Some(session)) => session.close(screen),
+        (Screen::Provider(link), _) => link.close(id),
+        (Screen::Here(_), None) => {}
+    }
     writer.abort();
     crate::log!("client disconnected: {}", addr.ip());
 }

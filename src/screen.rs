@@ -2,8 +2,9 @@
 //! clipboard, behind a small surface. Open a session, pass it what the
 //! client says, close it.
 //!
-//! The server is its only caller today. It is kept apart from the server,
-//! and free of sockets, so that something else could hold it instead.
+//! The server calls this in its own process. Where the server cannot see a
+//! screen (a Windows service), a provider process holds it instead and the
+//! server only forwards: see `provider`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
@@ -16,7 +17,7 @@ use crate::engine::{self, Cmd, Out, Quality, View, ViewChange};
 use crate::platform::{self, Monitor, input};
 use crate::server::MAX_CLIPBOARD;
 
-/// Where a session's output goes. For the server, a socket's queue.
+/// Where a session's output goes: a socket's queue, or a provider's pipe.
 pub type Sink = Arc<dyn Fn(Out) + Send + Sync>;
 
 pub struct Shared {
@@ -130,6 +131,11 @@ pub struct Session {
     id: u64,
     mon: usize,
     held: Held,
+    /// The query that would open this session as it is now: the one it was
+    /// opened with, brought up to date with what the client has asked for
+    /// since.
+    query: HashMap<String, String>,
+    changed: bool,
 }
 
 fn scale(v: Option<usize>) -> Option<usize> {
@@ -138,6 +144,11 @@ fn scale(v: Option<usize>) -> Option<usize> {
 
 fn fps(v: Option<u32>) -> Option<u32> {
     v.map(|f| f.min(1000))
+}
+
+/// A switch, as the query spells it.
+fn flag(on: bool) -> String {
+    if on { "1" } else { "0" }.into()
 }
 
 /// Open a session from the query a client connected with.
@@ -160,10 +171,21 @@ pub fn open(shared: &Shared, id: u64, query: &HashMap<String, String>, sink: Sin
         visible: query.get("vis").is_none_or(|v| v != "0"),
     });
     shared.peers.lock().unwrap().insert(id, sink);
-    Session { id, mon, held: Held::default() }
+    Session { id, mon, held: Held::default(), query: query.clone(), changed: false }
 }
 
 impl Session {
+    /// The query to open this session again as it is now, if that has
+    /// changed since this was last asked.
+    pub fn changed(&mut self) -> Option<&HashMap<String, String>> {
+        std::mem::take(&mut self.changed).then_some(&self.query)
+    }
+
+    fn remember(&mut self, key: &str, value: String) {
+        self.query.insert(key.into(), value);
+        self.changed = true;
+    }
+
     /// One message from the client, as it arrived.
     pub fn message(&mut self, shared: &Shared, text: &str) {
         let Ok(msg) = serde_json::from_str::<ClientMsg>(text) else {
@@ -179,10 +201,30 @@ impl Session {
                 let _ = shared.engine.send(Cmd::Ack { id, seq: s });
             }
             ClientMsg::Visible { v } => {
+                self.remember("vis", flag(v));
                 let _ = shared.engine.send(Cmd::Visible { id, visible: v });
             }
             ClientMsg::Configure { mon: m, q, scale: s, fps: f, soft, lossless } => {
                 self.mon = m.unwrap_or(self.mon);
+                // As `open` reads them: only values it would accept.
+                if let Some(m) = m {
+                    self.remember("mon", m.to_string());
+                }
+                if let Some(q) = q.as_deref().filter(|q| Quality::parse(q).is_some()) {
+                    self.remember("q", q.into());
+                }
+                if let Some(s) = scale(s) {
+                    self.remember("scale", s.to_string());
+                }
+                if let Some(f) = fps(f) {
+                    self.remember("fps", f.to_string());
+                }
+                if let Some(soft) = soft {
+                    self.remember("soft", flag(soft));
+                }
+                if let Some(lossless) = lossless {
+                    self.remember("lossless", flag(lossless));
+                }
                 let change = ViewChange {
                     mon: m,
                     quality: q.as_deref().and_then(Quality::parse),
@@ -369,6 +411,29 @@ mod tests {
         assert_eq!(to_pixel(&two, 7, 0.5, 0.5), Some((2560, 160)), "a monitor that is gone falls back to the last");
         assert_eq!(to_pixel(&two, 0, f64::NAN, 0.5), None);
         assert_eq!(to_pixel(&shared(Vec::new()), 0, 0.5, 0.5), None);
+    }
+
+    #[test]
+    fn a_session_knows_how_to_open_itself_again() {
+        let s = shared(vec![Monitor { x: 0, y: 0, width: 1920, height: 1080 }]);
+        let query = HashMap::from([("q".to_string(), "med".to_string()), ("vis".to_string(), "0".to_string())]);
+        let mut session = open(&s, 1, &query, Arc::new(|_| {}));
+        assert!(session.changed().is_none(), "as it was opened");
+
+        session.message(&s, r#"{"t":"m","x":0.5,"y":0.5}"#);
+        session.message(&s, r#"{"t":"ack","s":3}"#);
+        assert!(session.changed().is_none(), "input and acks change nothing about how it opens");
+
+        session.message(&s, r#"{"t":"vis","v":true}"#);
+        session.message(&s, r#"{"t":"cfg","q":"high","scale":2,"fps":30,"soft":true,"lossless":false,"mon":1}"#);
+        // Values `open` would refuse are not kept.
+        session.message(&s, r#"{"t":"cfg","q":"best","scale":3}"#);
+        let now = session.changed().expect("the view changed").clone();
+        let has = |key: &str| now.get(key).map(String::as_str);
+        assert_eq!((has("vis"), has("q"), has("scale")), (Some("1"), Some("high"), Some("2")));
+        assert_eq!((has("fps"), has("soft"), has("lossless"), has("mon")), (Some("30"), Some("1"), Some("0"), Some("1")));
+        assert!(session.changed().is_none(), "told once");
+        session.close(&s);
     }
 
     #[test]

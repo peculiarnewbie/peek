@@ -8,6 +8,7 @@ mod engine;
 mod install;
 mod pairing;
 mod platform;
+mod provider;
 mod screen;
 mod server;
 mod webp;
@@ -31,7 +32,14 @@ pub static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static RECENT: Mutex<(u64, VecDeque<String>)> = Mutex::new((0, VecDeque::new()));
 const RECENT_LINES: usize = 1000;
 
+/// In a provider process: the core, which does the logging for both.
+static LOG_TO_CORE: OnceLock<Arc<provider::ToCore>> = OnceLock::new();
+
 pub fn log_line(line: std::fmt::Arguments<'_>) {
+    if let Some(core) = LOG_TO_CORE.get() {
+        core.log(&line.to_string());
+        return;
+    }
     let line = format!("{} {line}", chrono::Local::now().format("%H:%M:%S"));
     eprintln!("{line}");
     if let Some(file) = LOG_FILE.get() {
@@ -105,6 +113,10 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     service: bool,
+    /// Be the screen for a core (the Windows service starts one in the
+    /// session at the console), speaking to it on stdin and stdout
+    #[arg(long, hide = true, value_name = "KIND")]
+    provider: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -501,6 +513,56 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
     }
 }
 
+/// The core, in the Windows service: it listens where there is no display,
+/// and returns the link the service attaches a screen provider to, one for
+/// each session that comes to the console.
+#[cfg(windows)]
+fn core_in_service() -> Arc<provider::Link> {
+    fn fail(what: String) -> ! {
+        log!("{what}");
+        std::process::exit(1);
+    }
+    let args = Args::parse();
+    let web = web_origin(&args.web).unwrap_or_else(|e| fail(e));
+    if args.no_token && !(args.bind.is_unspecified() || args.bind.is_loopback() || server::tailnet(args.bind)) {
+        fail(format!("--no-token accepts only Tailscale connections; --bind {} is not a Tailscale address", args.bind));
+    }
+    let token = (!args.no_token).then(|| {
+        load_token().unwrap_or_else(|e| fail(format!("cannot store the access token in {}: {e}", config_dir().display())))
+    });
+    let pairing = pairing::Pairing::load(&config_dir())
+        .unwrap_or_else(|e| fail(format!("cannot read or store pairing data in {}: {e}", config_dir().display())));
+    let screen = provider::Link::new();
+    let shared = Arc::new(server::Shared {
+        token,
+        web,
+        pairing,
+        screen: server::Screen::Provider(screen.clone()),
+        next_id: AtomicU64::new(1),
+    });
+    let addr = SocketAddr::new(args.bind, args.port);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| fail(format!("cannot start the async runtime: {e}")));
+    // Listening before the first provider is started: a client that
+    // connects in between waits for it.
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind(addr))
+        .unwrap_or_else(|e| fail(format!("cannot listen on {addr}: {e}")));
+    log!("service: listening on {addr}");
+    std::thread::Builder::new()
+        .name("core".into())
+        .spawn(move || {
+            if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
+                fail(format!("cannot serve on {addr}: {e}"));
+            }
+        })
+        .unwrap_or_else(|e| fail(format!("cannot start the server thread: {e}")));
+    screen
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -551,6 +613,23 @@ fn main() {
         std::process::exit(1);
     }
 
+    // The screen for a core, which listens, keeps the settings and logs for
+    // both: this process only has the display.
+    if let Some(kind) = &args.provider {
+        if kind != "screen" {
+            eprintln!("no provider is called {kind}");
+            std::process::exit(2);
+        }
+        let (from_core, core) = provider::connect();
+        let _ = LOG_TO_CORE.set(core.clone());
+        platform::init();
+        #[cfg(windows)]
+        platform::keep_device(args.keep_gpu);
+        let screen = screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps);
+        provider::run_screen(screen, from_core, core);
+        return;
+    }
+
     if let Some(path) = &args.log {
         match OpenOptions::new().create(true).append(true).open(path) {
             Ok(file) => {
@@ -563,7 +642,7 @@ fn main() {
 
     #[cfg(windows)]
     if args.service {
-        if let Err(e) = platform::service::run() {
+        if let Err(e) = platform::service::run(core_in_service) {
             log!("{e}");
             std::process::exit(1);
         }
@@ -601,7 +680,7 @@ fn main() {
         token,
         web: web.clone(),
         pairing,
-        screen: screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps),
+        screen: server::Screen::Here(screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps)),
         next_id: AtomicU64::new(1),
     });
 
