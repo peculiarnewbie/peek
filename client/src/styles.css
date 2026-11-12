@@ -244,9 +244,14 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 .dhost { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dstate { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
 .dforget { position: absolute; top: 8px; right: 8px; opacity: 0; }
-.dpower { display: flex; align-items: center; gap: 10px; margin: 0; padding: 0 16px 14px; }
-p.dpower { display: block; line-height: 1.45; }
-.dpower.busy::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%;
+/* What providers ask to be shown (components/View.tsx): on a card, and in the stats panel. */
+.dviews { display: grid; gap: 8px; padding: 0 16px 14px; }
+.vtext { margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink-2); -webkit-user-select: text; user-select: text; }
+.vtext.quiet { color: var(--muted); }
+.vtext.wrong { color: #f08a6b; }
+.vrow { display: flex; align-items: center; gap: 10px; }
+.section > .vtext, .section > .vrow { margin-top: 8px; }
+.vtext.busy::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%;
   background: var(--s1); vertical-align: 1px; animation: dpulse 1s ease-in-out infinite alternate; }
 @keyframes dpulse { from { opacity: .25; } }
 .btn.small { height: 28px; padding: 0 12px; font-size: 13px; }

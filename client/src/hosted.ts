@@ -5,7 +5,7 @@
 // own. Nothing about the machines leaves this browser.
 import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
-import { refreshPower, type Power } from './power';
+import { dropCards, onAgain, refreshCards, type ProviderAbout } from './views';
 import { store } from './util';
 
 export const HOSTED = import.meta.env.MODE === 'hosted';
@@ -18,10 +18,11 @@ export interface Machine {
   host: string;
   token: string;
   added: number;
-  /** What it said it can do for sleep and wake, when last online. */
-  power?: Power;
-  /** A wake failed since it was last online; it is told when it is next. */
-  wakeFailed?: boolean;
+  /** Its providers, as it last said (see views.ts). */
+  providers?: ProviderAbout[];
+  /** What each of its providers lets the same provider on the other
+   *  machines know of it, kept for while it is away. */
+  records?: Record<string, unknown>;
 }
 
 function load(): Machine[] {
@@ -95,7 +96,13 @@ export const BLOCKED_HELP = 'This browser is blocking the site from reaching dev
 export type Reach = 'checking' | 'up' | 'down';
 export const [reach, setReach] = createStore<Record<string, Reach>>({});
 
-interface About { id: string; name: string; protocol: number; providers?: string[] }
+interface About { id: string; name: string; protocol: number; providers?: ProviderAbout[] }
+
+/** A machine's providers as it says them now, kept if they changed. */
+export function learn(m: Machine, a: About) {
+  const providers = (Array.isArray(a.providers) ? a.providers : []).filter(p => p && typeof p.name === 'string');
+  if (JSON.stringify(providers) !== JSON.stringify(m.providers ?? [])) updateMachine(m.id, { providers });
+}
 
 export async function about(host: string, ms = 5000): Promise<About> {
   const r = await fetch(`https://${host}/.well-known/peek`, { cache: 'no-store', signal: AbortSignal.timeout(ms) });
@@ -109,12 +116,19 @@ export function probeAll() {
     if (!reach[m.id]) setReach(m.id, 'checking');
     about(m.host, 4000)
       .then(a => {
-        setReach(m.id, a.id === m.id ? 'up' : 'down');
-        if (a.id === m.id && a.providers?.includes('power')) refreshPower(m);
+        if (a.id !== m.id) throw new Error('another machine answers there');
+        setReach(m.id, 'up');
+        learn(m, a);
+        refreshCards(machines().find(x => x.id === m.id) ?? m);
       })
-      .catch(() => setReach(m.id, 'down'));
+      .catch(() => {
+        setReach(m.id, 'down');
+        dropCards(m.id);
+      });
   }
 }
+// A provider with something under way has every machine looked at again.
+onAgain(probeAll);
 
 // ---- pairing ----
 /** A host and code from a pairing link (`peek pair` prints one), if it is one. */

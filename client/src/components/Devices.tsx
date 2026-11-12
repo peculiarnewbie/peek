@@ -1,17 +1,18 @@
 // Hosted client: the page of paired machines at `/`. Choosing one opens it
 // at `/screen/<name>`; the toolbar's back button (or the browser's) returns here.
-import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js';
+import { createEffect, createSignal, For, Index, on, onCleanup, Show } from 'solid-js';
 import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
-  BLOCKED_HELP, cleanHost, current, forget, localAccess, machines, navigate, openMachine, pair, parseLink,
-  probeAll, reach, screenPath, type Machine,
+  about, BLOCKED_HELP, cleanHost, current, forget, learn, localAccess, machines, navigate, openMachine, pair,
+  parseLink, probeAll, reach, screenPath, type Machine,
 } from '../hosted';
-import { doing, offer, sleep, TEST_WAKE_AFTER, wake, waker } from '../power';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
+import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { canScan, QrScan } from './QrScan';
+import { ItemView } from './View';
 
 /** Shell commands, one per line, with one button that copies them all. */
 function Commands(props: { lines: string[] }) {
@@ -87,7 +88,7 @@ function Card(props: { m: Machine }) {
         <span class="dstate"><span class="mdot" classList={{ up: state() === 'up', down: state() === 'down' }} />
           {STATUS[state()]}</span>
       </a>
-      <Power m={props.m} up={state() === 'up'} down={state() === 'down'} />
+      <CardViews m={props.m} />
       <button class="dforget tb icon" tabIndex={-1} title={`Forget ${props.m.name}`}
         onClick={() => { if (confirm(`Forget ${props.m.name}? Pairing it again needs a new code.`)) forget(props.m.id); }}>
         <Icon name="x" />
@@ -96,45 +97,18 @@ function Card(props: { m: Machine }) {
   );
 }
 
-/** Sleep and wake, under a machine's card: what is under way, or what it offers. */
-function Power(props: { m: Machine; up: boolean; down: boolean }) {
-  const what = () => offer(props.m);
-  const testSleep = (by: Machine) => {
-    const ifNot = props.m.power?.timer
-      ? 'If that does not wake it, it wakes itself after about two minutes and says so.'
-      : 'If that does not wake it, someone will have to press its power button: wake timers are off in its ' +
-        'power settings, so it cannot wake itself.';
-    if (confirm(`${props.m.name} will go to sleep, and ${by.name} will try to wake it about ${TEST_WAKE_AFTER} ` +
-      `seconds later.\n\n${ifNot} Go ahead?`)) sleep(props.m, true);
-  };
-  const plainSleep = (by: Machine) => {
-    if (confirm(`Put ${props.m.name} to sleep? ${by.name} can wake it from here.`)) sleep(props.m, false);
-  };
+/** What the machines' providers ask to be shown on this card (views.ts). */
+function CardViews(props: { m: Machine }) {
+  const shown = () => cardItems(props.m);
   return (
-    <Show when={doing[props.m.id]} fallback={
-      <>
-        <Show when={props.up && what()}>{o => {
-          const x = o();
-          return x.kind === 'none'
-            ? <p class="dpower hint small">{`Sleep is off: ${x.why}`}</p>
-            : <>
-                <Show when={x.kind === 'test' && x.failed}>{why => <p class="dpower small err">{why()}</p>}</Show>
-                <div class="dpower">
-                  <button class="btn alt small" tabIndex={-1}
-                    onClick={() => x.kind === 'test' ? testSleep(x.by) : plainSleep(x.by)}>
-                    {x.kind === 'test' ? 'Test sleep and wake' : 'Sleep'}
-                  </button>
-                </div>
-              </>;
-        }}</Show>
-        <Show when={props.down && props.m.power?.wake && waker(props.m)}>{by => (
-          <div class="dpower">
-            <button class="btn small" tabIndex={-1} onClick={() => wake(props.m)}>Wake</button>
-            <span class="hint small">{`from ${by().name}`}</span>
-          </div>
-        )}</Show>
-      </>
-    }>{d => <p class="dpower small" classList={{ err: !!d().error, hint: !d().error, busy: d().busy }}>{d().text}</p>}</Show>
+    <Show when={shown().length || cardError[props.m.id]}>
+      <div class="dviews">
+        <Index each={shown()}>{s => (
+          <ItemView item={s().item} disabled={pressing[props.m.id]} onPress={() => press(props.m, s())} />
+        )}</Index>
+        <Show when={cardError[props.m.id]}>{why => <p class="vtext wrong">{why()}</p>}</Show>
+      </div>
+    </Show>
   );
 }
 
@@ -146,6 +120,9 @@ export function Devices() {
     if (id) {
       setMessage(`Connecting to ${current()!.name}…`);
       connect();
+      // Its providers as they are now: this page may be the first to ask.
+      const m = current()!;
+      about(m.host).then(a => { if (a.id === m.id) learn(m, a); }, () => {});
       focusScreen();
     } else {
       showSettings(false);

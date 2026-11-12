@@ -1,24 +1,21 @@
-import { createEffect, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { setStats, toggleStatsPin } from '../actions';
 import { cv, focusScreen } from '../screen';
-import { cfg, live, sleeping, statsMode, statsPinned, vitals } from '../state';
+import { send } from '../connection';
+import { current, HOSTED } from '../hosted';
+import { cfg, live, sleeping, statsMode, statsPinned } from '../state';
 import { first, L, opened, RATE_SECONDS, rate, S, shown } from '../stats';
 import { bytes, duration, ms, perSec, store } from '../util';
+import { dropPages, pageProviders, pages, type ProviderAbout } from '../views';
 import { Icon } from './Icons';
+import { Figure, Items } from './View';
+
+/** Served by a host: that host's providers, which it says once. */
+const [own, setOwn] = createSignal<{ providers?: ProviderAbout[] } | null>(null);
+if (!HOSTED) fetch('/.well-known/peek').then(r => r.json()).then(setOwn, () => {});
 
 /** Title bar height: the part of the panel always kept inside the window. */
 const HEAD = 40;
-
-const GB = 2 ** 30;
-const percent = (used: number, total: number) => total ? `${Math.round(used / total * 100)} %` : '– %';
-const ofGb = (used: number, total: number) =>
-  `${(used / GB).toFixed(used < 100 * GB ? 1 : 0)} of ${(total / GB).toFixed(total < 100 * GB ? 1 : 0)} GB`;
-
-/** A value with its unit set smaller, for the stat tiles. */
-function Figure(props: { text: string }) {
-  const parts = () => props.text.split(' ');
-  return <>{parts()[0]}<small>{parts().slice(1).join(' ')}</small></>;
-}
 
 function niceScale(peakKb: number) {
   const [unit, div] = peakKb >= 1024 ? ['MB/s', 1024] : ['KB/s', 1];
@@ -189,6 +186,22 @@ export function Stats() {
 
   // Redraw every second, on hover, and when the panel opens or is pinned.
   createEffect(() => { shown(); hoverX(); statsPinned(); if (statsMode() === 'open') { place(); drawChart(); } });
+  // While the panel shows on a live connection, watch what the machine's
+  // providers have for it: each sends its view now, and again as it changes.
+  const watched = createMemo(
+    () => live() && statsMode() !== 'off' ? pageProviders(HOSTED ? current() : own()) : [],
+    [], { equals: (a, b) => a.join() === b.join() });
+  createEffect(() => {
+    const names = watched();
+    for (const p of names) {
+      send({ t: 'open', p });
+      send({ t: 'to', p, m: { t: 'view', place: 'page' } });
+    }
+    onCleanup(() => {
+      for (const p of names) send({ t: 'close', p });
+      dropPages();
+    });
+  });
 
   return (
     <div id="stats" class="panel" ref={box}
@@ -211,34 +224,16 @@ export function Stats() {
             <Figure text={total() == null ? '– ms' : ms(total())} /></div></div>
         </div>
 
-        {/* From the vitals provider, a process of its own on the same socket. */}
-        <Show when={vitals()}>{v => {
-          const storage = () => v().disks.reduce((a, d) => ({ used: a.used + d.used, total: a.total + d.total }),
-            { used: 0, total: 0 });
-          const rows = () => [...(v().mem ? [{ name: 'Memory', ...v().mem! }] : []), ...v().disks];
-          return (
-            <div class="section" id="vitals">
-              <div class="section-title">
-                <span>This machine</span><span class="aside">{`up ${duration(v().up * 1000)}`}</span>
-              </div>
-              <div class="tiles">
-                <div class="tile"><div class="k">Processor</div><div class="v">
-                  <Figure text={v().cpu == null ? '– %' : `${Math.round(v().cpu!)} %`} /></div></div>
-                <div class="tile"><div class="k">Memory</div><div class="v">
-                  <Figure text={v().mem ? percent(v().mem!.used, v().mem!.total) : '– %'} /></div></div>
-                <div class="tile"><div class="k">Storage</div><div class="v">
-                  <Figure text={percent(storage().used, storage().total)} /></div></div>
-              </div>
-              <div class="meters">
-                <For each={rows()}>{r => <>
-                  <span>{r.name}</span>
-                  <div class="meter"><div style={{ width: `${r.total ? r.used / r.total * 100 : 0}%` }} /></div>
-                  <span>{ofGb(r.used, r.total)}</span>
-                </>}</For>
-              </div>
-            </div>
-          );
-        }}</Show>
+        {/* What the machine's other providers ask to be shown here (views.ts). */}
+        <For each={Object.keys(pages)}>{name => (
+          <div class="section">
+            <Show when={pages[name]?.title}>
+              <div class="section-title"><span>{pages[name].title}</span><span class="aside">{pages[name].aside}</span></div>
+            </Show>
+            <Items items={pages[name]?.items ?? []}
+              onPress={item => { if (!item.confirm || confirm(item.confirm)) send({ t: 'to', p: name, m: { t: 'do', do: item.do } }); }} />
+          </div>
+        )}</For>
 
         <div class="section">
           <div class="section-title">

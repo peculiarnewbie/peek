@@ -3,10 +3,18 @@
 //!
 //! A machine asleep runs nothing, peek included, so it cannot be asked to
 //! wake. Another machine on its network can wake it, with a Wake-on-LAN
-//! packet to its network card; a browser cannot send one. So each machine
-//! says what it would take to wake it (`info`), the browser keeps that, and
-//! when the machine is asleep asks another peek on the same network to send
-//! the packet (`wake`).
+//! packet to its network card; a browser cannot send one. And no machine
+//! knows of the others: only the browser is paired with them all.
+//!
+//! So each machine's provider says what the same provider on the others
+//! may know of it (its `record`: the card to wake it through, its
+//! networks), the browser carries those between them, and each then says
+//! what to show (docs/providers.md). The browser draws that and knows
+//! nothing of sleep or wake:
+//!
+//! - On its own card: Sleep, or why not, when another machine on its
+//!   network is there to wake it.
+//! - On the card of a machine it can wake, while that one is away: Wake.
 //!
 //! Whether waking works also depends on the firmware, which no program can
 //! read. So it is tried once, as a test, and neither half of the test needs
@@ -21,6 +29,11 @@
 //!   timer. It keeps that itself.
 //!
 //! Requests, one per channel, each with one answer:
+//! - `{"t":"view","place":"card","peers":[..]}`: what to show on the cards.
+//! - `{"t":"do","do":{..},"peers":[..]}`: a button of this machine's was
+//!   pressed; `do` is one of the requests below. Answers with the view.
+//! - `{"t":"peer","do":{..}}`: the same, on another machine's behalf: only
+//!   `wake`. Answers `{"t":"ok"}`.
 //! - `{"t":"info"}`: what this machine can do; see `info`.
 //! - `{"t":"sleep"}`: answers `{"t":"sleeping"}`, then sleeps. With
 //!   `"test":true` it is the test above.
@@ -28,16 +41,16 @@
 //!   onto that network, if this machine is on it. Answers `{"t":"wake-sent"}`.
 //!   With `"after":15` it answers `{"t":"wake-armed"}` at once and sends the
 //!   packet that many seconds later, and three more times after that.
-//! - `{"t":"tested","ok":false}`: a wake the browser saw fail. Answers with
-//!   `info`.
 //!
 //! Anything refused answers `{"t":"error","why":".."}`.
 
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::provider::{self, Event};
@@ -49,8 +62,10 @@ const SLEEP_AFTER: Duration = Duration::from_secs(1);
 const TESTED_FILE: &str = "wake-tested.json";
 
 // The test. The other machine sends its packets 15, 25, 35 and 45 seconds
-// after it is asked (the browser's choice of 15, and `WAKE_AGAIN`), in case
-// this one is slow to fall asleep. Its own timer is well after the last.
+// after it is asked (`TEST_WAKE_AFTER`, and `WAKE_AGAIN`), in case this one
+// is slow to fall asleep. Its own timer is well after the last.
+/// How long after it is asked the other machine sends a test's first packet.
+const TEST_WAKE_AFTER: u64 = 15;
 /// When a machine under test wakes itself, if nothing else has.
 const TEST_TIMER: Duration = Duration::from_secs(120);
 /// Awake again within this of the test starting: a packet woke it. Later:
@@ -64,6 +79,19 @@ const WAKE_AGAIN: (u32, Duration) = (3, Duration::from_secs(10));
 /// The longest a wake can be put off.
 const MAX_WAKE_AFTER: u64 = 300;
 
+// What the cards say, and for how long.
+/// A machine told to sleep says so for this long, while it still answers.
+const GOING_TO_SLEEP: Duration = Duration::from_secs(30);
+/// From a wake's first packet: a machine not back by now did not wake.
+const AWAKE_WITHIN: Duration = Duration::from_secs(90);
+/// The same for one that wakes itself on a timer if no packet does, two
+/// minutes into its test, and then has to reconnect.
+const AWAKE_BY_TIMER_WITHIN: Duration = Duration::from_secs(225);
+/// How a test went is said on the card for this long after it.
+const SAY_TEST_FOR: Duration = Duration::from_secs(600);
+/// A wake that woke nothing is told to the others for this long.
+const TELL_UNWOKEN_FOR: u64 = 7 * 86400;
+
 /// What to do once a request's answer is sent.
 #[derive(Debug, PartialEq)]
 enum Then {
@@ -73,15 +101,51 @@ enum Then {
     WakeLater { mac: [u8; 6], local: Ipv4Addr, broadcast: Ipv4Addr, after: Duration },
 }
 
+/// What this provider remembers between requests.
+#[derive(Default)]
+struct State {
+    /// The wakes it has sent or is about to, by the card they are for.
+    wakes: HashMap<String, Wake>,
+    /// Wakes that woke nothing: the card, and when (seconds since 1970).
+    /// Part of this machine's record, so the machine it is about hears.
+    unwoken: BTreeMap<String, u64>,
+    /// How this machine's last test went, to say so for a while after.
+    last_test: Option<LastTest>,
+    /// When this machine was last told to sleep.
+    sleeping: Option<SystemTime>,
+    /// It had a card to be woken through, the last time it was asked.
+    had_card: bool,
+}
+
+struct Wake {
+    /// When its first packet goes, or went.
+    at: SystemTime,
+    /// The machine wakes itself on a timer if no packet does.
+    timer: bool,
+}
+
+struct LastTest {
+    ok: bool,
+    /// Seconds from the test beginning to the machine being awake again.
+    took: u64,
+    at: SystemTime,
+}
+
 /// Run the provider until the core goes away.
 pub fn run(input: File, core: Arc<provider::ToCore>, view_only: bool) {
+    // It shows on the cards, and wants to hear of the other machines.
+    core.about(r#"{"places":["card"],"peers":true}"#);
+    let state: Arc<Mutex<State>> = Arc::default();
     provider::serve(input, |event| {
         if let Event::Text(channel, text) = event {
-            let (answer, then) = answer(&text, view_only);
+            let (answer, then) = answer(&text, view_only, &state);
             core.text(channel, &answer.to_string());
             match then {
                 Then::Nothing => {}
-                Then::Sleep { test } => drop(std::thread::spawn(move || sleep(test))),
+                Then::Sleep { test } => {
+                    let state = state.clone();
+                    std::thread::spawn(move || sleep(test, &state));
+                }
                 Then::WakeLater { mac, local, broadcast, after } => drop(std::thread::spawn(move || {
                     std::thread::sleep(after);
                     for again in 0..=WAKE_AGAIN.0 {
@@ -101,7 +165,7 @@ pub fn run(input: File, core: Arc<provider::ToCore>, view_only: bool) {
 
 /// Go to sleep. As a test: with a wake timer set first, and keeping how it
 /// went once this machine is awake again.
-fn sleep(test: bool) {
+fn sleep(test: bool, state: &Mutex<State>) {
     let started = SystemTime::now();
     // The card now: just after waking, its link may not be up yet.
     let card = test.then(target).and_then(Result::ok).map(|t| t.mac);
@@ -122,6 +186,7 @@ fn sleep(test: bool) {
         if let Ok(Err(e)) = asleep.join() {
             crate::log!("power: could not sleep ({e})");
         }
+        state.lock().unwrap().sleeping = None;
         return;
     }
     let mut asleep = Some(asleep);
@@ -147,6 +212,7 @@ fn sleep(test: bool) {
         last = now;
     };
     drop(timer);
+    state.lock().unwrap().sleeping = None;
     let Some(woke) = woke else {
         crate::log!("power: this machine did not go to sleep, so the test showed nothing");
         return;
@@ -162,6 +228,7 @@ fn sleep(test: bool) {
         Some(Err(why)) => crate::log!("power: could not keep how the test went ({why})"),
         None => crate::log!("power: there was no card to wake this machine through, so the test is not kept"),
     }
+    state.lock().unwrap().last_test = Some(LastTest { ok, took: woke.as_secs(), at: SystemTime::now() });
     platform::stay_awake(STAY_AWAKE);
 }
 
@@ -177,15 +244,74 @@ fn keep_tested(mac: &[u8; 6], ok: bool) -> Result<(), String> {
     std::fs::write(crate::config_dir().join(TESTED_FILE), record.to_string()).map_err(|e| e.to_string())
 }
 
+/// How the last try at waking this machine through this card went, and
+/// when (seconds since 1970).
+fn tested(mac: &str) -> Option<(bool, u64)> {
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(crate::config_dir().join(TESTED_FILE)).ok()?).ok()?;
+    (kept["mac"].as_str() == Some(mac)).then_some(())?;
+    Some((kept["ok"].as_bool()?, kept["at"].as_u64()?))
+}
+
 fn error(why: impl Into<String>) -> Value {
     json!({ "t": "error", "why": why.into() })
 }
 
+fn is_error(answer: &Value) -> bool {
+    answer["t"] == "error"
+}
+
 /// The answer to one request, and what to do once it is sent.
-fn answer(text: &str, view_only: bool) -> (Value, Then) {
+fn answer(text: &str, view_only: bool, state: &Mutex<State>) -> (Value, Then) {
     let Ok(req) = serde_json::from_str::<Value>(text) else {
         return (error("not JSON"), Then::Nothing);
     };
+    match req["t"].as_str().unwrap_or("") {
+        "view" if req["place"] == "card" => (card_now(&req, view_only, state), Then::Nothing),
+        "view" => (error("power shows nothing there"), Then::Nothing),
+        // A button on one of this machine's views.
+        "do" => {
+            let ask = &req["do"];
+            let (done, then) = act(ask, view_only);
+            if is_error(&done) {
+                return (done, Then::Nothing);
+            }
+            {
+                let mut state = state.lock().unwrap();
+                if matches!(then, Then::Sleep { .. }) {
+                    state.sleeping = Some(SystemTime::now());
+                }
+                if let Some(mac) = ask["mac"].as_str().and_then(parse_mac).filter(|_| ask["t"] == "wake") {
+                    state.unwoken.remove(&format_mac(&mac));
+                    state.wakes.insert(format_mac(&mac), Wake { at: SystemTime::now(), timer: false });
+                }
+            }
+            (card_now(&req, view_only, state), then)
+        }
+        // The same provider on another machine, through the browser: it
+        // may ask for a wake, and nothing else.
+        "peer" => {
+            let ask = &req["do"];
+            if ask["t"] != "wake" {
+                return (error("another machine may only ask this one to wake it"), Then::Nothing);
+            }
+            let (done, then) = act(ask, view_only);
+            if is_error(&done) {
+                return (done, Then::Nothing);
+            }
+            if let Some(mac) = ask["mac"].as_str().and_then(parse_mac) {
+                let at = SystemTime::now() + Duration::from_secs(ask["after"].as_u64().unwrap_or(0));
+                let mut state = state.lock().unwrap();
+                state.unwoken.remove(&format_mac(&mac));
+                state.wakes.insert(format_mac(&mac), Wake { at, timer: ask["timer"].as_bool().unwrap_or(false) });
+            }
+            (json!({ "t": "ok" }), then)
+        }
+        _ => act(&req, view_only),
+    }
+}
+
+/// The requests that do something, or say what could be done.
+fn act(req: &Value, view_only: bool) -> (Value, Then) {
     match req["t"].as_str().unwrap_or("") {
         "info" => (info(), Then::Nothing),
         "sleep" if view_only => (error("this machine is view-only"), Then::Nothing),
@@ -200,22 +326,334 @@ fn answer(text: &str, view_only: bool) -> (Value, Then) {
             };
             wake(mac, addr, req["after"].as_u64(), &lan())
         }
-        "tested" => {
-            let ok = req["ok"].as_bool().unwrap_or(false);
-            match target().and_then(|t| keep_tested(&t.mac, ok)) {
-                Ok(()) => {
-                    crate::log!("power: waking this machine {}", if ok { "worked" } else { "did not work" });
-                    (info(), Then::Nothing)
-                }
-                Err(why) => (error(format!("could not keep it: {why}")), Then::Nothing),
-            }
-        }
         other => (error(format!("no request is called {other:?}")), Then::Nothing),
     }
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    secs(SystemTime::now())
+}
+
+fn secs(at: SystemTime) -> u64 {
+    at.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+// ---- what to show ----
+
+/// What this machine's provider says of it to the same provider on the
+/// other paired machines. The browser carries it, and keeps it for while
+/// this machine is asleep.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
+#[serde(default)]
+struct Record {
+    name: String,
+    /// The card to wake it through, and its address on that network
+    /// ("192.168.1.20/24"); neither if nothing can wake it.
+    mac: Option<String>,
+    addr: Option<String>,
+    adapter: Option<String>,
+    /// "s3", or "modern" for Modern Standby.
+    standby: Option<String>,
+    /// The networks it is on, and so can wake others on.
+    lan: Vec<String>,
+    /// It sends wakes for others (it is not view-only).
+    wakes: bool,
+    /// Wakes it sent that woke nothing: the card, and when.
+    unwoken: BTreeMap<String, u64>,
+    /// When it last learnt whether it can be woken.
+    tested_at: Option<u64>,
+}
+
+/// Another paired machine, as the browser tells of it.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Peer {
+    id: String,
+    name: String,
+    /// It answers the browser now.
+    up: bool,
+    record: Option<Record>,
+}
+
+/// What a card is made from, on this machine's side.
+struct Me {
+    name: String,
+    /// How it sleeps ("s3", "modern"), if it can.
+    standby: Option<&'static str>,
+    target: Result<Target, String>,
+    lan: Vec<(Ipv4Addr, u8)>,
+    /// How the last try at waking it went, and when.
+    tested: Option<(bool, u64)>,
+    /// A test that fails to wake it ends by itself, on a wake timer.
+    timer: bool,
+    view_only: bool,
+}
+
+/// The card view for a request, from how this machine is now.
+fn card_now(req: &Value, view_only: bool, state: &Mutex<State>) -> Value {
+    let peers: Vec<Peer> = serde_json::from_value(req["peers"].clone()).unwrap_or_default();
+    let mut target = target();
+    // A card that was there a moment ago: the machine is just awake, or its
+    // cable just moved, and the link is not up yet. Give it a moment before
+    // saying there is nothing to wake it through.
+    if target.is_err() && state.lock().unwrap().had_card {
+        for _ in 0..8 {
+            std::thread::sleep(Duration::from_millis(500));
+            target = self::target();
+            if target.is_ok() {
+                break;
+            }
+        }
+    }
+    state.lock().unwrap().had_card = target.is_ok();
+    let mut me = Me {
+        name: crate::pairing::machine_name(),
+        standby: platform::can_sleep(),
+        tested: target.as_ref().ok().and_then(|t| tested(&format_mac(&t.mac))),
+        target,
+        lan: lan(),
+        timer: platform::wake_timers_allowed(),
+        view_only,
+    };
+    // Another machine sent this one a wake that woke nothing: that is how
+    // its last try went, whatever went before.
+    if let Ok(t) = &me.target
+        && unwoken_since(&peers, &format_mac(&t.mac), me.tested)
+        && keep_tested(&t.mac, false).is_ok()
+    {
+        crate::log!("power: another machine's wake did not wake this one");
+        me.tested = Some((false, now()));
+    }
+    card(&me, &peers, &mut state.lock().unwrap(), SystemTime::now())
+}
+
+/// Whether one of the others sent this machine's card a wake that woke
+/// nothing, since it last learnt whether it can be woken.
+fn unwoken_since(peers: &[Peer], mac: &str, tested: Option<(bool, u64)>) -> bool {
+    peers
+        .iter()
+        .filter_map(|p| p.record.as_ref()?.unwoken.get(mac))
+        .any(|at| tested.is_none_or(|(_, learnt)| *at > learnt))
+}
+
+fn line(text: impl Into<String>, tone: &str, busy: bool) -> Value {
+    let mut item = json!({ "kind": "text", "text": text.into() });
+    if !tone.is_empty() {
+        item["tone"] = tone.into();
+    }
+    if busy {
+        item["busy"] = true.into();
+    }
+    item
+}
+
+/// What to check on a machine that no packet woke.
+fn what_to_check(adapter: Option<&str>, standby: Option<&str>) -> String {
+    format!(
+        "Most often Wake-on-LAN is off in its BIOS or UEFI settings (\"Wake on LAN\", \"Power on by PCI-E\"), \
+         or \"Wake on Magic Packet\" is off for {} in Windows' Device Manager.{}",
+        adapter.unwrap_or("its network card"),
+        if standby == Some("modern") {
+            " It also uses Modern Standby, which can turn the network card off while asleep."
+        } else {
+            ""
+        }
+    )
+}
+
+fn on_network(a: (Ipv4Addr, u8), b: (Ipv4Addr, u8)) -> bool {
+    a.1 == b.1 && u32::from(a.0) & mask(a.1) == u32::from(b.0) & mask(b.1)
+}
+
+/// What to show on the cards: this machine's own, and the cards of the
+/// machines it can wake (those items say whose with `about`). With it goes
+/// this machine's record, and how soon to ask again while something is
+/// under way.
+fn card(me: &Me, peers: &[Peer], state: &mut State, now: SystemTime) -> Value {
+    let mut items = Vec::new();
+    let mut busy = false;
+    if state.sleeping.is_some_and(|at| now.duration_since(at).is_ok_and(|d| d < GOING_TO_SLEEP)) {
+        items.push(line("Going to sleep…", "", true));
+        busy = true;
+    } else if me.standby.is_some() {
+        own(me, peers, state, now, &mut items);
+    }
+    if !me.view_only {
+        busy |= others(me, peers, state, now, &mut items);
+    }
+    let target = me.target.as_ref().ok();
+    let old = secs(now).saturating_sub(TELL_UNWOKEN_FOR);
+    state.unwoken.retain(|_, at| *at > old);
+    let record = Record {
+        name: me.name.clone(),
+        mac: target.map(|t| format_mac(&t.mac)),
+        addr: target.map(|t| format!("{}/{}", t.addr.0, t.addr.1)),
+        adapter: target.map(|t| t.adapter.clone()),
+        standby: me.standby.map(str::to_string),
+        lan: me.lan.iter().map(|(ip, prefix)| format!("{ip}/{prefix}")).collect(),
+        wakes: !me.view_only,
+        unwoken: state.unwoken.clone(),
+        tested_at: me.tested.map(|(_, at)| at),
+    };
+    json!({
+        "t": "view",
+        "place": "card",
+        "view": { "items": items },
+        "record": record,
+        "again": busy.then_some(2),
+    })
+}
+
+/// This machine's own card: Sleep, the test that comes before it, or why
+/// neither.
+fn own(me: &Me, peers: &[Peer], state: &State, now: SystemTime, items: &mut Vec<Value>) {
+    let mut off = |why: String| items.push(line(format!("Sleep is off: {why}"), "hint", false));
+    if me.view_only {
+        return off("this machine is view-only.".into());
+    }
+    let t = match &me.target {
+        Ok(t) => t,
+        Err(why) => return off(why.clone()),
+    };
+    if !t.armed {
+        return off(format!(
+            "Windows does not let {0} wake this machine. To allow it, run in an administrator terminal there: \
+             powercfg /deviceenablewake \"{0}\"",
+            t.adapter
+        ));
+    }
+    let can_wake = |r: &Record| r.wakes && r.lan.iter().filter_map(|n| parse_net(n)).any(|n| on_network(n, t.addr));
+    let Some(waker) = peers.iter().find(|p| p.up && p.record.as_ref().is_some_and(can_wake)) else {
+        return off("no other paired machine on its network is online to wake it.".into());
+    };
+    let said = state.last_test.as_ref().filter(|l| now.duration_since(l.at).is_ok_and(|d| d < SAY_TEST_FOR));
+    if me.tested.is_some_and(|(ok, _)| ok) {
+        if let Some(last) = said.filter(|l| l.ok) {
+            items.push(line(format!("Waking works: it was back after {} s. Sleep is ready.", last.took), "", false));
+        }
+        items.push(json!({
+            "kind": "button",
+            "label": "Sleep",
+            "confirm": format!("Put {} to sleep? {} can wake it from here.", me.name, waker.name),
+            "do": { "t": "sleep" },
+        }));
+        return;
+    }
+    let check = what_to_check(Some(&t.adapter), me.standby);
+    match (said.filter(|l| !l.ok), me.tested) {
+        (Some(last), _) => items.push(line(
+            format!("No packet woke {}: it was back only after {} s. {check} Then test again.", me.name, last.took),
+            "error",
+            false,
+        )),
+        (None, Some((false, at))) => {
+            let on = chrono::DateTime::from_timestamp(at as i64, 0)
+                .map(|t| t.with_timezone(&chrono::Local).format("%-d %B").to_string())
+                .unwrap_or_default();
+            items.push(line(format!("The last test, on {on}, did not wake it. {check}"), "error", false));
+        }
+        _ => {}
+    }
+    let if_not = if me.timer {
+        "If that does not wake it, it wakes itself after about two minutes and says so."
+    } else {
+        "If that does not wake it, someone will have to press its power button: wake timers are off in its \
+         power settings, so it cannot wake itself."
+    };
+    items.push(json!({
+        "kind": "button",
+        "label": "Test sleep and wake",
+        "confirm": format!(
+            "{} will go to sleep, and {} will try to wake it about {TEST_WAKE_AFTER} seconds later.\n\n{if_not} Go ahead?",
+            me.name, waker.name
+        ),
+        // The wake first: once this machine is asleep it is too late to
+        // find that nobody will send one.
+        "first": { "peer": waker.id, "do": {
+            "t": "wake",
+            "mac": format_mac(&t.mac),
+            "addr": format!("{}/{}", t.addr.0, t.addr.1),
+            "after": TEST_WAKE_AFTER,
+            "timer": me.timer,
+        } },
+        "do": { "t": "sleep", "test": true },
+    }));
+}
+
+/// The cards of the machines this one can wake: Wake while one is away,
+/// and how a wake under way is going. True while something is under way.
+fn others(me: &Me, peers: &[Peer], state: &mut State, now: SystemTime, items: &mut Vec<Value>) -> bool {
+    let mut busy = false;
+    for peer in peers {
+        let Some(record) = &peer.record else { continue };
+        let (Some(mac), Some(addr)) =
+            (record.mac.as_deref().and_then(parse_mac), record.addr.as_deref().and_then(parse_net))
+        else {
+            continue;
+        };
+        if same_network(addr, &me.lan).is_none() {
+            continue;
+        }
+        let key = format_mac(&mac);
+        let name = if peer.name.is_empty() { &record.name } else { &peer.name };
+        let about = |mut item: Value| {
+            item["about"] = peer.id.clone().into();
+            item
+        };
+        // It has learnt of a wake that woke nothing: no need to go on saying.
+        if let (Some(at), Some(learnt)) = (state.unwoken.get(&key), record.tested_at)
+            && learnt >= *at
+        {
+            state.unwoken.remove(&key);
+        }
+        if let Some(wake) = state.wakes.get(&key) {
+            // None: its first packet is still to go.
+            let sent = now.duration_since(wake.at).ok();
+            let within = if wake.timer { AWAKE_BY_TIMER_WITHIN } else { AWAKE_WITHIN };
+            match (peer.up, sent) {
+                // Not asleep yet.
+                (true, None) => {}
+                // Back.
+                (true, Some(_)) => drop(state.wakes.remove(&key)),
+                (false, None) => {
+                    items.push(about(line(format!("Asleep. {} is about to wake it…", me.name), "", true)));
+                    busy = true;
+                    continue;
+                }
+                (false, Some(waited)) if waited < within => {
+                    items.push(about(line(format!("Waking, sent from {}…", me.name), "", true)));
+                    busy = true;
+                    continue;
+                }
+                (false, Some(_)) => {
+                    state.unwoken.insert(key.clone(), secs(wake.at));
+                    state.wakes.remove(&key);
+                }
+            }
+        }
+        if peer.up {
+            continue;
+        }
+        if state.unwoken.contains_key(&key) {
+            items.push(about(line(
+                format!(
+                    "{name} did not wake. {} Press its power button, then test again. ({} sent the packet.)",
+                    what_to_check(record.adapter.as_deref(), record.standby.as_deref()),
+                    me.name
+                ),
+                "error",
+                false,
+            )));
+        }
+        items.push(about(json!({
+            "kind": "button",
+            "label": "Wake",
+            "style": "primary",
+            "note": format!("from {}", me.name),
+            "do": { "t": "wake", "mac": key, "addr": format!("{}/{}", addr.0, addr.1) },
+        })));
+    }
+    busy
 }
 
 /// The network card another machine would wake this one through.
@@ -246,11 +684,7 @@ fn info() -> Value {
     let (wake, why, tested) = match target() {
         Ok(t) => {
             let mac = format_mac(&t.mac);
-            let tested = std::fs::read_to_string(crate::config_dir().join(TESTED_FILE))
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .filter(|r| r["mac"].as_str() == Some(mac.as_str()))
-                .map(|r| json!({ "ok": r["ok"], "at": r["at"] }));
+            let tested = tested(&mac).map(|(ok, at)| json!({ "ok": ok, "at": at }));
             let why = (!t.armed).then(|| format!("Windows does not let {} wake this machine", t.adapter));
             let wake = json!({
                 "mac": mac,
@@ -668,15 +1102,184 @@ mod tests {
 
     #[test]
     fn a_view_only_machine_will_not_sleep() {
-        for request in [r#"{"t":"sleep"}"#, r#"{"t":"sleep","test":true}"#] {
-            let (answer, then) = super::answer(request, true);
+        let state = Mutex::default();
+        for request in [r#"{"t":"sleep"}"#, r#"{"t":"sleep","test":true}"#, r#"{"t":"do","do":{"t":"sleep"}}"#] {
+            let (answer, then) = super::answer(request, true, &state);
             assert_eq!(answer["t"], "error");
             assert_eq!(then, Then::Nothing);
         }
-        let (answer, _) = super::answer(r#"{"t":"wake","mac":"0a:1b:2c:3d:4e:5f"}"#, false);
+        let (answer, _) = super::answer(r#"{"t":"wake","mac":"0a:1b:2c:3d:4e:5f"}"#, false, &state);
         assert_eq!(answer["t"], "error");
-        let (answer, _) = super::answer("{", false);
+        let (answer, _) = super::answer("{", false, &state);
         assert_eq!(answer["t"], "error");
+        // Another machine may ask for a wake, and for nothing else.
+        let (answer, then) = super::answer(r#"{"t":"peer","do":{"t":"sleep"}}"#, false, &state);
+        assert_eq!((answer["t"].as_str(), then), (Some("error"), Then::Nothing));
+    }
+
+    const MAC: &str = "0a:1b:2c:3d:4e:5f";
+
+    /// A wired machine at 192.168.1.20 that Windows lets its card wake.
+    fn me(tested: Option<(bool, u64)>) -> Me {
+        let ip: Ipv4Addr = "192.168.1.20".parse().unwrap();
+        Me {
+            name: "DESK".into(),
+            standby: Some("s3"),
+            target: Ok(Target { mac: parse_mac(MAC).unwrap(), addr: (ip, 24), adapter: "Some Ethernet".into(), armed: true }),
+            lan: vec![(ip, 24)],
+            tested,
+            timer: true,
+            view_only: false,
+        }
+    }
+
+    /// Another machine on that network, or on another one.
+    fn peer(id: &str, up: bool, addr: &str) -> Peer {
+        let record = Record {
+            name: id.to_uppercase(),
+            mac: Some("aa:bb:cc:dd:ee:ff".into()),
+            addr: Some(addr.into()),
+            lan: vec![addr.into()],
+            wakes: true,
+            ..Record::default()
+        };
+        Peer { id: id.into(), name: id.to_uppercase(), up, record: Some(record) }
+    }
+
+    fn items(view: &Value) -> Vec<Value> {
+        view["view"]["items"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn a_card_offers_sleep_only_with_a_machine_there_to_wake_it() {
+        let now = SystemTime::now();
+        let off = |view: &Value| items(view)[0]["text"].as_str().unwrap().to_string();
+        // Nobody, somebody on another network, and somebody who is away.
+        for peers in [vec![], vec![peer("far", true, "10.0.0.9/24")], vec![peer("near", false, "192.168.1.30/24")]] {
+            let view = card(&me(None), &peers, &mut State::default(), now);
+            assert!(off(&view).starts_with("Sleep is off: no other paired machine"), "{}", off(&view));
+            assert!(items(&view).iter().all(|i| i["label"] != "Sleep" && i["label"] != "Test sleep and wake"));
+        }
+        // Why not, when it is the machine itself.
+        let mut unarmed = me(None);
+        if let Ok(t) = &mut unarmed.target {
+            t.armed = false;
+        }
+        assert!(off(&card(&unarmed, &[], &mut State::default(), now)).contains("powercfg /deviceenablewake \"Some Ethernet\""));
+        let mut wifi = me(None);
+        wifi.target = Err("It is on Wi-Fi.".into());
+        assert_eq!(off(&card(&wifi, &[], &mut State::default(), now)), "Sleep is off: It is on Wi-Fi.");
+        // And its record tells the others how to wake it.
+        let view = card(&me(None), &[], &mut State::default(), now);
+        assert_eq!(view["record"]["mac"], MAC);
+        assert_eq!(view["record"]["addr"], "192.168.1.20/24");
+        assert_eq!(view["record"]["wakes"], true);
+    }
+
+    #[test]
+    fn the_first_sleep_is_a_test_that_asks_for_its_wake_first() {
+        let now = SystemTime::now();
+        let peers = [peer("near", true, "192.168.1.30/24")];
+        let view = card(&me(None), &peers, &mut State::default(), now);
+        let button = &items(&view)[0];
+        assert_eq!(button["label"], "Test sleep and wake");
+        assert_eq!(button["first"]["peer"], "near");
+        assert_eq!(button["first"]["do"], json!({ "t": "wake", "mac": MAC, "addr": "192.168.1.20/24", "after": 15, "timer": true }));
+        assert_eq!(button["do"], json!({ "t": "sleep", "test": true }));
+        assert!(button["confirm"].as_str().unwrap().contains("NEAR will try to wake it about 15 seconds later"));
+        assert!(button["confirm"].as_str().unwrap().contains("wakes itself after about two minutes"));
+        // With no wake timer, the warning is the power button.
+        let mut no_timer = me(None);
+        no_timer.timer = false;
+        let view = card(&no_timer, &peers, &mut State::default(), now);
+        assert!(items(&view)[0]["confirm"].as_str().unwrap().contains("press its power button"));
+
+        // A test that failed is said, with the test still offered.
+        let view = card(&me(Some((false, 1_700_000_000))), &peers, &mut State::default(), now);
+        assert_eq!(items(&view)[0]["tone"], "error");
+        assert!(items(&view)[0]["text"].as_str().unwrap().starts_with("The last test, on "));
+        assert_eq!(items(&view)[1]["label"], "Test sleep and wake");
+
+        // One that worked: plain Sleep, and for a while how it went.
+        let mut state = State { last_test: Some(LastTest { ok: true, took: 18, at: now }), ..State::default() };
+        let view = card(&me(Some((true, 1_700_000_000))), &peers, &mut state, now);
+        assert_eq!(items(&view)[0]["text"], "Waking works: it was back after 18 s. Sleep is ready.");
+        assert_eq!(items(&view)[1]["label"], "Sleep");
+        assert_eq!(items(&view)[1]["do"], json!({ "t": "sleep" }));
+        assert!(items(&view)[1].get("first").is_none());
+        let view = card(&me(Some((true, 1_700_000_000))), &peers, &mut state, now + SAY_TEST_FOR);
+        assert_eq!(items(&view)[0]["label"], "Sleep");
+    }
+
+    #[test]
+    fn a_machine_that_is_away_gets_a_wake_on_its_card_from_one_that_can_send_it() {
+        let now = SystemTime::now();
+        let key = "aa:bb:cc:dd:ee:ff";
+        let away = [peer("near", false, "192.168.1.30/24")];
+        let mut state = State::default();
+        let view = card(&me(None), &away, &mut state, now);
+        let wake = items(&view).into_iter().find(|i| i["label"] == "Wake").unwrap();
+        assert_eq!(wake["about"], "near");
+        assert_eq!(wake["note"], "from DESK");
+        assert_eq!(wake["do"], json!({ "t": "wake", "mac": key, "addr": "192.168.1.30/24" }));
+        assert!(view["again"].is_null());
+        // Not for one on another network, one that is here, or from a
+        // machine that is view-only.
+        for peers in [[peer("far", false, "10.0.0.9/24")], [peer("near", true, "192.168.1.30/24")]] {
+            assert!(items(&card(&me(None), &peers, &mut State::default(), now)).iter().all(|i| i["label"] != "Wake"));
+        }
+        let mut looking = me(None);
+        looking.view_only = true;
+        let view = card(&looking, &away, &mut State::default(), now);
+        assert!(items(&view).iter().all(|i| i["label"] != "Wake"));
+        assert_eq!(view["record"]["wakes"], false);
+
+        // A wake under way is said on that card, and asked about again soon.
+        state.wakes.insert(key.into(), Wake { at: now + Duration::from_secs(15), timer: false });
+        let view = card(&me(None), &away, &mut state, now);
+        let under_way: Vec<Value> = items(&view).into_iter().filter(|i| i["about"] == "near").collect();
+        assert_eq!(under_way.len(), 1);
+        assert_eq!((under_way[0]["text"].as_str(), under_way[0]["busy"].as_bool()), (Some("Asleep. DESK is about to wake it…"), Some(true)));
+        assert_eq!(view["again"], 2);
+        let view = card(&me(None), &away, &mut state, now + Duration::from_secs(40));
+        assert!(items(&view).iter().any(|i| i["text"] == "Waking, sent from DESK…"));
+
+        // Back: nothing more to say.
+        let mut back = State::default();
+        back.wakes.insert(key.into(), Wake { at: now, timer: false });
+        let view = card(&me(None), &[peer("near", true, "192.168.1.30/24")], &mut back, now + Duration::from_secs(20));
+        assert!(items(&view).iter().all(|i| i["about"] != "near"));
+        assert!(back.wakes.is_empty() && back.unwoken.is_empty());
+
+        // Not back in time: it did not wake, which goes in the record for
+        // that machine to hear of, until it has.
+        let late = now + Duration::from_secs(15) + AWAKE_WITHIN;
+        let view = card(&me(None), &away, &mut state, late);
+        let about: Vec<Value> = items(&view).into_iter().filter(|i| i["about"] == "near").collect();
+        assert!(about[0]["text"].as_str().unwrap().starts_with("NEAR did not wake."));
+        assert_eq!(about[1]["label"], "Wake");
+        assert_eq!(view["record"]["unwoken"][key], secs(now + Duration::from_secs(15)));
+        let mut heard = peer("near", true, "192.168.1.30/24");
+        heard.record.as_mut().unwrap().tested_at = Some(secs(late) + 60);
+        let view = card(&me(None), &[heard], &mut state, late + Duration::from_secs(120));
+        assert_eq!(view["record"]["unwoken"], json!({}));
+        // A machine that wakes itself on a timer gets longer.
+        let mut timed = State::default();
+        timed.wakes.insert(key.into(), Wake { at: now, timer: true });
+        let view = card(&me(None), &away, &mut timed, now + AWAKE_WITHIN + Duration::from_secs(5));
+        assert!(items(&view).iter().any(|i| i["text"] == "Waking, sent from DESK…"));
+    }
+
+    #[test]
+    fn a_machine_hears_of_a_wake_that_did_not_wake_it() {
+        let mut told = peer("near", true, "192.168.1.30/24");
+        told.record.as_mut().unwrap().unwoken.insert(MAC.into(), 2000);
+        let peers = [peer("other", true, "192.168.1.31/24"), told];
+        assert!(unwoken_since(&peers, MAC, None));
+        assert!(unwoken_since(&peers, MAC, Some((true, 1999))));
+        // Already known, or about another card.
+        assert!(!unwoken_since(&peers, MAC, Some((false, 2000))));
+        assert!(!unwoken_since(&peers, "00:00:00:00:00:01", None));
     }
 
     #[test]

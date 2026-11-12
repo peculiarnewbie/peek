@@ -15,7 +15,7 @@ mod server;
 mod vitals;
 mod webp;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
@@ -153,6 +153,119 @@ enum Command {
     },
     /// Undo `peek install`
     Uninstall,
+    /// Programs that add to what this machine offers, beside its screen:
+    /// each is started with peek and speaks to it on stdin and stdout
+    /// (docs/providers.md). Restart peek after a change
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// Add a provider: a name, then the command that starts it, like
+    /// `peek provider add jobs -- node C:\jobs\provider.js`
+    Add {
+        name: String,
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Remove a provider, by name
+    Remove { name: String },
+    /// List the providers added here
+    List,
+}
+
+/// The providers added with `peek provider add`: name, and the command that
+/// starts it.
+const PROVIDERS_FILE: &str = "providers.json";
+/// peek's own, which nothing added may take the name of.
+const OWN_PROVIDERS: [&str; 3] = ["screen", "vitals", "power"];
+
+/// A name that can stand in an address and a message: short, lowercase
+/// letters, digits and dashes, and not one of peek's own.
+fn provider_name_ok(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !OWN_PROVIDERS.contains(&name)
+}
+
+fn read_providers(dir: &std::path::Path) -> BTreeMap<String, Vec<String>> {
+    fs::read_to_string(dir.join(PROVIDERS_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<BTreeMap<String, Vec<String>>>(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Everything beside the screen: peek's own providers, then the ones added
+/// here. Each is a process of its own, started now and again if it ends.
+fn providers(args: &Args) -> BTreeMap<String, Arc<provider::Link>> {
+    use provider::{Link, Start};
+    let mut all = BTreeMap::new();
+    all.insert("vitals".to_string(), Link::spawn("vitals", Start::Own(Vec::new()), args.view_only));
+    all.insert("power".to_string(), Link::spawn("power", Start::Own(power_flags(args)), args.view_only));
+    for (name, command) in read_providers(&config_dir()) {
+        if !provider_name_ok(&name) || command.is_empty() {
+            log!("{PROVIDERS_FILE}: skipped {name:?}, which is no name for a provider or has no command");
+            continue;
+        }
+        log!("provider {name}: {}", command.join(" "));
+        all.insert(name.clone(), Link::spawn(&name, Start::Program(command), args.view_only));
+    }
+    all
+}
+
+/// The config folder of the peek installed here, for commands that change
+/// its settings: the service's if there is one, otherwise this user's.
+fn installed_config_dir() -> PathBuf {
+    #[cfg(windows)]
+    if machine_config_dir().is_dir() {
+        return machine_config_dir();
+    }
+    config_dir()
+}
+
+fn provider_command(action: &ProviderCommand) -> Result<(), String> {
+    let dir = installed_config_dir();
+    let path = dir.join(PROVIDERS_FILE);
+    let mut all = read_providers(&dir);
+    let save = |all: &BTreeMap<String, Vec<String>>| {
+        fs::create_dir_all(&dir)
+            .and_then(|()| fs::write(&path, serde_json::to_string_pretty(all).unwrap_or_default()))
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    };
+    match action {
+        ProviderCommand::List => {
+            if all.is_empty() {
+                println!("No providers are added. `peek provider add <name> -- <command>` adds one.");
+            }
+            for (name, command) in &all {
+                println!("{name:<16}  {}", command.join(" "));
+            }
+            Ok(())
+        }
+        ProviderCommand::Add { name, command } => {
+            if !provider_name_ok(name) {
+                return Err(format!(
+                    "{name:?} cannot name a provider: use up to 32 lowercase letters, digits and dashes, and not {}",
+                    OWN_PROVIDERS.join(", ")
+                ));
+            }
+            all.insert(name.clone(), command.clone());
+            save(&all)?;
+            println!("Added {name}. It starts with peek, as the same user: restart peek to start it now.");
+            Ok(())
+        }
+        ProviderCommand::Remove { name } => {
+            if all.remove(name).is_none() {
+                return Err(format!("no provider is called {name} (see `peek provider list`)"));
+            }
+            save(&all)?;
+            println!("Removed {name}. Restart peek to stop it.");
+            Ok(())
+        }
+    }
 }
 
 /// Where the access token and pairing data live: %APPDATA%\peek on Windows
@@ -512,6 +625,7 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             install::install(&flags)
         }
         Command::Uninstall => install::uninstall(),
+        Command::Provider { action } => provider_command(action),
     }
 }
 
@@ -540,8 +654,8 @@ fn core_in_service() -> Arc<provider::Link> {
         web,
         pairing,
         screen: server::Screen::Provider(screen.clone()),
-        vitals: Some(provider::Link::spawn("vitals", Vec::new())),
-        power: Some(provider::Link::spawn("power", power_flags(&args))),
+        providers: providers(&args),
+        view_only: args.view_only,
         next_id: AtomicU64::new(1),
     });
     let addr = SocketAddr::new(args.bind, args.port);
@@ -696,8 +810,8 @@ fn main() {
         web: web.clone(),
         pairing,
         screen: server::Screen::Here(screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps)),
-        vitals: Some(provider::Link::spawn("vitals", Vec::new())),
-        power: Some(provider::Link::spawn("power", power_flags(&args))),
+        providers: providers(&args),
+        view_only: args.view_only,
         next_id: AtomicU64::new(1),
     });
 
@@ -767,5 +881,20 @@ fn main() {
     if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
         log!("cannot listen on {addr}: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_provider_added_here_cannot_take_a_name_of_peeks_own() {
+        for ok in ["jobs", "build-2", "a"] {
+            assert!(provider_name_ok(ok), "{ok}");
+        }
+        for bad in ["", "screen", "vitals", "power", "Jobs", "my jobs", "a/b", "../x", &"x".repeat(33)] {
+            assert!(!provider_name_ok(bad), "{bad}");
+        }
     }
 }
