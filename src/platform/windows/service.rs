@@ -7,19 +7,22 @@
 //! another session (signing out, switching users), and when peek exits.
 
 use std::ffi::{OsStr, OsString, c_void};
+use std::fs::File;
 use std::os::windows::ffi::OsStrExt;
-use std::sync::OnceLock;
+use std::os::windows::io::FromRawHandle;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    CloseHandle, E_FAIL, ERROR_CALL_NOT_IMPLEMENTED, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, HANDLE, NO_ERROR,
-    WAIT_FAILED, WAIT_OBJECT_0,
+    CloseHandle, E_FAIL, ERROR_CALL_NOT_IMPLEMENTED, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, HANDLE,
+    HANDLE_FLAG_INHERIT, HANDLE_FLAGS, NO_ERROR, SetHandleInformation, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::{
-    DuplicateTokenEx, SecurityImpersonation, SetTokenInformation, TOKEN_ALL_ACCESS, TOKEN_DUPLICATE, TokenPrimary,
-    TokenSessionId,
+    DuplicateTokenEx, SECURITY_ATTRIBUTES, SecurityImpersonation, SetTokenInformation, TOKEN_ALL_ACCESS,
+    TOKEN_DUPLICATE, TokenPrimary, TokenSessionId,
 };
+use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectExtendedLimitInformation, SetInformationJobObject,
@@ -33,10 +36,13 @@ use windows::Win32::System::Services::{
 };
 use windows::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW, CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess,
-    OpenProcessToken, PROCESS_INFORMATION, ResumeThread, STARTUPINFOW, SetEvent, TerminateProcess,
+    OpenProcessToken, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW, SetEvent,
+    TerminateProcess,
     WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
+
+use crate::provider::Link;
 
 /// The name the service is registered under (`peek install --service`).
 const NAME: PCWSTR = w!("peek");
@@ -57,18 +63,22 @@ struct Shared {
     stop: usize,
     /// Set when the console session may have changed (auto reset).
     wake: usize,
+    /// SPIKE (`--split`): starts the core in this process, and returns the
+    /// link its screen providers are to be attached to.
+    core: Option<fn() -> Arc<Link>>,
 }
 
 static SHARED: OnceLock<Shared> = OnceLock::new();
 
 /// Hand this process to the service control manager. Returns once the
 /// service has stopped.
-pub fn run() -> Result<(), String> {
+pub fn run(core: Option<fn() -> Arc<Link>>) -> Result<(), String> {
     let event = |manual| unsafe { CreateEventW(None, manual, false, PCWSTR::null()) }.map(|h| h.0 as usize);
     let shared = Shared {
         status: AtomicUsize::new(0),
         stop: event(true).map_err(|e| e.to_string())?,
         wake: event(false).map_err(|e| e.to_string())?,
+        core,
     };
     let _ = SHARED.set(shared);
     let table = [
@@ -127,7 +137,11 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut PWSTR) {
     shared.status.store(handle.0 as usize, Ordering::Release);
     report(SERVICE_RUNNING);
     crate::log!("service: started");
-    supervise(shared);
+    // SPIKE: with --split this process, where there is no display, is the
+    // core and keeps the listener. Only the screen provider is started in
+    // the session at the console, so sockets outlive a change of session.
+    let screen = shared.core.map(|start| start());
+    supervise(shared, screen.as_ref());
     crate::log!("service: stopped");
     report(SERVICE_STOPPED);
 }
@@ -189,7 +203,7 @@ impl Child {
     }
 }
 
-fn supervise(shared: &Shared) {
+fn supervise(shared: &Shared, screen: Option<&Arc<Link>>) {
     let (stop, wake) = (HANDLE(shared.stop as *mut c_void), HANDLE(shared.wake as *mut c_void));
     let mut child: Option<Child> = None;
     // Backing off from a peek that keeps exiting, in the session it does so.
@@ -224,7 +238,7 @@ fn supervise(shared: &Shared) {
         if let (None, Some(session)) = (&child, console)
             && Instant::now() >= not_before
         {
-            match launch(session) {
+            match launch(session, screen) {
                 Ok(c) => {
                     crate::log!("service: started peek in session {session}");
                     child = Some(c);
@@ -257,11 +271,66 @@ fn supervise(shared: &Shared) {
     }
 }
 
+/// Size asked for each pipe to a provider: room for the largest frames, so
+/// writing one does not wait on the reader.
+const PIPE_BYTES: u32 = 1 << 20;
+
+/// The two pipes to a provider started in another session: its ends, which
+/// become its stdin and stdout, and ours.
+struct Pipes {
+    child_in: HANDLE,
+    child_out: HANDLE,
+    to: HANDLE,
+    from: HANDLE,
+}
+
+impl Pipes {
+    fn new() -> windows::core::Result<Pipes> {
+        let inherit = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: true.into(),
+        };
+        let mut pipes =
+            Pipes { child_in: HANDLE::default(), child_out: HANDLE::default(), to: HANDLE::default(), from: HANDLE::default() };
+        unsafe {
+            CreatePipe(&mut pipes.child_in, &mut pipes.to, Some(&inherit), PIPE_BYTES)?;
+            CreatePipe(&mut pipes.from, &mut pipes.child_out, Some(&inherit), PIPE_BYTES)?;
+            // Only the provider's ends go to the provider.
+            SetHandleInformation(pipes.to, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))?;
+            SetHandleInformation(pipes.from, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))?;
+        }
+        Ok(pipes)
+    }
+
+    /// Our ends, once the provider has its own: (to it, from it). Our
+    /// copies of its ends are closed, or its exit would never be seen.
+    fn ours(mut self) -> (File, File) {
+        let (to, from) = (std::mem::take(&mut self.to), std::mem::take(&mut self.from));
+        unsafe { (File::from_raw_handle(to.0), File::from_raw_handle(from.0)) }
+    }
+}
+
+impl Drop for Pipes {
+    fn drop(&mut self) {
+        for handle in [self.child_in, self.child_out, self.to, self.from] {
+            if !handle.is_invalid() {
+                let _ = unsafe { CloseHandle(handle) };
+            }
+        }
+    }
+}
+
 /// Start peek in `session` as SYSTEM, on the session's own desktop, with the
-/// flags this service was given (less `--service`).
-fn launch(session: u32) -> windows::core::Result<Child> {
+/// flags this service was given (less `--service`). With `screen` (SPIKE),
+/// what is started is only a screen provider, on pipes attached to it.
+fn launch(session: u32, screen: Option<&Arc<Link>>) -> windows::core::Result<Child> {
     let exe = std::env::current_exe().map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
-    let args: Vec<OsString> = std::env::args_os().skip(1).filter(|a| a != "--service").collect();
+    let mut args: Vec<OsString> =
+        std::env::args_os().skip(1).filter(|a| a != "--service" && a != "--split").collect();
+    if screen.is_some() {
+        args.extend(["--provider".into(), "screen".into()]);
+    }
     let mut command = command_line(exe.as_os_str(), &args);
     command.push(0);
     let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
@@ -275,11 +344,20 @@ fn launch(session: u32) -> windows::core::Result<Child> {
         let result = (|| {
             SetTokenInformation(token, TokenSessionId, (&raw const session).cast(), size_of::<u32>() as u32)?;
             let job = job()?;
-            let startup = STARTUPINFOW {
+            let pipes = match screen {
+                Some(_) => Some(Pipes::new().inspect_err(|_| drop(CloseHandle(job)))?),
+                None => None,
+            };
+            let mut startup = STARTUPINFOW {
                 cb: size_of::<STARTUPINFOW>() as u32,
                 lpDesktop: PWSTR(desktop.as_mut_ptr()),
                 ..Default::default()
             };
+            if let Some(pipes) = &pipes {
+                startup.dwFlags |= STARTF_USESTDHANDLES;
+                startup.hStdInput = pipes.child_in;
+                startup.hStdOutput = pipes.child_out;
+            }
             let mut info = PROCESS_INFORMATION::default();
             let created = CreateProcessAsUserW(
                 Some(token),
@@ -287,7 +365,7 @@ fn launch(session: u32) -> windows::core::Result<Child> {
                 Some(PWSTR(command.as_mut_ptr())),
                 None,
                 None,
-                false,
+                pipes.is_some(),
                 CREATE_NO_WINDOW | CREATE_SUSPENDED,
                 None,
                 PCWSTR::null(),
@@ -300,6 +378,10 @@ fn launch(session: u32) -> windows::core::Result<Child> {
             }
             if let Err(e) = AssignProcessToJobObject(job, info.hProcess) {
                 crate::log!("service: peek will outlive this service if it crashes ({e})");
+            }
+            if let (Some(link), Some(pipes)) = (screen, pipes) {
+                let (to, from) = pipes.ours();
+                link.attach(to, from);
             }
             ResumeThread(info.hThread);
             let _ = CloseHandle(info.hThread);

@@ -449,6 +449,32 @@ async fn ws(
         .on_upgrade(move |socket| client(socket, shared, query, addr, web))
 }
 
+/// SPIKE: keep what a client has asked of the screen since it connected
+/// (its settings, whether it is watching), so that its channel can be
+/// opened again as it was on another screen provider. This is the one place
+/// the core reads a message meant for a provider.
+fn remember_view(screen: &Link, id: u64, text: &str) {
+    if !(text.contains("\"cfg\"") || text.contains("\"vis\"")) {
+        return;
+    }
+    let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else { return };
+    let flag = |v: &serde_json::Value| if v.as_bool() == Some(true) { "1" } else { "0" }.to_string();
+    match msg["t"].as_str() {
+        Some("vis") => screen.remember(id, "vis", flag(&msg["v"])),
+        Some("cfg") => {
+            for key in ["q", "scale", "fps", "mon", "soft", "lossless"] {
+                match &msg[key] {
+                    serde_json::Value::Null => {}
+                    serde_json::Value::String(v) => screen.remember(id, key, v.clone()),
+                    v @ serde_json::Value::Bool(_) => screen.remember(id, key, flag(v)),
+                    v => screen.remember(id, key, v.to_string()),
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The messages the server answers itself. Everything else a client says
 /// belongs to the screen.
 #[derive(Deserialize)]
@@ -555,7 +581,10 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             }
             Err(_) => match (&shared.backend, &mut session) {
                 (Backend::Local(screen), Some(session)) => session.message(screen, &text),
-                (Backend::Split { screen, .. }, _) => screen.text(id, &text),
+                (Backend::Split { screen, .. }, _) => {
+                    remember_view(screen, id, &text);
+                    screen.text(id, &text);
+                }
                 _ => {}
             },
         }

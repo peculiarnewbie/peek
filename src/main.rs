@@ -512,6 +512,54 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
     }
 }
 
+/// SPIKE (`--service --split`): the core inside the Windows service. It
+/// listens and routes from where there is no display, with vitals beside
+/// it, and returns the link the service attaches a screen provider to, one
+/// for each session that comes to the console.
+#[cfg(windows)]
+fn core_in_service() -> Arc<provider::Link> {
+    fn fail(what: String) -> ! {
+        log!("{what}");
+        std::process::exit(1);
+    }
+    let args = Args::parse();
+    let web = web_origin(&args.web).unwrap_or_else(|e| fail(e));
+    let token = (!args.no_token).then(|| {
+        load_token().unwrap_or_else(|e| fail(format!("cannot store the access token in {}: {e}", config_dir().display())))
+    });
+    let pairing = pairing::Pairing::load(&config_dir())
+        .unwrap_or_else(|e| fail(format!("cannot read or store pairing data in {}: {e}", config_dir().display())));
+    let screen = provider::Link::detached("screen");
+    let vitals = provider::Link::spawn("vitals", &[]).unwrap_or_else(|e| fail(format!("cannot start the vitals provider: {e}")));
+    let shared = Arc::new(server::Shared {
+        token,
+        web,
+        pairing,
+        verbose: args.verbose,
+        backend: server::Backend::Split { screen: screen.clone(), vitals },
+        next_id: AtomicU64::new(1),
+    });
+    let addr = SocketAddr::new(args.bind, args.port);
+    std::thread::Builder::new()
+        .name("core".into())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("start async runtime");
+            let listener = runtime
+                .block_on(tokio::net::TcpListener::bind(addr))
+                .unwrap_or_else(|e| fail(format!("cannot listen on {addr}: {e}")));
+            log!("core: listening on {addr}, in the service");
+            if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
+                fail(format!("cannot serve on {addr}: {e}"));
+            }
+        })
+        .expect("spawn core thread");
+    screen
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -574,7 +622,8 @@ fn main() {
 
     #[cfg(windows)]
     if args.service {
-        if let Err(e) = platform::service::run() {
+        let core = args.split.then_some(core_in_service as fn() -> Arc<provider::Link>);
+        if let Err(e) = platform::service::run(core) {
             log!("{e}");
             std::process::exit(1);
         }

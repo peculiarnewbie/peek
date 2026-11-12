@@ -11,13 +11,18 @@
 //! query, as JSON), TEXT (a client message, untouched), CLOSE. From one:
 //! TEXT and BINARY, where the stamp is when the frame was handed over.
 //!
-//! Not here: restarting a provider that exits, bounding what a provider may
-//! queue, and telling the browser which capability a message belongs to.
+//! A screen provider belongs to one desktop session. In the Windows service
+//! (`--service --split`) the core is the service itself, where there is no
+//! display, and it starts a screen provider in whichever session is at the
+//! console, again when that changes. Client sockets stay open across it.
+//!
+//! Not here: bounding what a provider may queue, and telling the browser
+//! which capability a message belongs to.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -69,74 +74,119 @@ fn read_frame(r: &mut impl Read) -> io::Result<(u8, u64, u64, Vec<u8>)> {
 
 // ---- the core's end ----
 
-/// A running provider, and where each of its channels goes.
+/// One open channel: where it goes, and how to open it again.
+struct Channel {
+    /// What the client connected with, kept up to date with what it has
+    /// asked for since, so a new provider can pick the channel up as it was.
+    query: HashMap<String, String>,
+    tx: UnboundedSender<Out>,
+}
+
+/// A capability's channels, and the provider serving them at the moment.
+/// The provider can go and another be attached (a screen provider belongs
+/// to one desktop session); the channels and the sockets behind them stay.
 pub struct Link {
     name: &'static str,
-    to: Mutex<ChildStdin>,
-    routes: Arc<Mutex<HashMap<u64, UnboundedSender<Out>>>>,
+    /// The pipe to the provider, with a count of the providers there have
+    /// been. Locked before `channels`, always.
+    to: Mutex<(u64, Option<Box<dyn Write + Send>>)>,
+    channels: Mutex<HashMap<u64, Channel>>,
 }
 
 impl Link {
-    /// Start `peek --provider <name>` with `flags` and read what it sends.
-    pub fn spawn(name: &'static str, flags: &[String]) -> io::Result<Arc<Link>> {
-        let mut child = Command::new(std::env::current_exe()?)
-            .arg("--provider")
-            .arg(name)
-            .args(flags)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        let to = child.stdin.take().expect("piped stdin");
-        let mut from = child.stdout.take().expect("piped stdout");
-        let routes: Arc<Mutex<HashMap<u64, UnboundedSender<Out>>>> = Arc::default();
-        crate::log!("provider {name}: started (pid {})", child.id());
-        {
-            let routes = routes.clone();
-            std::thread::Builder::new().name(format!("from-{name}")).spawn(move || {
-                while let Ok((kind, channel, stamp, payload)) = read_frame(&mut from) {
-                    let out = match kind {
-                        TEXT => match String::from_utf8(payload) {
-                            Ok(text) => Out::Text(text),
-                            Err(_) => continue,
-                        },
-                        BINARY => Out::Binary(payload, stamp),
-                        _ => continue,
-                    };
-                    if let Some(tx) = routes.lock().unwrap().get(&channel) {
-                        let _ = tx.send(out);
-                    }
-                }
-                let status = child.wait().map_or("unknown".into(), |s| s.to_string());
-                crate::log!("provider {name}: stopped ({status}); its capability is gone until peek restarts");
-            })?;
-        }
-        Ok(Arc::new(Link { name, to: Mutex::new(to), routes }))
+    /// A link with no provider yet. Channels opened on it wait for one.
+    pub fn detached(name: &'static str) -> Arc<Link> {
+        Arc::new(Link { name, to: Mutex::new((0, None)), channels: Mutex::default() })
     }
 
-    fn send(&self, kind: u8, channel: u64, payload: &[u8]) {
-        if let Err(e) = write_frame(&mut *self.to.lock().unwrap(), kind, channel, 0, payload)
-            && kind == OPEN
-        {
-            crate::log!("provider {}: cannot open a channel ({e})", self.name);
+    /// Start `peek --provider <name>` with `flags`, in this session.
+    pub fn spawn(name: &'static str, flags: &[String]) -> io::Result<Arc<Link>> {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.arg("--provider").arg(name).args(flags);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        let mut child = command.spawn()?;
+        let link = Link::detached(name);
+        crate::log!("provider {name}: started (pid {})", child.id());
+        link.attach(child.stdin.take().expect("piped stdin"), child.stdout.take().expect("piped stdout"));
+        Ok(link)
+    }
+
+    /// Make the provider on these pipes the one serving this link, and open
+    /// on it every channel that is open already.
+    pub fn attach(self: &Arc<Self>, to: impl Write + Send + 'static, from: impl Read + Send + 'static) {
+        let generation = {
+            let mut pipe = self.to.lock().unwrap();
+            pipe.0 += 1;
+            let mut to: Box<dyn Write + Send> = Box::new(to);
+            let channels = self.channels.lock().unwrap();
+            for (id, channel) in channels.iter() {
+                let _ = write_frame(&mut to, OPEN, *id, 0, &serde_json::to_vec(&channel.query).unwrap_or_default());
+            }
+            if !channels.is_empty() {
+                crate::log!("provider {}: took over {} open channel(s)", self.name, channels.len());
+            }
+            pipe.1 = Some(to);
+            pipe.0
+        };
+        let link = self.clone();
+        let reader = std::thread::Builder::new().name(format!("from-{}", self.name)).spawn(move || {
+            let mut from = from;
+            while let Ok((kind, channel, stamp, payload)) = read_frame(&mut from) {
+                let out = match kind {
+                    TEXT => match String::from_utf8(payload) {
+                        Ok(text) => Out::Text(text),
+                        Err(_) => continue,
+                    },
+                    BINARY => Out::Binary(payload, stamp),
+                    _ => continue,
+                };
+                if let Some(c) = link.channels.lock().unwrap().get(&channel) {
+                    let _ = c.tx.send(out);
+                }
+            }
+            let mut pipe = link.to.lock().unwrap();
+            // Unless another provider has taken over since.
+            if pipe.0 == generation {
+                pipe.1 = None;
+                crate::log!("provider {}: stopped; its channels wait for the next one", link.name);
+            }
+        });
+        if let Err(e) = reader {
+            crate::log!("provider {}: cannot read from it ({e})", self.name);
+        }
+    }
+
+    fn send(pipe: &mut (u64, Option<Box<dyn Write + Send>>), kind: u8, channel: u64, payload: &[u8]) {
+        if let Some(to) = &mut pipe.1 {
+            let _ = write_frame(to, kind, channel, 0, payload);
         }
     }
 
     /// Open `channel`, with the query the client connected with. What the
     /// provider sends on it goes to `tx`.
     pub fn open(&self, channel: u64, query: &HashMap<String, String>, tx: UnboundedSender<Out>) {
-        self.routes.lock().unwrap().insert(channel, tx);
-        self.send(OPEN, channel, &serde_json::to_vec(query).unwrap_or_default());
+        let mut pipe = self.to.lock().unwrap();
+        self.channels.lock().unwrap().insert(channel, Channel { query: query.clone(), tx });
+        Self::send(&mut pipe, OPEN, channel, &serde_json::to_vec(query).unwrap_or_default());
     }
 
     /// Pass a client's message on as it arrived.
     pub fn text(&self, channel: u64, text: &str) {
-        self.send(TEXT, channel, text.as_bytes());
+        Self::send(&mut self.to.lock().unwrap(), TEXT, channel, text.as_bytes());
+    }
+
+    /// Note something the client has asked for since it connected, for
+    /// when its channel is opened again on another provider.
+    pub fn remember(&self, channel: u64, key: &str, value: String) {
+        if let Some(c) = self.channels.lock().unwrap().get_mut(&channel) {
+            c.query.insert(key.into(), value);
+        }
     }
 
     pub fn close(&self, channel: u64) {
-        self.routes.lock().unwrap().remove(&channel);
-        self.send(CLOSE, channel, &[]);
+        let mut pipe = self.to.lock().unwrap();
+        self.channels.lock().unwrap().remove(&channel);
+        Self::send(&mut pipe, CLOSE, channel, &[]);
     }
 }
 
@@ -215,7 +265,11 @@ pub fn run_screen(shared: Arc<screen::Shared>) {
                         Out::Binary(bytes, stamp) => write_frame(&mut *w, BINARY, channel, stamp, &bytes),
                     };
                 });
-                sessions.insert(channel, screen::open(&shared, channel, &query, sink));
+                // Opened twice (the core says so again to a provider that has
+                // just started): the later one stands.
+                if let Some(old) = sessions.insert(channel, screen::open(&shared, channel, &query, sink)) {
+                    old.close(&shared);
+                }
             }
             TEXT => {
                 if let (Some(session), Ok(text)) = (sessions.get_mut(&channel), std::str::from_utf8(&payload)) {
