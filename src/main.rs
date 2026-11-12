@@ -110,7 +110,8 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Show a one-time code that pairs a browser with this machine (peek must be running)
+    /// Show a one-time code that pairs a browser with this machine. If peek
+    /// is not running yet, this starts it here and keeps it running
     Pair,
     /// List the browsers paired with this machine
     Clients,
@@ -258,10 +259,20 @@ fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u
     unreachable!("the last secret returns either way")
 }
 
+/// Where a peek started with these flags listens, as seen from this machine.
+fn local_addr(args: &Args) -> SocketAddr {
+    let ip = if args.bind.is_unspecified() { IpAddr::from([127, 0, 0, 1]) } else { args.bind };
+    SocketAddr::new(ip, args.port)
+}
+
+/// Whether something already listens where this peek would.
+fn host_running(args: &Args) -> bool {
+    std::net::TcpStream::connect_timeout(&local_addr(args), std::time::Duration::from_secs(1)).is_ok()
+}
+
 fn local_request_with(args: &Args, method: &str, path: &str, body: &str, secret: &str) -> Result<(u16, String), String> {
     use std::io::Read;
-    let ip = if args.bind.is_unspecified() { IpAddr::from([127, 0, 0, 1]) } else { args.bind };
-    let addr = SocketAddr::new(ip, args.port);
+    let addr = local_addr(args);
     let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3))
         .map_err(|e| format!("peek is not running on port {} ({e}). Start it first.", args.port))?;
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
@@ -347,42 +358,64 @@ fn ensure_serve(args: &Args, tailscale: &str, host: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// `peek pair`. Returns true when no peek is running here yet, so this
+/// process should start the host and show the code itself.
+fn pair(args: &Args) -> Result<bool, String> {
+    match pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
+        Some((tailscale, host)) => ensure_serve(args, tailscale, &host)?,
+        None => {
+            return Err("Tailscale is not running here, and the hosted client reaches machines through it. \
+                        Start Tailscale and try again."
+                .into())
+        }
+    }
+    if !host_running(args) {
+        if web_origin(&args.web)?.is_none() {
+            return Err("with --web none there is no hosted client to pair".into());
+        }
+        #[cfg(windows)]
+        if args.detach || args.service {
+            return Err("`peek pair` shows its code in this terminal, so it cannot start peek with --detach or --service. \
+                        Start peek that way first, then run `peek pair`."
+                .into());
+        }
+        return Ok(true);
+    }
+    let (_, body) = local_request(args, "POST", "/api/pair-code", "")?;
+    let offer: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    print_offer(&offer)?;
+    Ok(false)
+}
+
+/// Print a pairing code and its link and QR code, as the host made them.
+fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
+    if let Some(e) = offer["error"].as_str() {
+        return Err(e.to_string());
+    }
+    let (code, name) = (offer["code"].as_str().unwrap_or(""), offer["name"].as_str().unwrap_or("this machine"));
+    let Some(web) = offer["web"].as_str() else {
+        return Err("this peek was started with --web none, so there is no hosted client to pair".into());
+    };
+    let Some(link) = offer["link"].as_str() else {
+        return Err(format!("peek could not find {name}'s Tailscale name. Is Tailscale up?"));
+    };
+    println!("Pair a browser with {name}:\n\n  {link}\n");
+    if let Ok(qr) = qrcode::QrCode::new(link.as_bytes()) {
+        let art = qr
+            .render::<qrcode::render::unicode::Dense1x2>()
+            .dark_color(qrcode::render::unicode::Dense1x2::Light)
+            .light_color(qrcode::render::unicode::Dense1x2::Dark)
+            .build();
+        println!("{art}\n");
+    }
+    println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
+    println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
+    Ok(())
+}
+
 fn run_command(args: &Args, command: &Command) -> Result<(), String> {
     match command {
-        Command::Pair => {
-            match pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
-                Some((tailscale, host)) => ensure_serve(args, tailscale, &host)?,
-                None => {
-                    return Err("Tailscale is not running here, and the hosted client reaches machines through it. \
-                                Start Tailscale and try again."
-                        .into())
-                }
-            }
-            let (_, body) = local_request(args, "POST", "/api/pair-code", "")?;
-            let offer: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-            if let Some(e) = offer["error"].as_str() {
-                return Err(e.to_string());
-            }
-            let (code, name) = (offer["code"].as_str().unwrap_or(""), offer["name"].as_str().unwrap_or("this machine"));
-            let Some(web) = offer["web"].as_str() else {
-                return Err("this peek was started with --web none, so there is no hosted client to pair".into());
-            };
-            let Some(link) = offer["link"].as_str() else {
-                return Err(format!("peek could not find {name}'s Tailscale name. Is Tailscale up?"));
-            };
-            println!("Pair a browser with {name}:\n\n  {link}\n");
-            if let Ok(qr) = qrcode::QrCode::new(link.as_bytes()) {
-                let art = qr
-                    .render::<qrcode::render::unicode::Dense1x2>()
-                    .dark_color(qrcode::render::unicode::Dense1x2::Light)
-                    .light_color(qrcode::render::unicode::Dense1x2::Dark)
-                    .build();
-                println!("{art}\n");
-            }
-            println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
-            println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
-            Ok(())
-        }
+        Command::Pair => unreachable!("main runs `peek pair` itself"),
         Command::Clients => {
             let (_, body) = local_request(args, "GET", "/api/clients", "")?;
             let clients: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -470,12 +503,20 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
 fn main() {
     let args = Args::parse();
 
+    // `peek pair` with no peek running starts one here, then pairs.
+    let mut pair_here = false;
     if let Some(command) = &args.command {
-        if let Err(e) = run_command(&args, command) {
+        let result = match command {
+            Command::Pair => pair(&args).map(|start| pair_here = start),
+            command => run_command(&args, command),
+        };
+        if let Err(e) = result {
             eprintln!("{e}");
             std::process::exit(1);
         }
-        return;
+        if !pair_here {
+            return;
+        }
     }
     let web = match web_origin(&args.web) {
         Ok(web) => web,
@@ -585,6 +626,21 @@ fn main() {
             .expect("spawn clipboard thread");
     }
 
+    // Listen before saying so, and before handing out a pairing code.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("start async runtime");
+    let addr = SocketAddr::new(args.bind, args.port);
+    let listener = match runtime.block_on(tokio::net::TcpListener::bind(addr)) {
+        Ok(listener) => listener,
+        Err(e) => {
+            log!("cannot listen on {addr}: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let hosts: Vec<IpAddr> = if args.bind.is_unspecified() {
         let mut hosts = vec![IpAddr::from([127, 0, 0, 1])];
         if let Ok(addrs) = if_addrs::get_if_addrs() {
@@ -616,7 +672,7 @@ fn main() {
             println!("Tailscale is not up yet; connections are accepted as soon as it is.");
         }
     }
-    if let Some(web) = &web {
+    if let Some(web) = web.as_ref().filter(|_| !pair_here) {
         println!("To use it from {web}, pair the browser: run `peek pair`.");
     }
     if !args.view_only {
@@ -624,14 +680,16 @@ fn main() {
             println!("{note}");
         }
     }
+    if pair_here {
+        println!();
+        if let Err(e) = print_offer(&server::pairing_offer(&shared)) {
+            eprintln!("{e}");
+        }
+        println!("\npeek keeps running here; Ctrl+C stops it. For another code later, run `peek pair` in another terminal.");
+        println!("To start peek at logon instead, run `peek install`.");
+    }
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("start async runtime");
-    let addr = SocketAddr::new(args.bind, args.port);
-    if let Err(e) = runtime.block_on(server::serve(shared, addr)) {
+    if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
         log!("cannot listen on {addr}: {e}");
         std::process::exit(1);
     }

@@ -133,6 +133,8 @@ installed:</p>
 <pre><code>npm install -g @peculiarnewbie/peek</code></pre>
 <p><code>bun add -g @peculiarnewbie/peek</code> and <code>pnpm add -g @peculiarnewbie/peek</code> work too. Node only
 starts peek; the package carries the program itself.</p>
+<p>To try it first without installing anything, run <code>npx @peculiarnewbie/peek pair</code> and go on to
+<a href="#pair">Pair a browser</a>. peek then runs in that terminal until you close it.</p>
 
 <h3>3. Start it at logon</h3>
 <pre><code>peek install --no-token</code></pre>
@@ -161,8 +163,9 @@ same flags. <code>peek uninstall</code> removes it. To build from source instead
 <p>On the machine, run:</p>
 <pre><code>peek pair</code></pre>
 <p>The first time, it sets up Tailscale Serve so browsers can reach the machine over HTTPS (Tailscale may ask you
-to allow that, or on Linux for <code>sudo tailscale set --operator=$USER</code>). Then it prints a link and a QR
-code with a one-time code, valid once, for five minutes. Then either:</p>
+to allow that, or on Linux for <code>sudo tailscale set --operator=$USER</code>). If peek is not running yet, it
+starts peek in that terminal, which keeps it running until you close it. Then it prints a link and a QR code with
+a one-time code, valid once, for five minutes. Then either:</p>
 <ul>
   <li>open the link on the device you want to use, or scan the QR code with its camera (on Android Chrome,
     <strong>Scan QR code</strong> on this site works too), or</li>
