@@ -7,6 +7,12 @@
 // from when it was last online. Whether waking really works also depends on
 // its firmware, which nothing can read, so the first sleep is a test: the
 // machine sleeps, and is woken again straight away.
+//
+// The test does not depend on this page staying open. The machine that
+// sends the packet is asked first and counts the seconds itself; the one
+// going to sleep sets a wake timer where it can, so that it comes back even
+// if no packet wakes it, and keeps how the test went. This page only asks
+// the two and then reads the result.
 import { createStore } from 'solid-js/store';
 import { about, machines, reach, setReach, updateMachine, type Machine } from './hosted';
 
@@ -22,14 +28,19 @@ export interface Power {
   why: string | null;
   /** Its networks, as address/prefix: which machines it can wake. */
   lan: string[];
-  /** How the last try at waking it went. */
+  /** How the last try at waking it went (`at`: seconds since 1970). */
   tested: { ok: boolean; at: number } | null;
+  /** A test that fails to wake it ends by itself: it sets a wake timer. */
+  timer?: boolean;
 }
 
-/** Time from sleeping to the test's wake: long enough to be well asleep. */
-const TEST_WAKE_AFTER = 15000;
+/** Seconds from asking for the test's wake to its first packet: long enough
+ *  for the machine to be well asleep. Three more follow, 10 s apart. */
+export const TEST_WAKE_AFTER = 15;
 const ASLEEP_WITHIN = 60000;
 const AWAKE_WITHIN = 90000;
+/** A machine under test wakes itself two minutes in, then has to reconnect. */
+const AWAKE_BY_TIMER_WITHIN = 240000;
 const POLL = 2000;
 
 async function request(m: Machine, body: object, ms = 12000): Promise<any> {
@@ -77,8 +88,20 @@ export function waker(m: Machine): Machine | undefined {
   return machines().find(o => o.id !== m.id && reach[o.id] === 'up' && o.power?.lan.some(n => sameNetwork(n, addr)));
 }
 
-/** What the card offers for sleep: nothing (with why), a test, or sleep. */
-export type Offer = { kind: 'none'; why: string } | { kind: 'test'; by: Machine } | { kind: 'sleep'; by: Machine };
+/** What to check on a machine that no packet woke. */
+function whatToCheck(m: Machine) {
+  const p = m.power!;
+  return 'Most often Wake-on-LAN is off in its BIOS or UEFI settings ("Wake on LAN", "Power on by PCI-E"), ' +
+    `or "Wake on Magic Packet" is off for ${p.wake?.adapter ?? 'its network card'} in Windows' Device Manager.` +
+    (p.standby === 'modern' ? ' It also uses Modern Standby, which can turn the network card off while asleep.' : '');
+}
+
+/** What the card offers for sleep: nothing (with why), a test (with how
+ *  the last one went, if it failed), or sleep. */
+export type Offer =
+  | { kind: 'none'; why: string }
+  | { kind: 'test'; by: Machine; failed?: string }
+  | { kind: 'sleep'; by: Machine };
 export function offer(m: Machine): Offer | null {
   const p = m.power;
   if (!p || !p.sleep) return null;
@@ -89,7 +112,12 @@ export function offer(m: Machine): Offer | null {
   }
   const by = waker(m);
   if (!by) return { kind: 'none', why: 'No other paired machine on its network is online to wake it.' };
-  return p.tested?.ok ? { kind: 'sleep', by } : { kind: 'test', by };
+  if (p.tested?.ok) return { kind: 'sleep', by };
+  // Kept by the machine, so it is said here whichever page ran the test.
+  const failed = p.tested
+    ? `The last test, on ${new Date(p.tested.at * 1000).toLocaleDateString()}, did not wake it. ${whatToCheck(m)}`
+    : undefined;
+  return { kind: 'test', by, failed };
 }
 
 // ---- what is under way, per machine ----
@@ -122,20 +150,30 @@ async function until(m: Machine, up: boolean, within: number) {
 }
 
 function failedToWake(m: Machine, by: Machine) {
-  const p = m.power!;
   updateMachine(m.id, { wakeFailed: true });
-  say(m, `${m.name} did not wake. Most often Wake-on-LAN is off in its BIOS or UEFI settings ("Wake on LAN", ` +
-    `"Power on by PCI-E"), or "Wake on Magic Packet" is off for ${p.wake!.adapter} in Windows' Device Manager.` +
-    (p.standby === 'modern' ? ' It also uses Modern Standby, which can turn the network card off while asleep.' : '') +
-    ` Press its power button, then test again. (${by.name} sent the packet.)`, false, true);
+  say(m, `${m.name} did not wake. ${whatToCheck(m)} Press its power button, then test again. ` +
+    `(${by.name} sent the packet.)`, false, true);
 }
 
 export async function sleep(m: Machine, test: boolean) {
   const by = waker(m);
-  if (!by) return;
+  if (!by || !m.power?.wake) return;
+  const start = Date.now();
+  if (test) {
+    // The wake first: once the machine is asleep it is too late to find
+    // that nobody will send one.
+    say(m, `Asking ${by.name} to wake it…`);
+    try {
+      const armed = await request(by, { t: 'wake', mac: m.power.wake.mac, addr: m.power.wake.addr, after: TEST_WAKE_AFTER });
+      if (armed.t !== 'wake-armed') throw new Error('it runs a peek too old for this');
+    } catch (e) {
+      say(m, `Not put to sleep: ${by.name} could not take the wake (${(e as Error).message}).`, false, true);
+      return;
+    }
+  }
   say(m, 'Going to sleep…');
   try {
-    await request(m, { t: 'sleep' });
+    await request(m, test ? { t: 'sleep', test: true } : { t: 'sleep' });
   } catch (e) {
     say(m, `It did not go to sleep: ${(e as Error).message}`, false, true);
     return;
@@ -149,12 +187,34 @@ export async function sleep(m: Machine, test: boolean) {
     settle(m);
     return;
   }
-  say(m, `Asleep. Waking it from ${by.name} in ${TEST_WAKE_AFTER / 1000} s…`);
-  await pause(TEST_WAKE_AFTER);
-  await wake(m, true);
+  // From here the two machines finish the test whether or not this page
+  // stays open; it only watches.
+  say(m, `Asleep. ${by.name} is waking it…`);
+  if (!await until(m, true, m.power.timer ? AWAKE_BY_TIMER_WITHIN : AWAKE_WITHIN)) {
+    failedToWake(m, by);
+    return;
+  }
+  const took = Math.round((Date.now() - start) / 1000);
+  // The machine keeps how its test went a moment after it is back.
+  let result: Power['tested'] = null;
+  for (let tries = 0; tries < 8 && !result; tries++) {
+    await refreshPower(machines().find(x => x.id === m.id) ?? m);
+    const tested = machines().find(x => x.id === m.id)?.power?.tested;
+    if (tested && tested.at * 1000 >= start - 5000) result = tested;
+    else await pause(POLL);
+  }
+  if (result?.ok) {
+    say(m, `Waking works: it was back after ${took} s. Sleep is ready.`, false);
+    settle(m);
+  } else if (result) {
+    say(m, `No packet from ${by.name} woke ${m.name}; its own timer did, after ${took} s. ${whatToCheck(m)} ` +
+      'Then test again.', false, true);
+  } else {
+    say(m, `${m.name} is back after ${took} s, but did not say how the test went.`, false, true);
+  }
 }
 
-export async function wake(m: Machine, test = false) {
+export async function wake(m: Machine) {
   const by = waker(m);
   if (!by || !m.power?.wake) {
     say(m, 'No other paired machine on its network is online to wake it.', false, true);
@@ -173,10 +233,7 @@ export async function wake(m: Machine, test = false) {
     return;
   }
   const took = Math.round((Date.now() - start) / 1000);
-  if (test) {
-    try { await request(m, { t: 'tested', ok: true }); } catch {}
-  }
   await refreshPower(machines().find(x => x.id === m.id) ?? m);
-  say(m, test ? `Waking works: it was back after ${took} s. Sleep is ready.` : `Awake after ${took} s.`, false);
+  say(m, `Awake after ${took} s.`, false);
   settle(m);
 }

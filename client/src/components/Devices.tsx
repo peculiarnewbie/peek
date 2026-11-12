@@ -7,7 +7,7 @@ import {
   BLOCKED_HELP, cleanHost, current, forget, localAccess, machines, navigate, openMachine, pair, parseLink,
   probeAll, reach, screenPath, type Machine,
 } from '../hosted';
-import { doing, offer, sleep, wake, waker } from '../power';
+import { doing, offer, sleep, TEST_WAKE_AFTER, wake, waker } from '../power';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
 import { Icon } from './Icons';
@@ -100,10 +100,12 @@ function Card(props: { m: Machine }) {
 function Power(props: { m: Machine; up: boolean; down: boolean }) {
   const what = () => offer(props.m);
   const testSleep = (by: Machine) => {
-    if (confirm(`${props.m.name} will go to sleep, and ${by.name} will try to wake it about 15 seconds later.
-
-` +
-      'If waking does not work, someone will have to press its power button. Go ahead?')) sleep(props.m, true);
+    const ifNot = props.m.power?.timer
+      ? 'If that does not wake it, it wakes itself after about two minutes and says so.'
+      : 'If that does not wake it, someone will have to press its power button: wake timers are off in its ' +
+        'power settings, so it cannot wake itself.';
+    if (confirm(`${props.m.name} will go to sleep, and ${by.name} will try to wake it about ${TEST_WAKE_AFTER} ` +
+      `seconds later.\n\n${ifNot} Go ahead?`)) sleep(props.m, true);
   };
   const plainSleep = (by: Machine) => {
     if (confirm(`Put ${props.m.name} to sleep? ${by.name} can wake it from here.`)) sleep(props.m, false);
@@ -115,12 +117,15 @@ function Power(props: { m: Machine; up: boolean; down: boolean }) {
           const x = o();
           return x.kind === 'none'
             ? <p class="dpower hint small">{`Sleep is off: ${x.why}`}</p>
-            : <div class="dpower">
-                <button class="btn alt small" tabIndex={-1}
-                  onClick={() => x.kind === 'test' ? testSleep(x.by) : plainSleep(x.by)}>
-                  {x.kind === 'test' ? 'Test sleep and wake' : 'Sleep'}
-                </button>
-              </div>;
+            : <>
+                <Show when={x.kind === 'test' && x.failed}>{why => <p class="dpower small err">{why()}</p>}</Show>
+                <div class="dpower">
+                  <button class="btn alt small" tabIndex={-1}
+                    onClick={() => x.kind === 'test' ? testSleep(x.by) : plainSleep(x.by)}>
+                    {x.kind === 'test' ? 'Test sleep and wake' : 'Sleep'}
+                  </button>
+                </div>
+              </>;
         }}</Show>
         <Show when={props.down && props.m.power?.wake && waker(props.m)}>{by => (
           <div class="dpower">
