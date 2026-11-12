@@ -173,6 +173,10 @@ a one-time code, valid once, for five minutes. Then either:</p>
 </ul>
 <p>A browser already connected to the machine can pair another device too: <strong>Settings → Pair a
 device</strong> shows a QR code.</p>
+<p>Tailscale Serve's usual HTTPS port, 443, can go to only one app on a machine. If another app has it,
+<code>peek pair</code> says so and leaves it alone. <code>peek pair --serve-port 8443</code> (or <code>10000</code>)
+puts peek on another port instead. The machine's name then includes the port, like
+<code>my-pc.tail1234.ts.net:8443</code>, and the link and code from then on carry it.</p>
 <p class="note">In Chrome, allow <strong>Local network access</strong> when the site asks. Without it Chrome
 blocks the page from reaching your machines.</p>
 
