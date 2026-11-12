@@ -348,9 +348,10 @@ itself before it does, so the provider is born holding them.
   seconds in all. The provider in the old session ended, the service
   started one in the new session about three seconds later, and it
   showed the login screen and then the desktop.
-- Two of those three seconds were wasted. For a moment the session being
-  signed out of is still the one at the console, and the service started
-  a provider there twice, each ended at once by the sign-out.
+- In those three seconds the service started a provider twice in the
+  session being signed out of, which for a moment is still the one at
+  the console. Each was ended at once by the sign-out. Whether that
+  delayed the provider in the new session is not known.
 - A switch of user has not been tried.
 
 ### What else it showed
