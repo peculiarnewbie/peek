@@ -139,7 +139,7 @@ interface but in the same process, for two reasons. Neither held up:
   about 15 MB a second at 60 frames. A local socket carries that, and the
   extra copy is small next to the JPEG encoding. The hosted path already
   puts a hop like this on every frame, through `tailscale serve`. The
-  spike measured it: about 0.1 ms a frame.
+  spike measured it: between 0.1 and 0.2 ms a frame.
 - **The simple install.** One binary can run both roles: the core, and a
   screen provider it starts itself. Nobody installs anything more.
 
@@ -156,7 +156,8 @@ runs where there is no display and starts the whole of peek, listener
 included, in the session at the console. So every sign-out and switch of
 user ends that peek, and with it the port and every connection. With the
 core in the service and only the screen provider started in the session,
-the listener would stay up through both. That has not been tried.
+the listener would stay up through both. The spike built this and a
+connection outlived its provider; a real sign-out has not been tried.
 
 What the screen requires of the boundary:
 
@@ -288,29 +289,28 @@ runs as one process, which is what it was measured against.
 
 ### The cost of the boundary
 
-Windows 11, 32 threads, over loopback. The benchmark ran where there is
-no display, so the engine was given a made-up 2560 × 1440 picture in
-place of the desktop. 900 full frames in each mode, the modes taking
-turns over three rounds. The frames had a median of 495 KB; the largest
-in the README's table is 450 KB. Milliseconds:
+Windows 11, 32 threads, over loopback. 900 full frames in each mode, the
+modes taking turns over three rounds. Measured twice: on the real
+desktop (1920 × 1080, frames with a median of 541 KB), and where there
+is no display, with a made-up 2560 × 1440 picture in place of the
+desktop (495 KB). The largest frame in the README's table is 450 KB.
+Milliseconds, as one process, then split:
 
-| | One process | Split | Difference |
-|---|---|---|---|
-| Engine handing a frame over, to it written to the socket (median) | 0.24 | 0.36 | +0.12 |
-| The same (99th percentile) | 0.39 | 0.53 | +0.14 |
-| First frame, capture already set up (median) | 10.00 | 10.28 | +0.28 |
-| A full frame asked for and received, less the host's own time (median) | 4.48 | 4.63 | +0.15 |
-| Host, capture to send (median) | 13.13 | 13.14 | +0.02 |
+| | Real desktop | Made-up picture |
+|---|---|---|
+| Engine handing a frame over, to it written to the socket (median) | 0.27, 0.42 (+0.15) | 0.24, 0.36 (+0.12) |
+| The same (99th percentile) | 0.44, 0.75 (+0.31) | 0.39, 0.53 (+0.14) |
+| First frame, capture already set up (median) | 8.92, 9.02 (+0.11) | 10.00, 10.28 (+0.28) |
+| A full frame asked for and received, less the host's own time (median) | 9.67, 9.53 (-0.14) | 4.48, 4.63 (+0.15) |
+| Host, capture to send (median) | 10.69, 10.69 | 13.13, 13.14 |
 
 - The cost grows with the frame. One shorter run with frames of 1.4 MB
   added 0.65 ms from engine to socket. The pipes were left at their
   default size.
-- On the real desktop (1920 × 1080) the split was used by hand, screen
-  and vitals together, and a frame of 282 KB came through the pipe. It
-  was not measured against one process there.
-- The first frame from idle took 272 and 284 ms on the real desktop with
-  the split. There is no figure for one process in the same conditions,
-  so whether the split adds to it is not known.
+- The first frame from idle was not compared. Setting the capture up
+  took 232 and 236 ms in the screen provider, against 195 to 219 ms in
+  the log of the one-process service earlier the same day. Those are two
+  readings, from different builds.
 
 ### Against what the screen requires
 
@@ -321,6 +321,31 @@ in the README's table is 450 KB. Milliseconds:
 - **Grants as channels.** Not done. View-only is still enforced where
   the input is injected, in the provider.
 - **Opening a channel is one message.** Yes.
+
+### The core in the Windows service
+
+The spike then moved the core into the service, with
+`peek install --service --split`. The service process, in session 0, is
+the core: it listens, and runs vitals beside it. It starts only the
+screen provider in the session at the console, and makes the two pipes
+itself before it does, so the provider is born holding them.
+
+- A connection outlived its screen provider. With one held open, the
+  provider was ended by hand. The socket stayed open, the service
+  started another provider, and the picture was back after 1.36 s. About
+  a second of that is the service's wait before it restarts a peek that
+  ran for under 30 seconds.
+- Every open channel was carried over, a paired browser's as well as the
+  test's. The new provider is sent each channel's opening again.
+- For that, the core has to know what each client has asked for since
+  it connected (quality, monitor, whether it is watching). The spike has
+  the core read those two messages, `cfg` and `vis`, as they pass. It is
+  the one place the core looks inside a message meant for a provider.
+- The provider is sent the service's flags, the log file among them, so
+  its lines are in the same log.
+- Not yet tried: what the handover is for. A sign-out or a switch of
+  user moves the console to another session, and the same code should
+  start a provider there.
 
 ### What else it showed
 
@@ -340,10 +365,10 @@ in the README's table is 450 KB. Milliseconds:
 - Checked: input sent to the core reached the screen provider, both
   providers exited when the core was ended, and vitals arrived while
   frames were streaming.
-- Not done: restarting a provider that exits, provider log lines in
-  `peek logs`, Linux (its vitals code has not been run), sustained
-  motion on a real screen, and whether held keys are let go of when a
-  socket closes.
+- Not done: restarting the vitals provider if it exits, provider lines
+  in what `peek logs` shows, Linux (its vitals code has not been run),
+  sustained motion on a real screen, and whether held keys are let go of
+  when a socket closes.
 
 ## Risks
 
@@ -368,9 +393,9 @@ in the README's table is 450 KB. Milliseconds:
   provider's stdin and stdout. At the sizes peek sends, that was enough.
 - How a core running as a system service and a screen provider running in
   a user's session find and trust each other. On Windows the service
-  already creates the process in the session at the console, and could
-  hand it a pipe as it does: nothing to find, and nobody else holds the
-  other end. Untried. Linux is open.
+  already creates the process in the session at the console, and the
+  spike has it hand over a pipe as it does: nothing to find, and nobody
+  else holds the other end. Linux is open.
 - Whether the core starts the providers bundled with it, or every
   provider connects on its own. The spike's core starts them. A provider
   from outside this repository still needs an answer.
@@ -379,7 +404,11 @@ in the README's table is 450 KB. Milliseconds:
   a few.
 - Where view-only is enforced: in the core, by channel, or in the
   provider as now.
-- What happens when a provider exits, and where its log lines go.
+- What happens when a provider exits, and where its log lines go. The
+  service restarts the screen provider; nothing restarts another.
+- How a channel is carried to a new provider without the core reading
+  the client's messages. The client could be asked to say its settings
+  again.
 - What happens to the `--no-token` direct path once a machine has grants.
 - Where the list of machines comes from: the browser's storage, as now,
   or a registry an organisation already keeps.
