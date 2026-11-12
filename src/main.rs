@@ -8,16 +8,17 @@ mod engine;
 mod install;
 mod pairing;
 mod platform;
+mod screen;
 mod server;
 mod webp;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use clap::{Parser, Subcommand};
 
@@ -596,35 +597,13 @@ fn main() {
         }
     };
 
-    let (engine_tx, engine_rx) = std::sync::mpsc::channel();
     let shared = Arc::new(server::Shared {
         token,
         web: web.clone(),
         pairing,
-        view_only: args.view_only,
-        clipboard: !args.no_clipboard,
-        verbose: args.verbose,
-        engine: engine_tx,
-        monitors: RwLock::new(Vec::new()),
-        peers: Mutex::new(HashMap::new()),
-        clip_last: Mutex::new(String::new()),
+        screen: screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps),
         next_id: AtomicU64::new(1),
     });
-
-    {
-        let shared = shared.clone();
-        std::thread::Builder::new()
-            .name("engine".into())
-            .spawn(move || engine::run(engine_rx, shared, args.fps))
-            .expect("spawn engine thread");
-    }
-    if shared.clipboard {
-        let shared = shared.clone();
-        std::thread::Builder::new()
-            .name("clipboard".into())
-            .spawn(move || server::watch_clipboard(shared))
-            .expect("spawn clipboard thread");
-    }
 
     // Listen before saying so, and before handing out a pairing code.
     let runtime = tokio::runtime::Builder::new_multi_thread()

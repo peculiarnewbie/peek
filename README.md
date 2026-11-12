@@ -490,7 +490,8 @@ With `--no-token`:
 
 ```
 src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
-src/server.rs             HTTP + WebSocket, authentication, pairing endpoints, input dispatch, clipboard watcher
+src/server.rs             HTTP + WebSocket, authentication, pairing endpoints
+src/screen.rs             a client's session with the screen: its view, input dispatch, clipboard watcher
 src/pairing.rs            one-time codes, paired browsers' token hashes
 src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task, service or systemd unit
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
