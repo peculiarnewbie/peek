@@ -119,11 +119,14 @@ function again(seconds: number | null | undefined) {
 }
 
 function keep(m: Machine, provider: string, answer: Answer) {
+  if (!cards[m.id]) setCards(m.id, {});
   setCards(m.id, provider, reconcile(clean(answer.view)));
   if (answer.record !== undefined) {
     const now = machines().find(x => x.id === m.id);
     if (now && JSON.stringify(now.records?.[provider]) !== JSON.stringify(answer.record)) {
       updateMachine(m.id, { records: { ...now.records, [provider]: answer.record } });
+      // The others were asked without knowing this: ask them again.
+      again(1);
     }
   }
   again(answer.again);
@@ -134,7 +137,7 @@ export function refreshCards(m: Machine) {
   for (const p of withPlace(m, 'card')) {
     ask(m, p.name, { t: 'view', place: 'card', peers: peersOf(m, p) }, 6000)
       .then(answer => keep(m, p.name, answer))
-      .catch(() => setCards(m.id, p.name, undefined!));
+      .catch(() => { if (cards[m.id]) setCards(m.id, p.name, undefined!); });
   }
 }
 

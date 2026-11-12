@@ -110,22 +110,27 @@ export async function about(host: string, ms = 5000): Promise<About> {
   return r.json();
 }
 
-/** Whether each machine answers, for the dots in the list. */
+/** Whether each machine answers, for the dots in the list, and then what
+ *  the ones that do have to show on the cards. */
 export function probeAll() {
-  for (const m of machines()) {
+  const probes = machines().map(m => {
     if (!reach[m.id]) setReach(m.id, 'checking');
-    about(m.host, 4000)
+    return about(m.host, 4000)
       .then(a => {
         if (a.id !== m.id) throw new Error('another machine answers there');
         setReach(m.id, 'up');
         learn(m, a);
-        refreshCards(machines().find(x => x.id === m.id) ?? m);
       })
       .catch(() => {
         setReach(m.id, 'down');
         dropCards(m.id);
       });
-  }
+  });
+  // Once it is known of every machine: a provider is told which of the
+  // others are there, and "not yet known" would read as "away".
+  Promise.all(probes).then(() => {
+    for (const m of machines()) if (reach[m.id] === 'up') refreshCards(m);
+  });
 }
 // A provider with something under way has every machine looked at again.
 onAgain(probeAll);

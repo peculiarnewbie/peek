@@ -1,6 +1,6 @@
 // Hosted client: the page of paired machines at `/`. Choosing one opens it
 // at `/screen/<name>`; the toolbar's back button (or the browser's) returns here.
-import { createEffect, createSignal, For, Index, on, onCleanup, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show, untrack } from 'solid-js';
 import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
@@ -115,7 +115,10 @@ function CardViews(props: { m: Machine }) {
 export function Devices() {
   // The page decides the connection: a machine's page connects to it, the
   // list (or a machine no longer paired) drops it.
-  createEffect(on(() => current()?.id, id => {
+  // (A memo: the list of machines changes whenever one says something new
+  // of itself, and that must not reconnect the one being shown.)
+  const shownId = createMemo(() => current()?.id);
+  createEffect(on(shownId, id => {
     disconnect();
     if (id) {
       setMessage(`Connecting to ${current()!.name}…`);
@@ -132,8 +135,10 @@ export function Devices() {
   }));
   // Keep the status current while the list shows.
   createEffect(() => {
-    if (current()) return;
-    probeAll();
+    if (shownId()) return;
+    // Untracked: probing reads the list, and what it learns changes the
+    // list, which must not start it over.
+    untrack(probeAll);
     const timer = setInterval(probeAll, 10000);
     onCleanup(() => clearInterval(timer));
   });

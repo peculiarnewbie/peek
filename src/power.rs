@@ -279,6 +279,8 @@ fn answer(text: &str, view_only: bool, state: &Mutex<State>) -> (Value, Then) {
                 let mut state = state.lock().unwrap();
                 if matches!(then, Then::Sleep { .. }) {
                     state.sleeping = Some(SystemTime::now());
+                    // How an earlier test went is not about this sleep.
+                    state.last_test = None;
                 }
                 if let Some(mac) = ask["mac"].as_str().and_then(parse_mac).filter(|_| ask["t"] == "wake") {
                     state.unwoken.remove(&format_mac(&mac));
