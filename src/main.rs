@@ -8,16 +8,20 @@ mod engine;
 mod install;
 mod pairing;
 mod platform;
+mod power;
+mod provider;
+mod screen;
 mod server;
+mod vitals;
 mod webp;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use clap::{Parser, Subcommand};
 
@@ -30,7 +34,14 @@ pub static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static RECENT: Mutex<(u64, VecDeque<String>)> = Mutex::new((0, VecDeque::new()));
 const RECENT_LINES: usize = 1000;
 
+/// In a provider process: the core, which does the logging for both.
+static LOG_TO_CORE: OnceLock<Arc<provider::ToCore>> = OnceLock::new();
+
 pub fn log_line(line: std::fmt::Arguments<'_>) {
+    if let Some(core) = LOG_TO_CORE.get() {
+        core.log(&line.to_string());
+        return;
+    }
     let line = format!("{} {line}", chrono::Local::now().format("%H:%M:%S"));
     eprintln!("{line}");
     if let Some(file) = LOG_FILE.get() {
@@ -104,6 +115,10 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     service: bool,
+    /// Be a provider (screen, vitals or power) for a core, speaking to it on
+    /// stdin and stdout. The core starts these itself
+    #[arg(long, hide = true, value_name = "KIND")]
+    provider: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -144,6 +159,119 @@ enum Command {
     },
     /// Undo `peek install`
     Uninstall,
+    /// Programs that add to what this machine offers, beside its screen:
+    /// each is started with peek and speaks to it on stdin and stdout
+    /// (docs/providers.md). Restart peek after a change
+    Provider {
+        #[command(subcommand)]
+        action: ProviderCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// Add a provider: a name, then the command that starts it, like
+    /// `peek provider add jobs -- node C:\jobs\provider.js`
+    Add {
+        name: String,
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Remove a provider, by name
+    Remove { name: String },
+    /// List the providers added here
+    List,
+}
+
+/// The providers added with `peek provider add`: name, and the command that
+/// starts it.
+const PROVIDERS_FILE: &str = "providers.json";
+/// peek's own, which nothing added may take the name of.
+const OWN_PROVIDERS: [&str; 3] = ["screen", "vitals", "power"];
+
+/// A name that can stand in an address and a message: short, lowercase
+/// letters, digits and dashes, and not one of peek's own.
+fn provider_name_ok(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !OWN_PROVIDERS.contains(&name)
+}
+
+fn read_providers(dir: &std::path::Path) -> BTreeMap<String, Vec<String>> {
+    fs::read_to_string(dir.join(PROVIDERS_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<BTreeMap<String, Vec<String>>>(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Everything beside the screen: peek's own providers, then the ones added
+/// here. Each is a process of its own, started now and again if it ends.
+fn providers(args: &Args) -> BTreeMap<String, Arc<provider::Link>> {
+    use provider::{Link, Start};
+    let mut all = BTreeMap::new();
+    all.insert("vitals".to_string(), Link::spawn("vitals", Start::Own(Vec::new()), args.view_only));
+    all.insert("power".to_string(), Link::spawn("power", Start::Own(power_flags(args)), args.view_only));
+    for (name, command) in read_providers(&config_dir()) {
+        if !provider_name_ok(&name) || command.is_empty() {
+            log!("{PROVIDERS_FILE}: skipped {name:?}, which is no name for a provider or has no command");
+            continue;
+        }
+        log!("provider {name}: {}", command.join(" "));
+        all.insert(name.clone(), Link::spawn(&name, Start::Program(command), args.view_only));
+    }
+    all
+}
+
+/// The config folder of the peek installed here, for commands that change
+/// its settings: the service's if there is one, otherwise this user's.
+fn installed_config_dir() -> PathBuf {
+    #[cfg(windows)]
+    if machine_config_dir().is_dir() {
+        return machine_config_dir();
+    }
+    config_dir()
+}
+
+fn provider_command(action: &ProviderCommand) -> Result<(), String> {
+    let dir = installed_config_dir();
+    let path = dir.join(PROVIDERS_FILE);
+    let mut all = read_providers(&dir);
+    let save = |all: &BTreeMap<String, Vec<String>>| {
+        fs::create_dir_all(&dir)
+            .and_then(|()| fs::write(&path, serde_json::to_string_pretty(all).unwrap_or_default()))
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    };
+    match action {
+        ProviderCommand::List => {
+            if all.is_empty() {
+                println!("No providers are added. `peek provider add <name> -- <command>` adds one.");
+            }
+            for (name, command) in &all {
+                println!("{name:<16}  {}", command.join(" "));
+            }
+            Ok(())
+        }
+        ProviderCommand::Add { name, command } => {
+            if !provider_name_ok(name) {
+                return Err(format!(
+                    "{name:?} cannot name a provider: use up to 32 lowercase letters, digits and dashes, and not {}",
+                    OWN_PROVIDERS.join(", ")
+                ));
+            }
+            all.insert(name.clone(), command.clone());
+            save(&all)?;
+            println!("Added {name}. It starts with peek, as the same user: restart peek to start it now.");
+            Ok(())
+        }
+        ProviderCommand::Remove { name } => {
+            if all.remove(name).is_none() {
+                return Err(format!("no provider is called {name} (see `peek provider list`)"));
+            }
+            save(&all)?;
+            println!("Removed {name}. Restart peek to stop it.");
+            Ok(())
+        }
+    }
 }
 
 /// Where the access token and pairing data live: %APPDATA%\peek on Windows
@@ -509,7 +637,66 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             install::install(&flags)
         }
         Command::Uninstall => install::uninstall(),
+        Command::Provider { action } => provider_command(action),
     }
+}
+
+/// The core, in the Windows service: it listens where there is no display,
+/// and returns the link the service attaches a screen provider to, one for
+/// each session that comes to the console.
+#[cfg(windows)]
+fn core_in_service() -> Arc<provider::Link> {
+    fn fail(what: String) -> ! {
+        log!("{what}");
+        std::process::exit(1);
+    }
+    let args = Args::parse();
+    let web = web_origin(&args.web).unwrap_or_else(|e| fail(e));
+    if args.no_token && !(args.bind.is_unspecified() || args.bind.is_loopback() || server::tailnet(args.bind)) {
+        fail(format!("--no-token accepts only Tailscale connections; --bind {} is not a Tailscale address", args.bind));
+    }
+    let token = (!args.no_token).then(|| {
+        load_token().unwrap_or_else(|e| fail(format!("cannot store the access token in {}: {e}", config_dir().display())))
+    });
+    let pairing = pairing::Pairing::load(&config_dir())
+        .unwrap_or_else(|e| fail(format!("cannot read or store pairing data in {}: {e}", config_dir().display())));
+    let screen = provider::Link::new("screen");
+    let shared = Arc::new(server::Shared {
+        token,
+        web,
+        pairing,
+        screen: server::Screen::Provider(screen.clone()),
+        providers: providers(&args),
+        view_only: args.view_only,
+        serve_target: pairing::serve_target(args.bind, args.port),
+        next_id: AtomicU64::new(1),
+    });
+    let addr = SocketAddr::new(args.bind, args.port);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| fail(format!("cannot start the async runtime: {e}")));
+    // Listening before the first provider is started: a client that
+    // connects in between waits for it.
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind(addr))
+        .unwrap_or_else(|e| fail(format!("cannot listen on {addr}: {e}")));
+    log!("service: listening on {addr}");
+    std::thread::Builder::new()
+        .name("core".into())
+        .spawn(move || {
+            if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
+                fail(format!("cannot serve on {addr}: {e}"));
+            }
+        })
+        .unwrap_or_else(|e| fail(format!("cannot start the server thread: {e}")));
+    screen
+}
+
+/// The flags the power provider needs from the core's.
+fn power_flags(args: &Args) -> Vec<String> {
+    if args.view_only { vec!["--view-only".into()] } else { Vec::new() }
 }
 
 fn main() {
@@ -562,6 +749,29 @@ fn main() {
         std::process::exit(1);
     }
 
+    // A provider for a core, which listens, keeps the settings and logs for
+    // both.
+    if let Some(kind) = &args.provider {
+        if !matches!(kind.as_str(), "screen" | "vitals" | "power") {
+            eprintln!("no provider is called {kind}");
+            std::process::exit(2);
+        }
+        let (from_core, core) = provider::connect();
+        let _ = LOG_TO_CORE.set(core.clone());
+        match kind.as_str() {
+            "vitals" => vitals::run(from_core, core),
+            "power" => power::run(from_core, core, args.view_only),
+            _ => {
+                platform::init();
+                #[cfg(windows)]
+                platform::keep_device(args.keep_gpu);
+                let screen = screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps);
+                provider::run_screen(screen, from_core, core);
+            }
+        }
+        return;
+    }
+
     if let Some(path) = &args.log {
         match OpenOptions::new().create(true).append(true).open(path) {
             Ok(file) => {
@@ -574,7 +784,7 @@ fn main() {
 
     #[cfg(windows)]
     if args.service {
-        if let Err(e) = platform::service::run() {
+        if let Err(e) = platform::service::run(core_in_service) {
             log!("{e}");
             std::process::exit(1);
         }
@@ -608,36 +818,16 @@ fn main() {
         }
     };
 
-    let (engine_tx, engine_rx) = std::sync::mpsc::channel();
     let shared = Arc::new(server::Shared {
         token,
         web: web.clone(),
         serve_target: pairing::serve_target(args.bind, args.port),
         pairing,
+        screen: server::Screen::Here(screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps)),
+        providers: providers(&args),
         view_only: args.view_only,
-        clipboard: !args.no_clipboard,
-        verbose: args.verbose,
-        engine: engine_tx,
-        monitors: RwLock::new(Vec::new()),
-        peers: Mutex::new(HashMap::new()),
-        clip_last: Mutex::new(String::new()),
         next_id: AtomicU64::new(1),
     });
-
-    {
-        let shared = shared.clone();
-        std::thread::Builder::new()
-            .name("engine".into())
-            .spawn(move || engine::run(engine_rx, shared, args.fps))
-            .expect("spawn engine thread");
-    }
-    if shared.clipboard {
-        let shared = shared.clone();
-        std::thread::Builder::new()
-            .name("clipboard".into())
-            .spawn(move || server::watch_clipboard(shared))
-            .expect("spawn clipboard thread");
-    }
 
     // Listen before saying so, and before handing out a pairing code.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -705,5 +895,20 @@ fn main() {
     if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
         log!("cannot listen on {addr}: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_provider_added_here_cannot_take_a_name_of_peeks_own() {
+        for ok in ["jobs", "build-2", "a"] {
+            assert!(provider_name_ok(ok), "{ok}");
+        }
+        for bad in ["", "screen", "vitals", "power", "Jobs", "my jobs", "a/b", "../x", &"x".repeat(33)] {
+            assert!(!provider_name_ok(bad), "{bad}");
+        }
     }
 }

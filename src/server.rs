@@ -1,17 +1,17 @@
 //! HTTP and WebSocket front end: serves the client page, authenticates
-//! sockets, and turns client messages into injected input.
+//! sockets and requests, and passes what clients say to the screen (in this
+//! process, or in a provider's) and to the other providers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::connect_info::Connected;
-use axum::extract::{ConnectInfo, Query, Request, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -21,11 +21,12 @@ use axum::serve::{IncomingStream, Listener};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::unbounded_channel;
 
-use crate::engine::{Cmd, Out, Quality, View, ViewChange};
+use crate::engine::Out;
 use crate::pairing::{self, Pairing, RedeemError};
-use crate::platform::{self, Monitor, input};
+use crate::provider::Link;
+use crate::screen;
 
 /// Close code telling the client its token is wrong (so it stops retrying).
 const CLOSE_BAD_TOKEN: u16 = 4403;
@@ -52,17 +53,23 @@ pub struct Shared {
     /// to find the HTTPS port it does so on.
     pub serve_target: String,
     pub pairing: Pairing,
+    pub screen: Screen,
+    /// Every other provider, by name: vitals, power, and whatever
+    /// `providers.json` names. The server passes requests and socket
+    /// messages on to them, and knows nothing of what they mean.
+    pub providers: BTreeMap<String, Arc<Link>>,
+    /// The host ignores what clients do: nothing that acts is passed on.
     pub view_only: bool,
-    pub clipboard: bool,
-    pub verbose: bool,
-    pub engine: Sender<Cmd>,
-    pub monitors: RwLock<Vec<Monitor>>,
-    /// Every connected client, for clipboard broadcasts.
-    pub peers: Mutex<HashMap<u64, UnboundedSender<Out>>>,
-    /// The text most recently synchronised in either direction, so a change
-    /// we caused ourselves is not echoed back.
-    pub clip_last: Mutex<String>,
     pub next_id: AtomicU64,
+}
+
+/// Where the engine, input and the clipboard are.
+pub enum Screen {
+    /// In this process.
+    Here(Arc<screen::Shared>),
+    /// In a provider process, in a session that has a display.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Provider(Arc<Link>),
 }
 
 pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Result<()> {
@@ -76,6 +83,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/ws", get(ws))
         .route("/.well-known/peek", get(about).options(preflight))
         .route("/api/pair", post(pair).options(preflight))
+        .route("/api/provider/{name}", post(provider).options(preflight))
         .route("/api/pair-code", post(local_pair_code))
         .route("/api/clients", get(local_clients))
         .route("/api/clients/revoke", post(local_revoke))
@@ -270,10 +278,19 @@ async fn preflight(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Res
 /// Who this host is: the hosted client checks it before pairing, and to
 /// show which paired machines are up.
 async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    // Each provider's name, with whatever it says of itself (where it has
+    // something to show, for one).
+    let mut providers = vec![serde_json::json!({ "name": "screen" })];
+    for (name, link) in &shared.providers {
+        let mut about = link.about();
+        about.insert("name".into(), name.as_str().into());
+        providers.push(about.into());
+    }
     let body = serde_json::json!({
         "id": shared.pairing.host_id,
         "name": pairing::machine_name(),
         "protocol": PROTOCOL.parse::<u32>().unwrap_or(0),
+        "providers": providers,
     });
     (cors(&shared, &headers), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
         .into_response()
@@ -335,6 +352,64 @@ async fn pair(
             json(StatusCode::FORBIDDEN, serde_json::json!({ "error": "code" }))
         }
         Err(RedeemError::Busy) => json(StatusCode::TOO_MANY_REQUESTS, serde_json::json!({ "error": "busy" })),
+    }
+}
+
+/// Whether `given` lets a client in: a paired browser's token or the
+/// host's. The hosted client always needs one, even on a host started with
+/// `--no-token`.
+fn token_ok(shared: &Shared, given: &str, web: bool) -> bool {
+    let needs_token = web || shared.token.is_some();
+    !needs_token || shared.pairing.check(given).is_some() || shared.token.as_deref().is_some_and(|t| token_matches(given, t))
+}
+
+/// Whether a message to a provider asks it to act (`do`, or `peer`: the
+/// same on another machine's behalf), which a view-only host refuses for
+/// every provider alike. Looking is always allowed.
+fn acts(message: &serde_json::Value) -> bool {
+    matches!(message["t"].as_str(), Some("do" | "peer"))
+}
+
+const VIEW_ONLY: &str = "this machine is view-only";
+
+/// One request to a provider: the request's JSON, with the token beside
+/// its fields, and the provider's answer as it gave it.
+async fn provider(
+    State(shared): State<Arc<Shared>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cors = cors(&shared, &headers);
+    let reply = |status: StatusCode, body: String| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body)
+            .into_response()
+    };
+    let error = |status: StatusCode, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }).to_string());
+    let web = from_web(&shared, &headers);
+    // Only our own pages, and the hosted client's; requests from outside a
+    // browser carry no Origin.
+    if headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
+        return error(StatusCode::FORBIDDEN, "origin");
+    }
+    let Ok(serde_json::Value::Object(mut req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return error(StatusCode::BAD_REQUEST, "request");
+    };
+    let given = req.remove("token").and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default();
+    if !token_ok(&shared, &given, web) {
+        return error(StatusCode::FORBIDDEN, "token");
+    }
+    let Some(link) = shared.providers.get(&name) else {
+        return error(StatusCode::NOT_FOUND, "no such provider");
+    };
+    let req = serde_json::Value::Object(req);
+    if shared.view_only && acts(&req) {
+        return error(StatusCode::FORBIDDEN, VIEW_ONLY);
+    }
+    let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+    match link.ask(id, &req.to_string()).await {
+        Some(answer) => reply(StatusCode::OK, answer),
+        None => error(StatusCode::SERVICE_UNAVAILABLE, "the provider did not answer"),
     }
 }
 
@@ -440,43 +515,20 @@ async fn ws(
         .on_upgrade(move |socket| client(socket, shared, query, addr, web))
 }
 
+/// The messages the server answers itself, or passes to a provider by
+/// name. Everything else a client says belongs to the screen.
 #[derive(Deserialize)]
 #[serde(tag = "t")]
-enum ClientMsg {
-    #[serde(rename = "ack")]
-    Ack { s: u32 },
-    #[serde(rename = "vis")]
-    Visible { v: bool },
-    #[serde(rename = "cfg")]
-    Configure {
-        mon: Option<usize>,
-        q: Option<String>,
-        scale: Option<usize>,
-        fps: Option<u32>,
-        soft: Option<bool>,
-        lossless: Option<bool>,
-    },
-    #[serde(rename = "m")]
-    Move { x: f64, y: f64 },
-    #[serde(rename = "b")]
-    Button { b: u8, d: u8, x: f64, y: f64 },
-    #[serde(rename = "w")]
-    Wheel {
-        #[serde(default)]
-        dx: i32,
-        #[serde(default)]
-        dy: i32,
-    },
-    #[serde(rename = "k")]
-    Key { c: String, d: u8 },
-    #[serde(rename = "rel")]
-    Release,
-    /// Text to type as characters (from a phone's keyboard, which reports
-    /// text rather than keys).
-    #[serde(rename = "type")]
-    Type { s: String },
-    #[serde(rename = "clip")]
-    Clipboard { s: String },
+enum CoreMsg {
+    /// Open this socket's channel on a provider. What the provider sends
+    /// on it comes back as `{"t":"from","p":name,"m":...}`.
+    #[serde(rename = "open")]
+    Open { p: String },
+    /// A message for that provider, on that channel.
+    #[serde(rename = "to")]
+    To { p: String, m: serde_json::Value },
+    #[serde(rename = "close")]
+    Close { p: String },
     /// Answered straight away, for the client's round-trip measurement.
     #[serde(rename = "ping")]
     Ping { n: u32 },
@@ -485,26 +537,18 @@ enum ClientMsg {
     PairCode,
 }
 
-/// What one client is currently holding down, so it can be let go of.
-#[derive(Default)]
-struct Held {
-    keys: HashSet<String>,
-    buttons: HashSet<u8>,
-}
-
-impl Held {
-    fn release_all(&mut self, inject: bool) {
-        for code in self.keys.drain() {
-            if inject {
-                input::key(&code, false);
-            }
+/// Where a provider's messages on a socket's channel go: onto the socket,
+/// marked with the provider's name. A provider speaks JSON here; anything
+/// else of its is dropped, as there is nowhere to put the name.
+fn from_provider(name: &str, tx: tokio::sync::mpsc::UnboundedSender<Out>) -> screen::Sink {
+    let head = format!(r#"{{"t":"from","p":{},"m":"#, serde_json::Value::from(name));
+    Arc::new(move |out| {
+        if let Out::Text(text) = out
+            && serde_json::from_str::<serde::de::IgnoredAny>(&text).is_ok()
+        {
+            let _ = tx.send(Out::Text(format!("{head}{text}}}")));
         }
-        for b in self.buttons.drain() {
-            if inject {
-                input::button(b, false);
-            }
-        }
-    }
+    })
 }
 
 /// `web`: opened by the hosted client, which always needs a token (a paired
@@ -512,9 +556,7 @@ impl Held {
 async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<String, String>, addr: SocketAddr, web: bool) {
     let given = query.get("token").map_or("", String::as_str);
     let paired = shared.pairing.check(given);
-    let host_token = shared.token.as_deref().is_some_and(|expected| token_matches(given, expected));
-    let needs_token = web || shared.token.is_some();
-    if needs_token && paired.is_none() && !host_token {
+    if !token_ok(&shared, given, web) {
         crate::log!("bad token from {}", addr.ip());
         let _ = socket
             .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_TOKEN, reason: "bad token".into() })))
@@ -531,28 +573,17 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
     }
 
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
-    let scale = |v: Option<usize>| v.filter(|s| matches!(s, 1 | 2));
-    let fps = |v: Option<u32>| v.map(|f| f.min(1000));
-    fn param<T: std::str::FromStr>(query: &HashMap<String, String>, key: &str) -> Option<T> {
-        query.get(key).and_then(|v| v.parse().ok())
-    }
-    let mut mon = param(&query, "mon").unwrap_or(0usize);
     let (tx, mut rx) = unbounded_channel::<Out>();
-    let _ = shared.engine.send(Cmd::Add {
-        id,
-        tx: tx.clone(),
-        view: View {
-            mon,
-            quality: query.get("q").and_then(|q| Quality::parse(q)).unwrap_or(Quality::Med),
-            scale: scale(param(&query, "scale")).unwrap_or(1),
-            fps: fps(param(&query, "fps")).unwrap_or(0),
-            soft: query.get("soft").is_some_and(|v| v == "1"),
-            lossless: query.get("lossless").is_some_and(|v| v == "1"),
-        },
-        visible: query.get("vis").is_none_or(|v| v != "0"),
-    });
     let reply = tx.clone();
-    shared.peers.lock().unwrap().insert(id, tx);
+    // The providers this socket has a channel on.
+    let mut opened: HashSet<String> = HashSet::new();
+    let mut session = match &shared.screen {
+        Screen::Here(screen) => Some(screen::open(screen, id, &query, Arc::new(move |out| drop(tx.send(out))))),
+        Screen::Provider(link) => {
+            link.open_to(id, &query, tx);
+            None
+        }
+    };
     match &paired {
         Some(c) => crate::log!("client connected: {} ({})", addr.ip(), c.label),
         None => crate::log!("client connected: {}", addr.ip()),
@@ -576,8 +607,6 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
         }
     });
 
-    let inject = !shared.view_only;
-    let mut held = Held::default();
     // Browsers answer pings on their own, so silence means the client is gone.
     while let Ok(Some(Ok(msg))) = tokio::time::timeout(DEAD_AFTER, stream.next()).await {
         let text = match msg {
@@ -585,118 +614,30 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             Message::Close(_) => break,
             _ => continue,
         };
-        let Ok(msg) = serde_json::from_str::<ClientMsg>(&text) else {
-            if shared.verbose {
-                crate::log!("bad message {}", text.as_str());
-            }
-            continue;
-        };
-        match msg {
-            ClientMsg::Ack { s } => {
-                let _ = shared.engine.send(Cmd::Ack { id, seq: s });
-            }
-            ClientMsg::Visible { v } => {
-                let _ = shared.engine.send(Cmd::Visible { id, visible: v });
-            }
-            ClientMsg::Configure { mon: m, q, scale: s, fps: f, soft, lossless } => {
-                mon = m.unwrap_or(mon);
-                let change = ViewChange {
-                    mon: m,
-                    quality: q.as_deref().and_then(Quality::parse),
-                    scale: scale(s),
-                    fps: fps(f),
-                    soft,
-                    lossless,
-                };
-                let _ = shared.engine.send(Cmd::Configure { id, change });
-            }
-            ClientMsg::Move { x, y } => {
-                if let Some((px, py)) = to_pixel(&shared, mon, x, y) {
-                    if shared.verbose {
-                        crate::log!("move {px},{py}");
-                    }
-                    if inject {
-                        input::mouse_move(px, py);
-                    }
+        match serde_json::from_str::<CoreMsg>(&text) {
+            Ok(CoreMsg::Open { p }) => {
+                if let Some(link) = shared.providers.get(&p)
+                    && opened.insert(p.clone())
+                {
+                    link.open(id, &HashMap::new(), from_provider(&p, reply.clone()));
                 }
             }
-            ClientMsg::Button { b, d, x, y } => {
-                if b > 4 {
-                    continue;
-                }
-                if let Some((px, py)) = to_pixel(&shared, mon, x, y) {
-                    let down = d != 0;
-                    if shared.verbose {
-                        crate::log!("move {px},{py}");
-                        crate::log!("button {b} {}", if down { "down" } else { "up" });
-                    }
-                    if down {
-                        held.buttons.insert(b);
+            Ok(CoreMsg::To { p, m }) => {
+                if let (Some(link), true) = (shared.providers.get(&p), opened.contains(&p)) {
+                    if shared.view_only && acts(&m) {
+                        let refused = serde_json::json!({ "t": "error", "why": VIEW_ONLY });
+                        from_provider(&p, reply.clone())(Out::Text(refused.to_string()));
                     } else {
-                        held.buttons.remove(&b);
-                    }
-                    if inject {
-                        input::mouse_move(px, py);
-                        input::button(b, down);
+                        link.text(id, &m.to_string());
                     }
                 }
             }
-            ClientMsg::Wheel { dx, dy } => {
-                if shared.verbose {
-                    crate::log!("wheel dx={dx} dy={dy}");
-                }
-                if inject {
-                    input::wheel(dx, dy);
+            Ok(CoreMsg::Close { p }) => {
+                if let (Some(link), true) = (shared.providers.get(&p), opened.remove(&p)) {
+                    link.close(id);
                 }
             }
-            ClientMsg::Key { c, d } => {
-                let down = d != 0;
-                if input::lookup(&c).is_none() {
-                    if shared.verbose {
-                        crate::log!("key {c} ignored (unmapped)");
-                    }
-                    continue;
-                }
-                if shared.verbose {
-                    crate::log!("key {c} {}", if down { "down" } else { "up" });
-                }
-                if inject {
-                    input::key(&c, down);
-                }
-                if down {
-                    held.keys.insert(c);
-                } else {
-                    held.keys.remove(&c);
-                }
-            }
-            ClientMsg::Type { s } => {
-                if shared.verbose {
-                    crate::log!("type {} chars", s.chars().count());
-                }
-                if inject && s.len() <= MAX_CLIPBOARD {
-                    input::text(&s);
-                }
-            }
-            ClientMsg::Release => {
-                if shared.verbose {
-                    crate::log!("release all");
-                }
-                held.release_all(inject);
-            }
-            ClientMsg::Clipboard { s } => {
-                if !shared.clipboard || s.is_empty() || s.len() > MAX_CLIPBOARD {
-                    continue;
-                }
-                if shared.verbose {
-                    crate::log!("clipboard from client ({} chars)", s.chars().count());
-                }
-                if inject {
-                    // Record it first so the watcher does not send it straight back.
-                    *shared.clip_last.lock().unwrap() = s.clone();
-                    platform::clipboard::set_text(&s);
-                }
-            }
-            ClientMsg::PairCode => {
+            Ok(CoreMsg::PairCode) => {
                 let shared = shared.clone();
                 let reply = reply.clone();
                 tokio::task::spawn_blocking(move || {
@@ -705,74 +646,60 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                     let _ = reply.send(Out::Text(offer.to_string()));
                 });
             }
-            ClientMsg::Ping { n } => {
+            Ok(CoreMsg::Ping { n }) => {
                 // Queued behind any frames already waiting, which is the
                 // delay a fresh frame would see too.
                 let _ = reply.send(Out::Text(serde_json::json!({ "t": "pong", "n": n }).to_string()));
             }
+            Err(_) => match (&shared.screen, &mut session) {
+                (Screen::Here(screen), Some(session)) => session.message(screen, &text),
+                (Screen::Provider(link), _) => link.text(id, &text),
+                (Screen::Here(_), None) => {}
+            },
         }
     }
 
-    // Never leave a key or button held down on the host.
-    held.release_all(inject);
-    shared.peers.lock().unwrap().remove(&id);
-    let _ = shared.engine.send(Cmd::Remove { id });
+    match (&shared.screen, session) {
+        (Screen::Here(screen), Some(session)) => session.close(screen),
+        (Screen::Provider(link), _) => link.close(id),
+        (Screen::Here(_), None) => {}
+    }
+    for p in opened {
+        if let Some(link) = shared.providers.get(&p) {
+            link.close(id);
+        }
+    }
     writer.abort();
     crate::log!("client disconnected: {}", addr.ip());
-}
-
-/// Map a position given as fractions of a monitor to a desktop pixel.
-fn to_pixel(shared: &Shared, mon: usize, x: f64, y: f64) -> Option<(i32, i32)> {
-    let monitors = shared.monitors.read().unwrap();
-    let m = monitors.get(mon.min(monitors.len().checked_sub(1)?))?;
-    if !x.is_finite() || !y.is_finite() {
-        return None;
-    }
-    let along = |v: f64, size: u32| ((v.clamp(0.0, 1.0) * size as f64) as i32).min(size as i32 - 1);
-    Some((m.x + along(x, m.width), m.y + along(y, m.height)))
-}
-
-/// Push host clipboard changes to connected clients. Runs on its own thread.
-///
-/// Changes made while no client is connected are deliberately not sent on
-/// connect: that would overwrite whatever the user copied on the client just
-/// before opening the session.
-pub fn watch_clipboard(shared: Arc<Shared>) {
-    let mut seen = platform::clipboard::sequence();
-    loop {
-        std::thread::sleep(Duration::from_millis(250));
-        let seq = platform::clipboard::sequence();
-        if seq == seen {
-            continue;
-        }
-        seen = seq;
-        if shared.peers.lock().unwrap().is_empty() {
-            continue;
-        }
-        let Some(text) = platform::clipboard::get_text() else { continue };
-        if text.len() > MAX_CLIPBOARD {
-            continue;
-        }
-        {
-            let mut last = shared.clip_last.lock().unwrap();
-            if *last == text {
-                continue;
-            }
-            last.clone_from(&text);
-        }
-        if shared.verbose {
-            crate::log!("clipboard to clients ({} chars)", text.chars().count());
-        }
-        let msg = serde_json::json!({ "t": "clip", "s": text }).to_string();
-        for tx in shared.peers.lock().unwrap().values() {
-            let _ = tx.send(Out::Text(msg.clone()));
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_only_host_passes_on_looking_and_not_acting() {
+        assert!(acts(&serde_json::json!({ "t": "do", "do": { "t": "anything" } })));
+        assert!(acts(&serde_json::json!({ "t": "peer", "do": {} })));
+        assert!(!acts(&serde_json::json!({ "t": "view", "place": "card" })));
+        assert!(!acts(&serde_json::json!({ "t": "info" })));
+    }
+
+    #[test]
+    fn a_providers_message_reaches_the_socket_under_its_name() {
+        let (tx, mut rx) = unbounded_channel();
+        let sink = from_provider("jobs", tx);
+        sink(Out::Text(r#"{"t":"view"}"#.into()));
+        // Not JSON, and not text: there is nowhere to put the name.
+        sink(Out::Text("3 jobs".into()));
+        sink(Out::Binary(vec![1, 2, 3]));
+        assert!(matches!(rx.try_recv(), Ok(Out::Text(t)) if t == r#"{"t":"from","p":"jobs","m":{"t":"view"}}"#));
+        assert!(rx.try_recv().is_err());
+        // And a socket's messages for a provider are the server's to route.
+        for text in [r#"{"t":"open","p":"jobs"}"#, r#"{"t":"to","p":"jobs","m":{"t":"view"}}"#, r#"{"t":"close","p":"jobs"}"#] {
+            assert!(serde_json::from_str::<CoreMsg>(text).is_ok(), "{text}");
+        }
+    }
 
     #[test]
     fn only_private_addresses_are_allowed() {
@@ -835,6 +762,24 @@ mod tests {
         let rebound = headers("evil.example:9182", Some("http://evil.example:9182"));
         assert!(origin_ok(&rebound, false));
         assert!(!origin_ok(&rebound, true));
+    }
+
+    #[test]
+    fn the_server_answers_only_its_own_messages() {
+        let core = |text: &str| serde_json::from_str::<CoreMsg>(text).is_ok();
+        assert!(core(r#"{"t":"ping","n":3}"#));
+        assert!(core(r#"{"t":"paircode"}"#));
+        for screen in [
+            r#"{"t":"ack","s":7}"#,
+            r#"{"t":"vis","v":true}"#,
+            r#"{"t":"cfg","q":"high"}"#,
+            r#"{"t":"m","x":0.5,"y":0.5}"#,
+            r#"{"t":"k","c":"KeyA","d":1}"#,
+            r#"{"t":"clip","s":"text"}"#,
+            "not json",
+        ] {
+            assert!(!core(screen), "{screen} is for the screen");
+        }
     }
 
     #[test]

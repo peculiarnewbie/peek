@@ -7,6 +7,7 @@ import { countIn, countOut, first, ping, S, tick } from './stats';
 import { cv, ctx, resizeScreen } from './screen';
 import { BLOCKED_HELP, current, HOSTED, localAccess } from './hosted';
 import { store } from './util';
+import { dropPages, fromProvider } from './views';
 import type { PairOffer } from './components/PairDevice';
 
 /** Must match the host's wire format version. */
@@ -77,6 +78,7 @@ export function disconnect() {
   sock?.close();
   setLive(false);
   setBlocked(false);
+  dropPages();
   setMonitors([]);
   chain = Promise.resolve();
   ctx.clearRect(0, 0, cv.width, cv.height);
@@ -118,6 +120,7 @@ export function connect() {
     if (ws !== sock) return;
     setLive(false);
     setBlocked(false);
+    dropPages();
     if (e.code === CLOSE_BAD_TOKEN) {
       if (HOSTED) {
         setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`);
@@ -160,6 +163,8 @@ type HostMsg =
   | { t: 'blocked'; v: boolean }
   | { t: 'clip'; s: string }
   | { t: 'pong'; n: number }
+  // From one of the host's other providers, on its channel of this socket.
+  | { t: 'from'; p: string; m: Parameters<typeof fromProvider>[1] }
   | ({ t: 'paircode' } & PairOffer);
 
 function onJson(m: HostMsg) {
@@ -179,6 +184,9 @@ function onJson(m: HostMsg) {
       break;
     case 'paircode':
       hooks.paircode(m);
+      break;
+    case 'from':
+      fromProvider(m.p, m.m);
       break;
     case 'pong':
       if (m.n === ping.n) { S.rtt += performance.now() - ping.at; S.pongs++; }

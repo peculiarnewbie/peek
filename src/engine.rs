@@ -18,10 +18,9 @@ use std::time::{Duration, Instant};
 
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
 use rayon::prelude::*;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::platform::{self, Capture, Pixels};
-use crate::server::Shared;
+use crate::screen::{Shared, Sink};
 use crate::webp;
 
 /// Tile edge in pixels. A multiple of 16 so JPEG blocks line up at the seams.
@@ -121,7 +120,7 @@ pub struct ViewChange {
 }
 
 pub enum Cmd {
-    Add { id: u64, tx: UnboundedSender<Out>, view: View, visible: bool },
+    Add { id: u64, tx: Sink, view: View, visible: bool },
     Remove { id: u64 },
     Ack { id: u64, seq: u32 },
     Visible { id: u64, visible: bool },
@@ -176,7 +175,7 @@ impl Screen {
 
 struct Session {
     id: u64,
-    tx: UnboundedSender<Out>,
+    tx: Sink,
     view: View,
     visible: bool,
     /// Screen size this session's tile state was built for; (0, 0) forces a
@@ -195,7 +194,7 @@ struct Session {
 
 impl Session {
     fn send_text(&self, text: String) {
-        let _ = self.tx.send(Out::Text(text));
+        (self.tx)(Out::Text(text));
     }
 }
 
@@ -925,7 +924,7 @@ impl Engine {
         self.stats.frames += 1;
         self.stats.bytes += msg.len();
         s.last_send = now;
-        let _ = s.tx.send(Out::Binary(msg));
+        (s.tx)(Out::Binary(msg));
     }
 
     /// With --verbose, summarise throughput every couple of seconds.

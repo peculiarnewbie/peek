@@ -1,16 +1,18 @@
 // Hosted client: the page of paired machines at `/`. Choosing one opens it
 // at `/screen/<name>`; the toolbar's back button (or the browser's) returns here.
-import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show, untrack } from 'solid-js';
 import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
-  BLOCKED_HELP, cleanHost, current, forget, localAccess, machines, navigate, openMachine, pair, parseLink,
-  probeAll, reach, screenPath, type Machine,
+  about, BLOCKED_HELP, cleanHost, current, forget, learn, localAccess, machines, navigate, openMachine, pair,
+  parseLink, probeAll, reach, screenPath, type Machine,
 } from '../hosted';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
+import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { canScan, QrScan } from './QrScan';
+import { ItemView } from './View';
 
 /** Shell commands, one per line, with one button that copies them all. */
 function Commands(props: { lines: string[] }) {
@@ -86,6 +88,7 @@ function Card(props: { m: Machine }) {
         <span class="dstate"><span class="mdot" classList={{ up: state() === 'up', down: state() === 'down' }} />
           {STATUS[state()]}</span>
       </a>
+      <CardViews m={props.m} />
       <button class="dforget tb icon" tabIndex={-1} title={`Forget ${props.m.name}`}
         onClick={() => { if (confirm(`Forget ${props.m.name}? Pairing it again needs a new code.`)) forget(props.m.id); }}>
         <Icon name="x" />
@@ -94,14 +97,35 @@ function Card(props: { m: Machine }) {
   );
 }
 
+/** What the machines' providers ask to be shown on this card (views.ts). */
+function CardViews(props: { m: Machine }) {
+  const shown = () => cardItems(props.m);
+  return (
+    <Show when={shown().length || cardError[props.m.id]}>
+      <div class="dviews">
+        <Index each={shown()}>{s => (
+          <ItemView item={s().item} disabled={pressing[props.m.id]} onPress={() => press(props.m, s())} />
+        )}</Index>
+        <Show when={cardError[props.m.id]}>{why => <p class="vtext wrong">{why()}</p>}</Show>
+      </div>
+    </Show>
+  );
+}
+
 export function Devices() {
   // The page decides the connection: a machine's page connects to it, the
   // list (or a machine no longer paired) drops it.
-  createEffect(on(() => current()?.id, id => {
+  // (A memo: the list of machines changes whenever one says something new
+  // of itself, and that must not reconnect the one being shown.)
+  const shownId = createMemo(() => current()?.id);
+  createEffect(on(shownId, id => {
     disconnect();
     if (id) {
       setMessage(`Connecting to ${current()!.name}…`);
       connect();
+      // Its providers as they are now: this page may be the first to ask.
+      const m = current()!;
+      about(m.host).then(a => { if (a.id === m.id) learn(m, a); }, () => {});
       focusScreen();
     } else {
       showSettings(false);
@@ -111,8 +135,10 @@ export function Devices() {
   }));
   // Keep the status current while the list shows.
   createEffect(() => {
-    if (current()) return;
-    probeAll();
+    if (shownId()) return;
+    // Untracked: probing reads the list, and what it learns changes the
+    // list, which must not start it over.
+    untrack(probeAll);
     const timer = setInterval(probeAll, 10000);
     onCleanup(() => clearInterval(timer));
   });
