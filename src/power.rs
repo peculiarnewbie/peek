@@ -103,6 +103,8 @@ pub fn run(input: File, core: Arc<provider::ToCore>, view_only: bool) {
 /// went once this machine is awake again.
 fn sleep(test: bool) {
     let started = SystemTime::now();
+    // The card now: just after waking, its link may not be up yet.
+    let card = test.then(target).and_then(Result::ok).map(|t| t.mac);
     let timer = test.then(|| platform::wake_timer(started + TEST_TIMER)).flatten();
     if test {
         crate::log!(
@@ -155,8 +157,10 @@ fn sleep(test: bool) {
         woke.as_secs(),
         if ok { "a packet woke this machine" } else { "no packet woke it" }
     );
-    if let Err(why) = keep_tested(ok) {
-        crate::log!("power: could not keep how the test went ({why})");
+    match card.map(|mac| keep_tested(&mac, ok)) {
+        Some(Ok(())) => {}
+        Some(Err(why)) => crate::log!("power: could not keep how the test went ({why})"),
+        None => crate::log!("power: there was no card to wake this machine through, so the test is not kept"),
     }
     platform::stay_awake(STAY_AWAKE);
 }
@@ -168,9 +172,8 @@ fn by_packet(woke: Duration) -> bool {
 }
 
 /// Keep how the last try at waking this machine went, with its card.
-fn keep_tested(ok: bool) -> Result<(), String> {
-    let t = target()?;
-    let record = json!({ "mac": format_mac(&t.mac), "ok": ok, "at": now() });
+fn keep_tested(mac: &[u8; 6], ok: bool) -> Result<(), String> {
+    let record = json!({ "mac": format_mac(mac), "ok": ok, "at": now() });
     std::fs::write(crate::config_dir().join(TESTED_FILE), record.to_string()).map_err(|e| e.to_string())
 }
 
@@ -199,7 +202,7 @@ fn answer(text: &str, view_only: bool) -> (Value, Then) {
         }
         "tested" => {
             let ok = req["ok"].as_bool().unwrap_or(false);
-            match keep_tested(ok) {
+            match target().and_then(|t| keep_tested(&t.mac, ok)) {
                 Ok(()) => {
                     crate::log!("power: waking this machine {}", if ok { "worked" } else { "did not work" });
                     (info(), Then::Nothing)
