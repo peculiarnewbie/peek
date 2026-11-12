@@ -72,7 +72,16 @@ logon from there (details for [Windows](#install-on-windows-firewall-rule-and-st
 and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
 `peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
 After updating the package, run `peek install` again; `peek uninstall` removes
-it. To try peek once without installing anything: `npx @peculiarnewbie/peek`.
+it.
+
+To try peek once without installing anything, with Tailscale running:
+
+```
+npx @peculiarnewbie/peek pair
+```
+
+With no peek running yet, `peek pair` starts one in that terminal and prints
+a link and QR code to pair a browser; peek runs until you press Ctrl+C.
 
 ## Run
 
@@ -373,7 +382,8 @@ take a few seconds while Tailscale fetches its certificate.
 Then pair each browser with each machine:
 
 - `peek pair` on the machine prints a link and a QR code with a one-time
-  code (it works once, for five minutes). Open it on the device, or enter
+  code (it works once, for five minutes). If peek is not running, it starts
+  peek in that terminal first. Open the link on the device, or enter
   the machine's name and the code under **Add a machine**. On a phone,
   **Scan QR code** there reads it with the camera (where the browser can
   read QR codes, as Chrome on Android does); the camera app works too.

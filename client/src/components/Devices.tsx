@@ -168,8 +168,9 @@ export function Devices() {
         <Show when={showForm()}>
           <section class="dadd panel">
             <div class="label"><span>Add a machine</span></div>
-            <p class="hint">On the machine, run <code>peek pair</code>. Open the link it shows on this device (or
-              scan its QR code), or enter its name and code here.</p>
+            <p class="hint">On the machine, run <code>peek pair</code> (or, without installing peek,{' '}
+              <code>npx @peculiarnewbie/peek pair</code>). Open the link it shows on this device (or scan its QR
+              code), or enter its name and code here.</p>
             <Show when={canScan()}>
               <button class="btn alt scan" tabIndex={-1} onClick={() => { setError(''); setScanning(true); }}>
                 <Icon name="qr" /><span>Scan QR code</span>

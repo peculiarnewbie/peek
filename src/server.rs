@@ -62,7 +62,7 @@ pub struct Shared {
     pub next_id: AtomicU64,
 }
 
-pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()> {
+pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/manifest.webmanifest", get(|| asset("application/manifest+json", MANIFEST)))
@@ -80,7 +80,7 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()>
         .layer(middleware::from_fn_with_state(shared.clone(), ip_guard))
         .with_state(shared);
     // Input and small screen updates must not sit in Nagle's buffer.
-    let listener = NoDelay(TcpListener::bind(addr).await?);
+    let listener = NoDelay(listener);
     axum::serve(listener, app.into_make_service_with_connect_info::<Peer>()).await
 }
 
@@ -336,7 +336,7 @@ async fn pair(
 }
 
 /// A new pairing code, with the link that uses it.
-fn pairing_offer(shared: &Shared) -> serde_json::Value {
+pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
     let code = match shared.pairing.new_code() {
         Ok(code) => code,
         Err(e) => return serde_json::json!({ "error": e.to_string() }),
