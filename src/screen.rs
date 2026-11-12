@@ -3,8 +3,7 @@
 //! client says, close it.
 //!
 //! The server is its only caller today. It is kept apart from the server,
-//! and free of sockets, so that something else could hold it instead: see
-//! docs/extensibility.md.
+//! and free of sockets, so that something else could hold it instead.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
