@@ -2,8 +2,9 @@
 //! doing, as numbers: processor, memory, storage. Needs no display, so it
 //! runs beside the core, also in the Windows service's session 0.
 //!
-//! Every client's socket is a channel here. Each gets a reading as soon as
-//! it opens, then one a second. Nothing is read while no channel is open.
+//! It says what to show and the client draws it: one line for the machine's
+//! card, figures and meters for its page (see `view`). Nothing is read
+//! while nobody asks.
 
 use std::fs::File;
 use std::sync::{Arc, Condvar, Mutex};
@@ -110,10 +111,22 @@ pub struct Sampler {
     cpu: Option<f64>,
 }
 
+/// What the machine is doing at one moment.
+pub struct Reading {
+    /// Processor use over the last second or so, in percent.
+    cpu: Option<f64>,
+    /// Bytes: (used, total).
+    mem: Option<(u64, u64)>,
+    /// Name, used bytes, total bytes.
+    disks: Vec<(String, u64, u64)>,
+    /// Seconds since the machine started.
+    up: u64,
+}
+
 impl Sampler {
-    /// One `vitals` message. Blocks for a tenth of a second when there is
-    /// no recent reading to measure processor use against.
-    pub fn snapshot(&mut self) -> String {
+    /// Blocks for a tenth of a second when there is no recent reading to
+    /// measure processor use against.
+    pub fn reading(&mut self) -> Reading {
         let stale = self.last.is_none_or(|(at, ..)| at.elapsed() > Duration::from_secs(5));
         if stale {
             self.last = cpu_times().map(|(busy, total)| (Instant::now(), busy, total));
@@ -127,65 +140,155 @@ impl Sampler {
             }
             self.last = Some((Instant::now(), busy, total));
         }
-        let mem = memory();
-        let disks: Vec<_> = disks()
-            .into_iter()
-            .map(|(name, used, total)| serde_json::json!({ "name": name, "used": used, "total": total }))
-            .collect();
-        serde_json::json!({
-            "t": "vitals",
-            "cpu": self.cpu.map(|c| (c.clamp(0.0, 100.0) * 10.0).round() / 10.0),
-            "cores": std::thread::available_parallelism().map_or(0, |n| n.get()),
-            "mem": mem.map(|(used, total)| serde_json::json!({ "used": used, "total": total })),
-            "disks": disks,
-            "up": uptime(),
-        })
-        .to_string()
+        Reading { cpu: self.cpu.map(|c| c.clamp(0.0, 100.0)), mem: memory(), disks: disks(), up: uptime() }
     }
 }
 
+/// Where a client shows a view.
+#[derive(Clone, Copy, PartialEq)]
+enum Place {
+    /// On the machine's card, in the list of machines: one line.
+    Card,
+    /// On the machine's own page: figures and meters.
+    Page,
+}
+
+impl Place {
+    fn name(self) -> &'static str {
+        match self {
+            Place::Card => "card",
+            Place::Page => "page",
+        }
+    }
+}
+
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 { "– %".into() } else { format!("{} %", (part as f64 * 100.0 / whole as f64).round()) }
+}
+
+/// "12.3 of 64.0 GB", with no decimals from 100 GB up.
+fn of_gb(used: u64, total: u64) -> String {
+    const GB: f64 = (1u64 << 30) as f64;
+    let gb = |bytes: u64| {
+        let v = bytes as f64 / GB;
+        if v < 100.0 { format!("{v:.1}") } else { format!("{v:.0}") }
+    };
+    format!("{} of {} GB", gb(used), gb(total))
+}
+
+fn duration(seconds: u64) -> String {
+    let (m, h, d) = (seconds / 60, seconds / 3600, seconds / 86400);
+    if d > 0 {
+        format!("{d}d {}h", h % 24)
+    } else if h > 0 {
+        format!("{h}h {}m", m % 60)
+    } else if m > 0 {
+        format!("{m}m {}s", seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// A reading as something to show: the client draws it as described, and
+/// knows nothing of processors or storage (docs/providers.md).
+fn view(reading: &Reading, place: Place) -> String {
+    let cpu = reading.cpu.map_or("– %".to_string(), |c| format!("{} %", c.round()));
+    let mem = reading.mem.map_or("– %".to_string(), |(used, total)| percent(used, total));
+    let (used, total) = reading.disks.iter().fold((0, 0), |(u, t), d| (u + d.1, t + d.2));
+    let storage = percent(used, total);
+    let view = match place {
+        Place::Card => serde_json::json!({
+            "items": [{
+                "kind": "text",
+                "tone": "hint",
+                "text": format!("Processor {cpu} · Memory {mem} · Storage {storage}"),
+            }],
+        }),
+        Place::Page => {
+            let meter = |label: &str, used: u64, total: u64| {
+                serde_json::json!({
+                    "label": label,
+                    "fraction": if total == 0 { 0.0 } else { used as f64 / total as f64 },
+                    "text": of_gb(used, total),
+                })
+            };
+            let meters: Vec<_> = reading
+                .mem
+                .iter()
+                .map(|(used, total)| meter("Memory", *used, *total))
+                .chain(reading.disks.iter().map(|(name, used, total)| meter(name, *used, *total)))
+                .collect();
+            serde_json::json!({
+                "title": "This machine",
+                "aside": format!("up {}", duration(reading.up)),
+                "items": [
+                    { "kind": "tiles", "tiles": [
+                        { "label": "Processor", "value": cpu },
+                        { "label": "Memory", "value": mem },
+                        { "label": "Storage", "value": storage },
+                    ] },
+                    { "kind": "meters", "meters": meters },
+                ],
+            })
+        }
+    };
+    serde_json::json!({ "t": "view", "place": place.name(), "view": view }).to_string()
+}
+
+/// How a channel that watches the page is opened again by the provider
+/// after this one.
+const WATCHING: &str = r#"{"watch":"page"}"#;
+
 /// Run the provider until the core goes away.
+///
+/// A client asks for a view (`{"t":"view","place":"card"}`) and gets one.
+/// Asked for the page's, it gets one a second from then on, for as long as
+/// its channel is open. Nothing is read while nobody asks.
 pub fn run(input: File, core: Arc<provider::ToCore>) {
     #[derive(Default)]
     struct Channels {
-        all: Vec<u64>,
-        /// Opened since the last reading: they get one straight away.
-        new: Vec<u64>,
+        /// Watching the page.
+        watching: Vec<u64>,
+        /// Asked since the last reading: they get a view straight away.
+        asked: Vec<(u64, Place)>,
         gone: bool,
     }
+    core.about(r#"{"places":["card","page"]}"#);
     let state: Arc<(Mutex<Channels>, Condvar)> = Arc::default();
     let sampler = {
         let state = state.clone();
+        let core = core.clone();
         std::thread::spawn(move || {
             let (lock, wake) = &*state;
             let mut sampler = Sampler::default();
             let mut ticked = Instant::now() - Duration::from_secs(1);
             loop {
                 let mut channels = lock.lock().unwrap();
-                while channels.all.is_empty() && !channels.gone {
+                while channels.watching.is_empty() && channels.asked.is_empty() && !channels.gone {
                     channels = wake.wait(channels).unwrap();
                 }
                 let due = ticked + Duration::from_secs(1);
-                while channels.new.is_empty() && !channels.gone && Instant::now() < due {
+                while channels.asked.is_empty() && !channels.gone && Instant::now() < due {
                     channels = wake.wait_timeout(channels, due - Instant::now()).unwrap().0;
                 }
                 if channels.gone {
                     return;
                 }
-                let to = if Instant::now() >= due {
+                let mut to = std::mem::take(&mut channels.asked);
+                if Instant::now() >= due && !channels.watching.is_empty() {
                     ticked = Instant::now();
-                    channels.new.clear();
-                    channels.all.clone()
-                } else {
-                    std::mem::take(&mut channels.new)
-                };
+                    // Everyone watching, once each.
+                    to.retain(|(_, place)| *place != Place::Page);
+                    to.extend(channels.watching.iter().map(|c| (*c, Place::Page)));
+                }
                 drop(channels);
                 if to.is_empty() {
                     continue;
                 }
-                let text = sampler.snapshot();
-                for channel in to {
-                    core.text(channel, &text);
+                let reading = sampler.reading();
+                let (card, page) = (view(&reading, Place::Card), view(&reading, Place::Page));
+                for (channel, place) in to {
+                    core.text(channel, if place == Place::Card { &card } else { &page });
                 }
             }
         })
@@ -193,20 +296,75 @@ pub fn run(input: File, core: Arc<provider::ToCore>) {
     provider::serve(input, |event| {
         let (lock, wake) = &*state;
         let mut channels = lock.lock().unwrap();
+        let watch = |channels: &mut Channels, channel: u64| {
+            if !channels.watching.contains(&channel) {
+                channels.watching.push(channel);
+            }
+            channels.asked.push((channel, Place::Page));
+        };
         match event {
-            provider::Event::Open(channel) => {
-                channels.all.push(channel);
-                channels.new.push(channel);
+            provider::Event::Open(channel, how) => {
+                if how.contains(r#""watch""#) {
+                    watch(&mut channels, channel);
+                }
             }
             provider::Event::Close(channel) => {
-                channels.all.retain(|c| *c != channel);
-                channels.new.retain(|c| *c != channel);
+                channels.watching.retain(|c| *c != channel);
+                channels.asked.retain(|(c, _)| *c != channel);
             }
-            provider::Event::Text(..) => return,
+            provider::Event::Text(channel, text) => {
+                let ask = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
+                match (ask["t"].as_str(), ask["place"].as_str()) {
+                    (Some("view"), Some("card")) => channels.asked.push((channel, Place::Card)),
+                    (Some("view"), Some("page")) => {
+                        watch(&mut channels, channel);
+                        core.state(channel, WATCHING);
+                    }
+                    _ => {
+                        core.text(channel, r#"{"t":"error","why":"vitals only shows: ask for a view of card or page"}"#);
+                        return;
+                    }
+                }
+            }
         }
         wake.notify_all();
     });
     state.0.lock().unwrap().gone = true;
     state.1.notify_all();
     let _ = sampler.join();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reading_is_described_for_the_card_and_for_the_page() {
+        const GB: u64 = 1 << 30;
+        let reading = Reading {
+            cpu: Some(12.4),
+            mem: Some((16 * GB, 64 * GB)),
+            disks: vec![("C:".into(), 300 * GB, 500 * GB), ("D:".into(), 0, 0)],
+            up: 3 * 3600 + 12 * 60,
+        };
+        let card: serde_json::Value = serde_json::from_str(&view(&reading, Place::Card)).unwrap();
+        assert_eq!(card["place"], "card");
+        assert_eq!(card["view"]["items"][0]["text"], "Processor 12 % · Memory 25 % · Storage 60 %");
+
+        let page: serde_json::Value = serde_json::from_str(&view(&reading, Place::Page)).unwrap();
+        assert_eq!(page["view"]["aside"], "up 3h 12m");
+        assert_eq!(page["view"]["items"][0]["tiles"][1]["value"], "25 %");
+        let meters = &page["view"]["items"][1]["meters"];
+        assert_eq!(meters[0]["text"], "16.0 of 64.0 GB");
+        assert_eq!(meters[1]["label"], "C:");
+        assert_eq!(meters[1]["text"], "300 of 500 GB");
+        assert_eq!(meters[1]["fraction"], 0.6);
+        // An empty drive, and a machine that cannot say: no division by nothing.
+        assert_eq!(meters[2]["fraction"], 0.0);
+        let unknown = Reading { cpu: None, mem: None, disks: Vec::new(), up: 59 };
+        let card: serde_json::Value = serde_json::from_str(&view(&unknown, Place::Card)).unwrap();
+        assert_eq!(card["view"]["items"][0]["text"], "Processor – % · Memory – % · Storage – %");
+        assert_eq!(duration(59), "59s");
+        assert_eq!(duration(2 * 86400 + 5 * 3600), "2d 5h");
+    }
 }
