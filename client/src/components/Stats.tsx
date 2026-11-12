@@ -1,19 +1,21 @@
-import { createEffect, createSignal, For, onCleanup, onMount } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { setStats, toggleStatsPin } from '../actions';
 import { cv, focusScreen } from '../screen';
+import { send } from '../connection';
+import { current, HOSTED } from '../hosted';
 import { cfg, live, sleeping, statsMode, statsPinned } from '../state';
 import { first, L, opened, RATE_SECONDS, rate, S, shown } from '../stats';
 import { bytes, duration, ms, perSec, store } from '../util';
+import { dropPages, pageProviders, pages, type ProviderAbout } from '../views';
 import { Icon } from './Icons';
+import { Figure, Items } from './View';
+
+/** Served by a host: that host's providers, which it says once. */
+const [own, setOwn] = createSignal<{ providers?: ProviderAbout[] } | null>(null);
+if (!HOSTED) fetch('/.well-known/peek').then(r => r.json()).then(setOwn, () => {});
 
 /** Title bar height: the part of the panel always kept inside the window. */
 const HEAD = 40;
-
-/** A value with its unit set smaller, for the stat tiles. */
-function Figure(props: { text: string }) {
-  const parts = () => props.text.split(' ');
-  return <>{parts()[0]}<small>{parts().slice(1).join(' ')}</small></>;
-}
 
 function niceScale(peakKb: number) {
   const [unit, div] = peakKb >= 1024 ? ['MB/s', 1024] : ['KB/s', 1];
@@ -184,6 +186,22 @@ export function Stats() {
 
   // Redraw every second, on hover, and when the panel opens or is pinned.
   createEffect(() => { shown(); hoverX(); statsPinned(); if (statsMode() === 'open') { place(); drawChart(); } });
+  // While the panel shows on a live connection, watch what the machine's
+  // providers have for it: each sends its view now, and again as it changes.
+  const watched = createMemo(
+    () => live() && statsMode() !== 'off' ? pageProviders(HOSTED ? current() : own()) : [],
+    [], { equals: (a, b) => a.join() === b.join() });
+  createEffect(() => {
+    const names = watched();
+    for (const p of names) {
+      send({ t: 'open', p });
+      send({ t: 'to', p, m: { t: 'view', place: 'page' } });
+    }
+    onCleanup(() => {
+      for (const p of names) send({ t: 'close', p });
+      dropPages();
+    });
+  });
 
   return (
     <div id="stats" class="panel" ref={box}
@@ -205,6 +223,17 @@ export function Stats() {
           <div class="tile"><div class="k">Latency</div><div class="v">
             <Figure text={total() == null ? '– ms' : ms(total())} /></div></div>
         </div>
+
+        {/* What the machine's other providers ask to be shown here (views.ts). */}
+        <For each={Object.keys(pages)}>{name => (
+          <div class="section">
+            <Show when={pages[name]?.title}>
+              <div class="section-title"><span>{pages[name].title}</span><span class="aside">{pages[name].aside}</span></div>
+            </Show>
+            <Items items={pages[name]?.items ?? []}
+              onPress={item => { if (!item.confirm || confirm(item.confirm)) send({ t: 'to', p: name, m: { t: 'do', do: item.do } }); }} />
+          </div>
+        )}</For>
 
         <div class="section">
           <div class="section-title">

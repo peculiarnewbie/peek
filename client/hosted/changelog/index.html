@@ -54,7 +54,16 @@
 <p class="lead">What changed in each version of peek. To update a machine, run
 <code>npm update -g @peculiarnewbie/peek</code> there, then <code>peek install</code> again with the same flags.</p>
 
-<h2 id="0.2.1"><a href="#0.2.1">0.2.1</a><span class="date">12 November 2026</span><span class="latest">Latest</span></h2>
+<h2 id="0.2.2"><a href="#0.2.2">0.2.2</a><span class="date">12 November 2026</span><span class="latest">Latest</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>Share Tailscale Serve with another app:</strong> <code>peek pair --serve-port 8443</code> (or
+    <code>10000</code>) reaches peek on that HTTPS port when another app, like T3 Code, has 443. Pairing links
+    and codes name the port, and later <code>peek pair</code> runs find it by themselves. Without the flag
+    nothing changes.</li>
+</ul>
+
+<h2 id="0.2.1"><a href="#0.2.1">0.2.1</a><span class="date">12 November 2026</span></h2>
 <h3>New</h3>
 <ul>
   <li><strong>One command to try peek:</strong> <code>npx @peculiarnewbie/peek pair</code>. If peek is not running

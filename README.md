@@ -262,12 +262,16 @@ peek install --service
 ```
 
 This installs a Windows service named `peek` in place of the logon task. The
-service runs as SYSTEM in session 0, which has no screen, so it starts peek
-in the session at the console, also as SYSTEM, and starts it again in the
-new one when someone signs out or switches users. That peek follows Windows
-onto the secure desktop and back, so the login screen, the lock screen and
-UAC prompts show up and take input like anything else.
+service runs as SYSTEM in session 0, which has no screen. It listens there
+and keeps every connection, and starts a second peek, also as SYSTEM, in the
+session at the console to capture the screen and take input. That one
+follows Windows onto the secure desktop and back, so the login screen, the
+lock screen and UAC prompts show up and take input like anything else.
 
+- When someone signs out or switches users, the service starts the second
+  peek again in the new session. Connections stay open: the picture stops
+  for a few seconds and comes back on the login screen, with nothing to
+  reconnect.
 - peek is copied to `%ProgramFiles%\peek\peek.exe`, where only
   administrators can replace what SYSTEM runs.
 - Its token, paired browsers and log (`peek.log`) are in
@@ -379,6 +383,14 @@ Serve. On Linux, Tailscale may first ask for
 `sudo tailscale set --operator=$USER`. The first connection to a machine can
 take a few seconds while Tailscale fetches its certificate.
 
+Serve's HTTPS port 443 can only go to one app. If another one has it (T3
+Code's `t3 pair --tailscale` wants it too), `peek pair` says so and leaves it
+alone; `peek pair --serve-port 8443` (or `10000`, the other ports Serve
+offers) puts peek there instead, at `https://<machine>.<tailnet>.ts.net:8443`.
+peek finds the port Serve uses for it by itself, so pairing links and codes
+name it, and later `peek pair` runs, `peek install` and the service need no
+flag. A browser paired before the move needs pairing again.
+
 Then pair each browser with each machine:
 
 - `peek pair` on the machine prints a link and a QR code with a one-time
@@ -411,6 +423,28 @@ deploy:hosted` (the script runs `cf` under Node, which it needs; Bun cannot
 load its config). To run your own copy, set your worker name and domain in
 `client/cloudflare.config.ts`, deploy, and start peek with `--web
 https://your.domain`.
+
+## Beyond the screen: providers
+
+A machine can offer more than its screen, through providers: programs peek
+starts beside itself. A provider says what to show and the client draws
+it; none of a provider's code runs in the browser. Two come with peek:
+
+- **Vitals.** Processor, memory and storage: one line on each machine's
+  card in the hosted client, and figures in the stats panel.
+- **Power** (Windows). Sleep on a machine's card, and Wake while it is
+  asleep. A sleeping machine runs nothing, so another paired machine on
+  the same network sends the Wake-on-LAN packet; without one online, and a
+  wired card Windows lets wake the machine, Sleep is not offered. The
+  first sleep is a test: the machine sleeps and is woken 15 seconds later.
+  If no packet wakes it, it wakes itself after two minutes, where its
+  power settings allow wake timers, and the card says what to check.
+
+You can add your own: `peek provider add <name> -- <command>`, then restart
+peek. It runs as the same user as peek. [docs/providers.md](docs/providers.md)
+has what a provider and a client say to each other, and
+`examples/provider/hello.mjs` is one in a single file. The parts of that
+which let a provider know of your other machines are provisional.
 
 ## How it works
 
@@ -489,9 +523,14 @@ With `--no-token`:
 ## Layout
 
 ```
-src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
-src/server.rs             HTTP + WebSocket, authentication, pairing endpoints
+src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs` / `provider`
+src/server.rs             HTTP + WebSocket, authentication, pairing endpoints, requests and messages for providers
 src/screen.rs             a client's session with the screen: its view, input dispatch, clipboard watcher
+src/provider.rs           providers, each a process of its own: the pipe protocol, the core's end, starting them again
+src/vitals.rs             the vitals provider: processor, memory and storage, as views
+src/power.rs              the power provider: sleep, sending Wake-on-LAN for another machine, and its cards
+docs/providers.md         what a provider and a client say to each other, and how to add a provider
+examples/provider/        a provider in one file
 src/pairing.rs            one-time codes, paired browsers' token hashes
 src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task, service or systemd unit
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
@@ -505,6 +544,7 @@ client/src/input.ts       mouse, keyboard and clipboard to the host
 client/src/state.ts       settings and UI state, as Solid signals
 client/src/components/    toolbar, settings, stats panel, overlays, machine list, pairing
 client/src/hosted.ts      the hosted client: paired machines, pairing, reachability
+client/src/views.ts       what providers ask to be shown: asking them, records carried between machines
 client/cloudflare.config.ts  deploys the hosted client to Cloudflare (`cf deploy --mode hosted`)
 npm/                      the npm package: its manifest and the launcher that picks a binary
 scripts/npm-release.mjs   builds every platform, packs the npm package, stages it

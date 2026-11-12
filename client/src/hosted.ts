@@ -5,6 +5,7 @@
 // own. Nothing about the machines leaves this browser.
 import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
+import { dropCards, onAgain, refreshCards, type ProviderAbout } from './views';
 import { store } from './util';
 
 export const HOSTED = import.meta.env.MODE === 'hosted';
@@ -13,10 +14,16 @@ export interface Machine {
   /** The host's own id, so a machine keeps its place whatever it is reached at. */
   id: string;
   name: string;
-  /** Its Tailscale HTTPS name, e.g. hp-book.tail1234.ts.net. */
+  /** Its Tailscale HTTPS name, e.g. hp-book.tail1234.ts.net, with a port
+   *  when Tailscale Serve passes peek on one other than 443 (`:8443`). */
   host: string;
   token: string;
   added: number;
+  /** Its providers, as it last said (see views.ts). */
+  providers?: ProviderAbout[];
+  /** What each of its providers lets the same provider on the other
+   *  machines know of it, kept for while it is away. */
+  records?: Record<string, unknown>;
 }
 
 function load(): Machine[] {
@@ -38,7 +45,7 @@ function setMachines(list: Machine[]) {
 // the list. The site's own pages (/docs/, /changelog/, /pair) sit beside
 // /screen/, so no machine's name can take one of their addresses.
 const SCREEN = '/screen/';
-const slug = (m: Machine) => m.host.split('.')[0].toLowerCase();
+const slug = (m: Machine) => m.host.split(/[.:]/)[0].toLowerCase();
 export const screenPath = (m: Machine) => SCREEN + slug(m);
 // Until 0.2.0 a machine's page was `/<name>` (or `/<id>`); bookmarks of one
 // still lead to it.
@@ -66,6 +73,10 @@ export function forget(id: string) {
   setMachines(machines().filter(m => m.id !== id));
 }
 
+export function updateMachine(id: string, patch: Partial<Machine>) {
+  setMachines(machines().map(m => m.id === id ? { ...m, ...patch } : m));
+}
+
 // ---- Chrome's Local Network Access ----
 // Chrome asks before a public site may reach addresses like Tailscale's
 // 100.x.y.z; once blocked, every request fails without saying why.
@@ -86,23 +97,44 @@ export const BLOCKED_HELP = 'This browser is blocking the site from reaching dev
 export type Reach = 'checking' | 'up' | 'down';
 export const [reach, setReach] = createStore<Record<string, Reach>>({});
 
-interface About { id: string; name: string; protocol: number }
+interface About { id: string; name: string; protocol: number; providers?: ProviderAbout[] }
 
-async function about(host: string, ms = 5000): Promise<About> {
+/** A machine's providers as it says them now, kept if they changed. */
+export function learn(m: Machine, a: About) {
+  const providers = (Array.isArray(a.providers) ? a.providers : []).filter(p => p && typeof p.name === 'string');
+  if (JSON.stringify(providers) !== JSON.stringify(m.providers ?? [])) updateMachine(m.id, { providers });
+}
+
+export async function about(host: string, ms = 5000): Promise<About> {
   const r = await fetch(`https://${host}/.well-known/peek`, { cache: 'no-store', signal: AbortSignal.timeout(ms) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
-/** Whether each machine answers, for the dots in the list. */
+/** Whether each machine answers, for the dots in the list, and then what
+ *  the ones that do have to show on the cards. */
 export function probeAll() {
-  for (const m of machines()) {
+  const probes = machines().map(m => {
     if (!reach[m.id]) setReach(m.id, 'checking');
-    about(m.host, 4000)
-      .then(a => setReach(m.id, a.id === m.id ? 'up' : 'down'))
-      .catch(() => setReach(m.id, 'down'));
-  }
+    return about(m.host, 4000)
+      .then(a => {
+        if (a.id !== m.id) throw new Error('another machine answers there');
+        setReach(m.id, 'up');
+        learn(m, a);
+      })
+      .catch(() => {
+        setReach(m.id, 'down');
+        dropCards(m.id);
+      });
+  });
+  // Once it is known of every machine: a provider is told which of the
+  // others are there, and "not yet known" would read as "away".
+  Promise.all(probes).then(() => {
+    for (const m of machines()) if (reach[m.id] === 'up') refreshCards(m);
+  });
 }
+// A provider with something under way has every machine looked at again.
+onAgain(probeAll);
 
 // ---- pairing ----
 /** A host and code from a pairing link (`peek pair` prints one), if it is one. */
