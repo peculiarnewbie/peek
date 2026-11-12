@@ -13,7 +13,8 @@ export interface Machine {
   /** The host's own id, so a machine keeps its place whatever it is reached at. */
   id: string;
   name: string;
-  /** Its Tailscale HTTPS name, e.g. hp-book.tail1234.ts.net. */
+  /** Its Tailscale HTTPS name, e.g. hp-book.tail1234.ts.net, with a port
+   *  when Tailscale Serve passes peek on one other than 443 (`:8443`). */
   host: string;
   token: string;
   added: number;
@@ -38,7 +39,7 @@ function setMachines(list: Machine[]) {
 // the list. The site's own pages (/docs/, /changelog/, /pair) sit beside
 // /screen/, so no machine's name can take one of their addresses.
 const SCREEN = '/screen/';
-const slug = (m: Machine) => m.host.split('.')[0].toLowerCase();
+const slug = (m: Machine) => m.host.split(/[.:]/)[0].toLowerCase();
 export const screenPath = (m: Machine) => SCREEN + slug(m);
 // Until 0.2.0 a machine's page was `/<name>` (or `/<id>`); bookmarks of one
 // still lead to it.
