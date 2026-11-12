@@ -112,7 +112,13 @@ struct Args {
 enum Command {
     /// Show a one-time code that pairs a browser with this machine. If peek
     /// is not running yet, this starts it here and keeps it running
-    Pair,
+    Pair {
+        /// The HTTPS port Tailscale Serve passes to peek on: 443, 8443 or
+        /// 10000. For when another app has 443. Without it, peek keeps the
+        /// port it already has, or takes 443
+        #[arg(long, value_name = "PORT", value_parser = serve_port)]
+        serve_port: Option<u16>,
+    },
     /// List the browsers paired with this machine
     Clients,
     /// Unpair a browser, by the id `peek clients` shows
@@ -290,59 +296,65 @@ fn local_request_with(args: &Args, method: &str, path: &str, body: &str, secret:
     Ok((status, body))
 }
 
-/// What Tailscale Serve does with HTTPS on this machine (port 443).
-enum Serve {
-    /// It forwards to peek.
-    Peek,
-    /// It forwards somewhere else, which we leave alone.
-    Other(String),
-    Unset,
+/// `--serve-port`: one of the HTTPS ports Tailscale Serve offers.
+fn serve_port(arg: &str) -> Result<u16, String> {
+    arg.parse()
+        .ok()
+        .filter(|port| pairing::SERVE_PORTS.contains(port))
+        .ok_or_else(|| "Tailscale Serve offers HTTPS on 443, 8443 and 10000 only".into())
 }
 
-fn serve_state(tailscale: &str, host: &str, target: &str) -> Result<Serve, String> {
-    let out = std::process::Command::new(tailscale)
-        .args(["serve", "status", "--json"])
-        .output()
-        .map_err(|e| format!("could not run tailscale: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("`tailscale serve status` failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+/// The `tailscale serve` arguments that pass HTTPS `port` to `target`; the
+/// bare form for 443, as peek has always run it.
+fn serve_args(port: u16, target: &str) -> Vec<String> {
+    let mut args = vec!["serve".to_string(), "--bg".into()];
+    if port != 443 {
+        args.push(format!("--https={port}"));
     }
-    let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-    let web = &status["Web"][format!("{host}:443")]["Handlers"];
-    if let Some(handlers) = web.as_object() {
-        let proxy = |h: &serde_json::Value| h["Proxy"].as_str().unwrap_or("").trim_end_matches('/').to_string();
-        return Ok(match handlers.get("/").map(proxy) {
-            Some(p) if p == target || p == target.replace("127.0.0.1", "localhost") => Serve::Peek,
-            Some(p) if !p.is_empty() => Serve::Other(p),
-            _ => Serve::Other(format!("{} path(s)", handlers.len())),
-        });
-    }
-    if !status["TCP"]["443"].is_null() {
-        return Ok(Serve::Other("a TCP forward".into()));
-    }
-    Ok(Serve::Unset)
+    args.push(target.into());
+    args
 }
 
 /// Make Tailscale Serve pass `https://<this machine>.ts.net` to peek, which
-/// is how the hosted client reaches it. Tailscale itself asks for whatever
-/// is missing (Serve and HTTPS on the tailnet, or permission on Linux), so
-/// its output goes straight to the terminal.
-fn ensure_serve(args: &Args, tailscale: &str, host: &str) -> Result<(), String> {
-    let ip = if args.bind.is_unspecified() || args.bind.is_loopback() { IpAddr::from([127, 0, 0, 1]) } else { args.bind };
-    let target = format!("http://{}", SocketAddr::new(ip, args.port));
-    match serve_state(tailscale, host, &target)? {
+/// is how the hosted client reaches it: on HTTPS port `want`, or with none
+/// given, wherever it already does, else 443. Tailscale itself asks for
+/// whatever is missing (Serve and HTTPS on the tailnet, or permission on
+/// Linux), so its output goes straight to the terminal.
+fn ensure_serve(args: &Args, tailscale: &str, host: &str, want: Option<u16>) -> Result<(), String> {
+    use pairing::Serve;
+    let target = pairing::serve_target(args.bind, args.port);
+    let status = pairing::serve_status(tailscale)?;
+    let port = match want {
+        Some(port) => port,
+        None if pairing::peek_port(&status, host, &target).is_some() => return Ok(()),
+        None => 443,
+    };
+    match pairing::serve_on(&status, host, port, &target) {
         Serve::Peek => return Ok(()),
         Serve::Other(what) => {
-            return Err(format!(
-                "Tailscale Serve already uses HTTPS on this machine (for {what}), so peek leaves it alone. \
-                 To give it to peek: tailscale serve --bg {target}"
-            ))
+            let free: Vec<String> = pairing::SERVE_PORTS
+                .into_iter()
+                .filter(|&p| p != port && pairing::serve_on(&status, host, p, &target) == Serve::Unset)
+                .map(|p| p.to_string())
+                .collect();
+            let mut why = format!("Tailscale Serve already uses HTTPS port {port} on this machine (for {what}), so peek leaves it alone.");
+            if let Some(first) = free.first() {
+                why += &format!(
+                    "\nTo use port {} instead: peek pair --serve-port {first}",
+                    free.join(if free.len() == 2 { " or " } else { ", " })
+                );
+            }
+            why += &format!("\nTo give port {port} to peek: tailscale {}", serve_args(port, &target).join(" "));
+            return Err(why);
         }
         Serve::Unset => {}
     }
-    println!("Setting up Tailscale Serve, so browsers can reach peek at https://{host} …");
+    println!(
+        "Setting up Tailscale Serve, so browsers can reach peek at https://{} …",
+        pairing::serve_host(host, port)
+    );
     let ok = std::process::Command::new(tailscale)
-        .args(["serve", "--bg", &target])
+        .args(serve_args(port, &target))
         .status()
         .map_err(|e| format!("could not run tailscale: {e}"))?
         .success();
@@ -360,9 +372,9 @@ fn ensure_serve(args: &Args, tailscale: &str, host: &str) -> Result<(), String> 
 
 /// `peek pair`. Returns true when no peek is running here yet, so this
 /// process should start the host and show the code itself.
-fn pair(args: &Args) -> Result<bool, String> {
+fn pair(args: &Args, serve_port: Option<u16>) -> Result<bool, String> {
     match pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
-        Some((tailscale, host)) => ensure_serve(args, tailscale, &host)?,
+        Some((tailscale, host)) => ensure_serve(args, tailscale, &host, serve_port)?,
         None => {
             return Err("Tailscale is not running here, and the hosted client reaches machines through it. \
                         Start Tailscale and try again."
@@ -415,7 +427,7 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
 
 fn run_command(args: &Args, command: &Command) -> Result<(), String> {
     match command {
-        Command::Pair => unreachable!("main runs `peek pair` itself"),
+        Command::Pair { .. } => unreachable!("main runs `peek pair` itself"),
         Command::Clients => {
             let (_, body) = local_request(args, "GET", "/api/clients", "")?;
             let clients: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -507,7 +519,7 @@ fn main() {
     let mut pair_here = false;
     if let Some(command) = &args.command {
         let result = match command {
-            Command::Pair => pair(&args).map(|start| pair_here = start),
+            Command::Pair { serve_port } => pair(&args, *serve_port).map(|start| pair_here = start),
             command => run_command(&args, command),
         };
         if let Err(e) = result {
@@ -600,6 +612,7 @@ fn main() {
     let shared = Arc::new(server::Shared {
         token,
         web: web.clone(),
+        serve_target: pairing::serve_target(args.bind, args.port),
         pairing,
         view_only: args.view_only,
         clipboard: !args.no_clipboard,

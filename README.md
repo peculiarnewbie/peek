@@ -379,6 +379,14 @@ Serve. On Linux, Tailscale may first ask for
 `sudo tailscale set --operator=$USER`. The first connection to a machine can
 take a few seconds while Tailscale fetches its certificate.
 
+Serve's HTTPS port 443 can only go to one app. If another one has it (T3
+Code's `t3 pair --tailscale` wants it too), `peek pair` says so and leaves it
+alone; `peek pair --serve-port 8443` (or `10000`, the other ports Serve
+offers) puts peek there instead, at `https://<machine>.<tailnet>.ts.net:8443`.
+peek finds the port Serve uses for it by itself, so pairing links and codes
+name it, and later `peek pair` runs, `peek install` and the service need no
+flag. A browser paired before the move needs pairing again.
+
 Then pair each browser with each machine:
 
 - `peek pair` on the machine prints a link and a QR code with a one-time

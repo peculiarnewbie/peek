@@ -48,6 +48,9 @@ pub struct Shared {
     /// Origin of the hosted client (e.g. https://peek.peculiarnewbie.com),
     /// whose pages may connect with a paired token.
     pub web: Option<String>,
+    /// What Tailscale Serve passes to this peek (`pairing::serve_target`),
+    /// to find the HTTPS port it does so on.
+    pub serve_target: String,
     pub pairing: Pairing,
     pub view_only: bool,
     pub clipboard: bool,
@@ -342,7 +345,12 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         Err(e) => return serde_json::json!({ "error": e.to_string() }),
     };
     let name = pairing::machine_name();
-    let host = pairing::tailscale_name();
+    let host = pairing::tailscale_name().map(|host| {
+        // 443 unless Serve passes this peek on another port only.
+        let status = pairing::tailscale_cmd().and_then(|ts| pairing::serve_status(ts).ok()).unwrap_or_default();
+        let port = pairing::peek_port(&status, &host, &shared.serve_target).unwrap_or(443);
+        pairing::serve_host(&host, port)
+    });
     let link = match (&shared.web, &host) {
         (Some(web), Some(host)) => Some(pairing::pair_link(web, host, &name, &code)),
         _ => None,
@@ -813,6 +821,8 @@ mod tests {
             ("[fd7a:115c:a1e0::1]:9182", "http://[fd7a:115c:a1e0::1]:9182"),
             ("desktop-work-ar:9182", "http://DESKTOP-WORK-AR:9182"),
             ("desktop-work-ar.tail1234.ts.net:9182", "http://desktop-work-ar.tail1234.ts.net:9182"),
+            // Through Tailscale Serve on a port other than 443.
+            ("desktop-work-ar.tail1234.ts.net:8443", "https://desktop-work-ar.tail1234.ts.net:8443"),
             ("localhost:9182", "http://localhost:9182"),
         ] {
             assert!(origin_ok(&headers(host, Some(origin)), true), "{host} from {origin}");
