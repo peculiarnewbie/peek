@@ -44,6 +44,18 @@ export const [clipboardOn, setClipboardOn] = createSignal(false);
 /** The window in front on the host is elevated and ignores our input. */
 export const [blocked, setBlocked] = createSignal(false);
 
+/** What the machine is doing, from the host's vitals provider. */
+export interface Vitals {
+  cpu: number | null;
+  cores: number;
+  mem: { used: number; total: number } | null;
+  disks: { name: string; used: number; total: number }[];
+  /** Seconds since the machine started. */
+  up: number;
+}
+/** Null until the first reading, and from a host older than 0.3.0. */
+export const [vitals, setVitals] = createSignal<Vitals | null>(null);
+
 // Connection.
 export const [live, setLive] = createSignal(false);
 /** Centred status card; empty hides it. */

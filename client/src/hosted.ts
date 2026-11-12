@@ -5,6 +5,7 @@
 // own. Nothing about the machines leaves this browser.
 import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
+import { refreshPower, type Power } from './power';
 import { store } from './util';
 
 export const HOSTED = import.meta.env.MODE === 'hosted';
@@ -17,6 +18,10 @@ export interface Machine {
   host: string;
   token: string;
   added: number;
+  /** What it said it can do for sleep and wake, when last online. */
+  power?: Power;
+  /** A wake failed since it was last online; it is told when it is next. */
+  wakeFailed?: boolean;
 }
 
 function load(): Machine[] {
@@ -66,6 +71,10 @@ export function forget(id: string) {
   setMachines(machines().filter(m => m.id !== id));
 }
 
+export function updateMachine(id: string, patch: Partial<Machine>) {
+  setMachines(machines().map(m => m.id === id ? { ...m, ...patch } : m));
+}
+
 // ---- Chrome's Local Network Access ----
 // Chrome asks before a public site may reach addresses like Tailscale's
 // 100.x.y.z; once blocked, every request fails without saying why.
@@ -86,9 +95,9 @@ export const BLOCKED_HELP = 'This browser is blocking the site from reaching dev
 export type Reach = 'checking' | 'up' | 'down';
 export const [reach, setReach] = createStore<Record<string, Reach>>({});
 
-interface About { id: string; name: string; protocol: number }
+interface About { id: string; name: string; protocol: number; providers?: string[] }
 
-async function about(host: string, ms = 5000): Promise<About> {
+export async function about(host: string, ms = 5000): Promise<About> {
   const r = await fetch(`https://${host}/.well-known/peek`, { cache: 'no-store', signal: AbortSignal.timeout(ms) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
@@ -99,7 +108,10 @@ export function probeAll() {
   for (const m of machines()) {
     if (!reach[m.id]) setReach(m.id, 'checking');
     about(m.host, 4000)
-      .then(a => setReach(m.id, a.id === m.id ? 'up' : 'down'))
+      .then(a => {
+        setReach(m.id, a.id === m.id ? 'up' : 'down');
+        if (a.id === m.id && a.providers?.includes('power')) refreshPower(m);
+      })
       .catch(() => setReach(m.id, 'down'));
   }
 }

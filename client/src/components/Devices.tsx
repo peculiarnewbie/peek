@@ -7,6 +7,7 @@ import {
   BLOCKED_HELP, cleanHost, current, forget, localAccess, machines, navigate, openMachine, pair, parseLink,
   probeAll, reach, screenPath, type Machine,
 } from '../hosted';
+import { doing, offer, sleep, wake, waker } from '../power';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
 import { Icon } from './Icons';
@@ -86,11 +87,49 @@ function Card(props: { m: Machine }) {
         <span class="dstate"><span class="mdot" classList={{ up: state() === 'up', down: state() === 'down' }} />
           {STATUS[state()]}</span>
       </a>
+      <Power m={props.m} up={state() === 'up'} down={state() === 'down'} />
       <button class="dforget tb icon" tabIndex={-1} title={`Forget ${props.m.name}`}
         onClick={() => { if (confirm(`Forget ${props.m.name}? Pairing it again needs a new code.`)) forget(props.m.id); }}>
         <Icon name="x" />
       </button>
     </div>
+  );
+}
+
+/** Sleep and wake, under a machine's card: what is under way, or what it offers. */
+function Power(props: { m: Machine; up: boolean; down: boolean }) {
+  const what = () => offer(props.m);
+  const testSleep = (by: Machine) => {
+    if (confirm(`${props.m.name} will go to sleep, and ${by.name} will try to wake it about 15 seconds later.
+
+` +
+      'If waking does not work, someone will have to press its power button. Go ahead?')) sleep(props.m, true);
+  };
+  const plainSleep = (by: Machine) => {
+    if (confirm(`Put ${props.m.name} to sleep? ${by.name} can wake it from here.`)) sleep(props.m, false);
+  };
+  return (
+    <Show when={doing[props.m.id]} fallback={
+      <>
+        <Show when={props.up && what()}>{o => {
+          const x = o();
+          return x.kind === 'none'
+            ? <p class="dpower hint small">{`Sleep is off: ${x.why}`}</p>
+            : <div class="dpower">
+                <button class="btn alt small" tabIndex={-1}
+                  onClick={() => x.kind === 'test' ? testSleep(x.by) : plainSleep(x.by)}>
+                  {x.kind === 'test' ? 'Test sleep and wake' : 'Sleep'}
+                </button>
+              </div>;
+        }}</Show>
+        <Show when={props.down && props.m.power?.wake && waker(props.m)}>{by => (
+          <div class="dpower">
+            <button class="btn small" tabIndex={-1} onClick={() => wake(props.m)}>Wake</button>
+            <span class="hint small">{`from ${by().name}`}</span>
+          </div>
+        )}</Show>
+      </>
+    }>{d => <p class="dpower small" classList={{ err: !!d().error, hint: !d().error, busy: d().busy }}>{d().text}</p>}</Show>
   );
 }
 

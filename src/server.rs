@@ -1,6 +1,6 @@
 //! HTTP and WebSocket front end: serves the client page, authenticates
-//! sockets, and passes what clients say to the screen: in this process
-//! (`screen`), or in a provider's (`provider`).
+//! sockets and requests, and passes what clients say to the screen (in this
+//! process, or in a provider's) and to the other providers.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -51,6 +51,10 @@ pub struct Shared {
     pub web: Option<String>,
     pub pairing: Pairing,
     pub screen: Screen,
+    /// Processor, memory and storage, sent on every socket.
+    pub vitals: Option<Arc<Link>>,
+    /// Sleep, and waking other machines (`/api/power`).
+    pub power: Option<Arc<Link>>,
     pub next_id: AtomicU64,
 }
 
@@ -74,6 +78,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/ws", get(ws))
         .route("/.well-known/peek", get(about).options(preflight))
         .route("/api/pair", post(pair).options(preflight))
+        .route("/api/power", post(power).options(preflight))
         .route("/api/pair-code", post(local_pair_code))
         .route("/api/clients", get(local_clients))
         .route("/api/clients/revoke", post(local_revoke))
@@ -268,10 +273,16 @@ async fn preflight(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Res
 /// Who this host is: the hosted client checks it before pairing, and to
 /// show which paired machines are up.
 async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    let providers: Vec<&str> = ["screen"]
+        .into_iter()
+        .chain(shared.vitals.as_ref().map(|_| "vitals"))
+        .chain(shared.power.as_ref().map(|_| "power"))
+        .collect();
     let body = serde_json::json!({
         "id": shared.pairing.host_id,
         "name": pairing::machine_name(),
         "protocol": PROTOCOL.parse::<u32>().unwrap_or(0),
+        "providers": providers,
     });
     (cors(&shared, &headers), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
         .into_response()
@@ -333,6 +344,46 @@ async fn pair(
             json(StatusCode::FORBIDDEN, serde_json::json!({ "error": "code" }))
         }
         Err(RedeemError::Busy) => json(StatusCode::TOO_MANY_REQUESTS, serde_json::json!({ "error": "busy" })),
+    }
+}
+
+/// Whether `given` lets a client in: a paired browser's token or the
+/// host's. The hosted client always needs one, even on a host started with
+/// `--no-token`.
+fn token_ok(shared: &Shared, given: &str, web: bool) -> bool {
+    let needs_token = web || shared.token.is_some();
+    !needs_token || shared.pairing.check(given).is_some() || shared.token.as_deref().is_some_and(|t| token_matches(given, t))
+}
+
+/// One request to the power provider: the request's JSON, with the token
+/// beside its fields, and the provider's answer as it gave it.
+async fn power(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
+    let cors = cors(&shared, &headers);
+    let reply = |status: StatusCode, body: String| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body)
+            .into_response()
+    };
+    let error = |status: StatusCode, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }).to_string());
+    let web = from_web(&shared, &headers);
+    // Only our own pages, and the hosted client's; requests from outside a
+    // browser carry no Origin.
+    if headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
+        return error(StatusCode::FORBIDDEN, "origin");
+    }
+    let Ok(serde_json::Value::Object(mut req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return error(StatusCode::BAD_REQUEST, "request");
+    };
+    let given = req.remove("token").and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default();
+    if !token_ok(&shared, &given, web) {
+        return error(StatusCode::FORBIDDEN, "token");
+    }
+    let Some(link) = &shared.power else {
+        return error(StatusCode::NOT_FOUND, "no power provider");
+    };
+    let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+    match link.ask(id, &serde_json::Value::Object(req).to_string()).await {
+        Some(answer) => reply(StatusCode::OK, answer),
+        None => error(StatusCode::SERVICE_UNAVAILABLE, "the power provider did not answer"),
     }
 }
 
@@ -451,9 +502,7 @@ enum CoreMsg {
 async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<String, String>, addr: SocketAddr, web: bool) {
     let given = query.get("token").map_or("", String::as_str);
     let paired = shared.pairing.check(given);
-    let host_token = shared.token.as_deref().is_some_and(|expected| token_matches(given, expected));
-    let needs_token = web || shared.token.is_some();
-    if needs_token && paired.is_none() && !host_token {
+    if !token_ok(&shared, given, web) {
         crate::log!("bad token from {}", addr.ip());
         let _ = socket
             .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_TOKEN, reason: "bad token".into() })))
@@ -472,6 +521,9 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = unbounded_channel::<Out>();
     let reply = tx.clone();
+    if let Some(vitals) = &shared.vitals {
+        vitals.open(id, &HashMap::new(), tx.clone());
+    }
     let mut session = match &shared.screen {
         Screen::Here(screen) => Some(screen::open(screen, id, &query, Arc::new(move |out| drop(tx.send(out))))),
         Screen::Provider(link) => {
@@ -536,6 +588,9 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
         (Screen::Here(screen), Some(session)) => session.close(screen),
         (Screen::Provider(link), _) => link.close(id),
         (Screen::Here(_), None) => {}
+    }
+    if let Some(vitals) = &shared.vitals {
+        vitals.close(id);
     }
     writer.abort();
     crate::log!("client disconnected: {}", addr.ip());

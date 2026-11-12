@@ -8,9 +8,11 @@ mod engine;
 mod install;
 mod pairing;
 mod platform;
+mod power;
 mod provider;
 mod screen;
 mod server;
+mod vitals;
 mod webp;
 
 use std::collections::VecDeque;
@@ -113,8 +115,8 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     service: bool,
-    /// Be the screen for a core (the Windows service starts one in the
-    /// session at the console), speaking to it on stdin and stdout
+    /// Be a provider (screen, vitals or power) for a core, speaking to it on
+    /// stdin and stdout. The core starts these itself
     #[arg(long, hide = true, value_name = "KIND")]
     provider: Option<String>,
     #[command(subcommand)]
@@ -532,12 +534,14 @@ fn core_in_service() -> Arc<provider::Link> {
     });
     let pairing = pairing::Pairing::load(&config_dir())
         .unwrap_or_else(|e| fail(format!("cannot read or store pairing data in {}: {e}", config_dir().display())));
-    let screen = provider::Link::new();
+    let screen = provider::Link::new("screen");
     let shared = Arc::new(server::Shared {
         token,
         web,
         pairing,
         screen: server::Screen::Provider(screen.clone()),
+        vitals: Some(provider::Link::spawn("vitals", Vec::new())),
+        power: Some(provider::Link::spawn("power", power_flags(&args))),
         next_id: AtomicU64::new(1),
     });
     let addr = SocketAddr::new(args.bind, args.port);
@@ -561,6 +565,11 @@ fn core_in_service() -> Arc<provider::Link> {
         })
         .unwrap_or_else(|e| fail(format!("cannot start the server thread: {e}")));
     screen
+}
+
+/// The flags the power provider needs from the core's.
+fn power_flags(args: &Args) -> Vec<String> {
+    if args.view_only { vec!["--view-only".into()] } else { Vec::new() }
 }
 
 fn main() {
@@ -613,20 +622,26 @@ fn main() {
         std::process::exit(1);
     }
 
-    // The screen for a core, which listens, keeps the settings and logs for
-    // both: this process only has the display.
+    // A provider for a core, which listens, keeps the settings and logs for
+    // both.
     if let Some(kind) = &args.provider {
-        if kind != "screen" {
+        if !matches!(kind.as_str(), "screen" | "vitals" | "power") {
             eprintln!("no provider is called {kind}");
             std::process::exit(2);
         }
         let (from_core, core) = provider::connect();
         let _ = LOG_TO_CORE.set(core.clone());
-        platform::init();
-        #[cfg(windows)]
-        platform::keep_device(args.keep_gpu);
-        let screen = screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps);
-        provider::run_screen(screen, from_core, core);
+        match kind.as_str() {
+            "vitals" => vitals::run(from_core, core),
+            "power" => power::run(from_core, core, args.view_only),
+            _ => {
+                platform::init();
+                #[cfg(windows)]
+                platform::keep_device(args.keep_gpu);
+                let screen = screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps);
+                provider::run_screen(screen, from_core, core);
+            }
+        }
         return;
     }
 
@@ -681,6 +696,8 @@ fn main() {
         web: web.clone(),
         pairing,
         screen: server::Screen::Here(screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps)),
+        vitals: Some(provider::Link::spawn("vitals", Vec::new())),
+        power: Some(provider::Link::spawn("power", power_flags(&args))),
         next_id: AtomicU64::new(1),
     });
 

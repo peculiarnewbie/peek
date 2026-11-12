@@ -98,6 +98,10 @@ body.touch #stats-sum { visibility: hidden; }
 .section-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;
   color: var(--ink-2); }
 .section-title .aside { font-size: 12px; color: var(--muted); }
+.meters { display: grid; grid-template-columns: auto 1fr auto; gap: 5px 8px; align-items: center; margin-top: 8px;
+  font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.meter { height: 6px; border-radius: 3px; overflow: hidden; background: var(--grid); }
+.meter div { height: 100%; background: var(--s1); }
 #chart-wrap { position: relative; }
 #chart { display: block; width: 100%; height: 72px; }
 .chart-foot { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; color: var(--muted); }
@@ -240,6 +244,12 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 .dhost { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dstate { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
 .dforget { position: absolute; top: 8px; right: 8px; opacity: 0; }
+.dpower { display: flex; align-items: center; gap: 10px; margin: 0; padding: 0 16px 14px; }
+p.dpower { display: block; line-height: 1.45; }
+.dpower.busy::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%;
+  background: var(--s1); vertical-align: 1px; animation: dpulse 1s ease-in-out infinite alternate; }
+@keyframes dpulse { from { opacity: .25; } }
+.btn.small { height: 28px; padding: 0 12px; font-size: 13px; }
 .dcard:hover .dforget, .dforget:focus-visible, body.touch .dforget { opacity: 1; }
 .dadd { margin-top: 18px; padding: 14px 16px 16px; }
 .dadd form { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }

@@ -496,7 +496,9 @@ With `--no-token`:
 src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
 src/server.rs             HTTP + WebSocket, authentication, pairing endpoints
 src/screen.rs             a client's session with the screen: its view, input dispatch, clipboard watcher
-src/provider.rs           the screen in a process of its own: the pipe protocol, the server's end and the screen's
+src/provider.rs           providers, each a process of its own: the pipe protocol, the core's end, starting them again
+src/vitals.rs             the vitals provider: processor, memory and storage on every socket
+src/power.rs              the power provider: sleep, and sending Wake-on-LAN for another machine
 src/pairing.rs            one-time codes, paired browsers' token hashes
 src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task, service or systemd unit
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
