@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 use std::fs;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -267,6 +268,65 @@ pub fn tailscale_name() -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The HTTPS ports Tailscale Serve offers, the default first.
+pub const SERVE_PORTS: [u16; 3] = [443, 8443, 10000];
+
+/// What Tailscale Serve should pass to a peek listening here.
+pub fn serve_target(bind: IpAddr, port: u16) -> String {
+    let ip = if bind.is_unspecified() || bind.is_loopback() { IpAddr::from([127, 0, 0, 1]) } else { bind };
+    format!("http://{}", SocketAddr::new(ip, port))
+}
+
+/// What Tailscale Serve does with one HTTPS port on this machine.
+#[derive(Debug, PartialEq)]
+pub enum Serve {
+    /// It forwards to peek.
+    Peek,
+    /// It forwards somewhere else, which we leave alone.
+    Other(String),
+    Unset,
+}
+
+/// `tailscale serve status --json`.
+pub fn serve_status(tailscale: &str) -> Result<serde_json::Value, String> {
+    let out = std::process::Command::new(tailscale)
+        .args(["serve", "status", "--json"])
+        .output()
+        .map_err(|e| format!("could not run tailscale: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("`tailscale serve status` failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(serde_json::from_slice(&out.stdout).unwrap_or_default())
+}
+
+/// What Serve does with HTTPS port `port` of `host`, per `serve_status`.
+pub fn serve_on(status: &serde_json::Value, host: &str, port: u16, target: &str) -> Serve {
+    let web = &status["Web"][format!("{host}:{port}")]["Handlers"];
+    if let Some(handlers) = web.as_object() {
+        let proxy = |h: &serde_json::Value| h["Proxy"].as_str().unwrap_or("").trim_end_matches('/').to_string();
+        return match handlers.get("/").map(proxy) {
+            Some(p) if p == target || p == target.replace("127.0.0.1", "localhost") => Serve::Peek,
+            Some(p) if !p.is_empty() => Serve::Other(p),
+            _ => Serve::Other(format!("{} path(s)", handlers.len())),
+        };
+    }
+    if !status["TCP"][port.to_string()].is_null() {
+        return Serve::Other("a TCP forward".into());
+    }
+    Serve::Unset
+}
+
+/// The HTTPS port Serve passes to peek on, 443 if it does on several.
+pub fn peek_port(status: &serde_json::Value, host: &str, target: &str) -> Option<u16> {
+    SERVE_PORTS.into_iter().find(|&port| serve_on(status, host, port, target) == Serve::Peek)
+}
+
+/// Where the hosted client reaches peek: the Tailscale name, with the port
+/// when Serve passes peek on one other than 443.
+pub fn serve_host(name: &str, port: u16) -> String {
+    if port == 443 { name.to_string() } else { format!("{name}:{port}") }
+}
+
 /// The link that pairs a browser through the hosted client.
 pub fn pair_link(web: &str, host: &str, name: &str, code: &str) -> String {
     let enc = |s: &str| -> String {
@@ -327,5 +387,37 @@ mod tests {
     fn links_carry_the_code_in_the_fragment() {
         let link = pair_link("https://peek.example.com", "hp-book.tail1.ts.net", "hp book", "ABCDEFGHJKLM");
         assert_eq!(link, "https://peek.example.com/pair?host=hp-book.tail1.ts.net&name=hp%20book#code=ABCD-EFGH-JKLM");
+    }
+
+    #[test]
+    fn links_name_a_serve_port_other_than_443() {
+        let host = serve_host("hp-book.tail1.ts.net", 8443);
+        assert_eq!(serve_host("hp-book.tail1.ts.net", 443), "hp-book.tail1.ts.net");
+        let link = pair_link("https://peek.example.com", &host, "hp", "ABCDEFGHJKLM");
+        assert_eq!(link, "https://peek.example.com/pair?host=hp-book.tail1.ts.net%3A8443&name=hp#code=ABCD-EFGH-JKLM");
+    }
+
+    #[test]
+    fn serve_status_per_port() {
+        let host = "hp-book.tail1.ts.net";
+        let target = serve_target("0.0.0.0".parse().unwrap(), 9182);
+        assert_eq!(target, "http://127.0.0.1:9182");
+        // As T3 Code leaves it on 443, with peek moved to 8443.
+        let status = serde_json::json!({
+            "TCP": { "443": { "HTTPS": true }, "8443": { "HTTPS": true } },
+            "Web": {
+                "hp-book.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3773" } } },
+                "hp-book.tail1.ts.net:8443": { "Handlers": { "/": { "Proxy": "http://localhost:9182/" } } },
+            },
+        });
+        assert_eq!(serve_on(&status, host, 443, &target), Serve::Other("http://127.0.0.1:3773".into()));
+        assert_eq!(serve_on(&status, host, 8443, &target), Serve::Peek);
+        assert_eq!(serve_on(&status, host, 10000, &target), Serve::Unset);
+        assert_eq!(peek_port(&status, host, &target), Some(8443));
+        assert_eq!(peek_port(&status, host, "http://127.0.0.1:9183"), None);
+        // A TCP forward with no web handler still takes the port.
+        let tcp = serde_json::json!({ "TCP": { "10000": { "TCPForward": "127.0.0.1:22" } } });
+        assert_eq!(serve_on(&tcp, host, 10000, &target), Serve::Other("a TCP forward".into()));
+        assert_eq!(peek_port(&serde_json::Value::Null, host, &target), None);
     }
 }

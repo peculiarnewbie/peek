@@ -1,8 +1,8 @@
 //! HTTP and WebSocket front end: serves the client page, authenticates
-//! sockets, and passes what clients say to the screen: in this process
-//! (`screen`), or in a provider's (`provider`).
+//! sockets and requests, and passes what clients say to the screen (in this
+//! process, or in a provider's) and to the other providers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::connect_info::Connected;
-use axum::extract::{ConnectInfo, Query, Request, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -49,8 +49,17 @@ pub struct Shared {
     /// Origin of the hosted client (e.g. https://peek.peculiarnewbie.com),
     /// whose pages may connect with a paired token.
     pub web: Option<String>,
+    /// What Tailscale Serve passes to this peek (`pairing::serve_target`),
+    /// to find the HTTPS port it does so on.
+    pub serve_target: String,
     pub pairing: Pairing,
     pub screen: Screen,
+    /// Every other provider, by name: vitals, power, and whatever
+    /// `providers.json` names. The server passes requests and socket
+    /// messages on to them, and knows nothing of what they mean.
+    pub providers: BTreeMap<String, Arc<Link>>,
+    /// The host ignores what clients do: nothing that acts is passed on.
+    pub view_only: bool,
     pub next_id: AtomicU64,
 }
 
@@ -74,6 +83,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/ws", get(ws))
         .route("/.well-known/peek", get(about).options(preflight))
         .route("/api/pair", post(pair).options(preflight))
+        .route("/api/provider/{name}", post(provider).options(preflight))
         .route("/api/pair-code", post(local_pair_code))
         .route("/api/clients", get(local_clients))
         .route("/api/clients/revoke", post(local_revoke))
@@ -268,10 +278,19 @@ async fn preflight(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Res
 /// Who this host is: the hosted client checks it before pairing, and to
 /// show which paired machines are up.
 async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    // Each provider's name, with whatever it says of itself (where it has
+    // something to show, for one).
+    let mut providers = vec![serde_json::json!({ "name": "screen" })];
+    for (name, link) in &shared.providers {
+        let mut about = link.about();
+        about.insert("name".into(), name.as_str().into());
+        providers.push(about.into());
+    }
     let body = serde_json::json!({
         "id": shared.pairing.host_id,
         "name": pairing::machine_name(),
         "protocol": PROTOCOL.parse::<u32>().unwrap_or(0),
+        "providers": providers,
     });
     (cors(&shared, &headers), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
         .into_response()
@@ -336,6 +355,64 @@ async fn pair(
     }
 }
 
+/// Whether `given` lets a client in: a paired browser's token or the
+/// host's. The hosted client always needs one, even on a host started with
+/// `--no-token`.
+fn token_ok(shared: &Shared, given: &str, web: bool) -> bool {
+    let needs_token = web || shared.token.is_some();
+    !needs_token || shared.pairing.check(given).is_some() || shared.token.as_deref().is_some_and(|t| token_matches(given, t))
+}
+
+/// Whether a message to a provider asks it to act (`do`, or `peer`: the
+/// same on another machine's behalf), which a view-only host refuses for
+/// every provider alike. Looking is always allowed.
+fn acts(message: &serde_json::Value) -> bool {
+    matches!(message["t"].as_str(), Some("do" | "peer"))
+}
+
+const VIEW_ONLY: &str = "this machine is view-only";
+
+/// One request to a provider: the request's JSON, with the token beside
+/// its fields, and the provider's answer as it gave it.
+async fn provider(
+    State(shared): State<Arc<Shared>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cors = cors(&shared, &headers);
+    let reply = |status: StatusCode, body: String| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body)
+            .into_response()
+    };
+    let error = |status: StatusCode, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }).to_string());
+    let web = from_web(&shared, &headers);
+    // Only our own pages, and the hosted client's; requests from outside a
+    // browser carry no Origin.
+    if headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
+        return error(StatusCode::FORBIDDEN, "origin");
+    }
+    let Ok(serde_json::Value::Object(mut req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return error(StatusCode::BAD_REQUEST, "request");
+    };
+    let given = req.remove("token").and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default();
+    if !token_ok(&shared, &given, web) {
+        return error(StatusCode::FORBIDDEN, "token");
+    }
+    let Some(link) = shared.providers.get(&name) else {
+        return error(StatusCode::NOT_FOUND, "no such provider");
+    };
+    let req = serde_json::Value::Object(req);
+    if shared.view_only && acts(&req) {
+        return error(StatusCode::FORBIDDEN, VIEW_ONLY);
+    }
+    let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+    match link.ask(id, &req.to_string()).await {
+        Some(answer) => reply(StatusCode::OK, answer),
+        None => error(StatusCode::SERVICE_UNAVAILABLE, "the provider did not answer"),
+    }
+}
+
 /// A new pairing code, with the link that uses it.
 pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
     let code = match shared.pairing.new_code() {
@@ -343,7 +420,12 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         Err(e) => return serde_json::json!({ "error": e.to_string() }),
     };
     let name = pairing::machine_name();
-    let host = pairing::tailscale_name();
+    let host = pairing::tailscale_name().map(|host| {
+        // 443 unless Serve passes this peek on another port only.
+        let status = pairing::tailscale_cmd().and_then(|ts| pairing::serve_status(ts).ok()).unwrap_or_default();
+        let port = pairing::peek_port(&status, &host, &shared.serve_target).unwrap_or(443);
+        pairing::serve_host(&host, port)
+    });
     let link = match (&shared.web, &host) {
         (Some(web), Some(host)) => Some(pairing::pair_link(web, host, &name, &code)),
         _ => None,
@@ -433,11 +515,20 @@ async fn ws(
         .on_upgrade(move |socket| client(socket, shared, query, addr, web))
 }
 
-/// The messages the server answers itself. Everything else a client says
-/// belongs to the screen.
+/// The messages the server answers itself, or passes to a provider by
+/// name. Everything else a client says belongs to the screen.
 #[derive(Deserialize)]
 #[serde(tag = "t")]
 enum CoreMsg {
+    /// Open this socket's channel on a provider. What the provider sends
+    /// on it comes back as `{"t":"from","p":name,"m":...}`.
+    #[serde(rename = "open")]
+    Open { p: String },
+    /// A message for that provider, on that channel.
+    #[serde(rename = "to")]
+    To { p: String, m: serde_json::Value },
+    #[serde(rename = "close")]
+    Close { p: String },
     /// Answered straight away, for the client's round-trip measurement.
     #[serde(rename = "ping")]
     Ping { n: u32 },
@@ -446,14 +537,26 @@ enum CoreMsg {
     PairCode,
 }
 
+/// Where a provider's messages on a socket's channel go: onto the socket,
+/// marked with the provider's name. A provider speaks JSON here; anything
+/// else of its is dropped, as there is nowhere to put the name.
+fn from_provider(name: &str, tx: tokio::sync::mpsc::UnboundedSender<Out>) -> screen::Sink {
+    let head = format!(r#"{{"t":"from","p":{},"m":"#, serde_json::Value::from(name));
+    Arc::new(move |out| {
+        if let Out::Text(text) = out
+            && serde_json::from_str::<serde::de::IgnoredAny>(&text).is_ok()
+        {
+            let _ = tx.send(Out::Text(format!("{head}{text}}}")));
+        }
+    })
+}
+
 /// `web`: opened by the hosted client, which always needs a token (a paired
 /// one, or the host's own), even on a host started with `--no-token`.
 async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<String, String>, addr: SocketAddr, web: bool) {
     let given = query.get("token").map_or("", String::as_str);
     let paired = shared.pairing.check(given);
-    let host_token = shared.token.as_deref().is_some_and(|expected| token_matches(given, expected));
-    let needs_token = web || shared.token.is_some();
-    if needs_token && paired.is_none() && !host_token {
+    if !token_ok(&shared, given, web) {
         crate::log!("bad token from {}", addr.ip());
         let _ = socket
             .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_TOKEN, reason: "bad token".into() })))
@@ -472,10 +575,12 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = unbounded_channel::<Out>();
     let reply = tx.clone();
+    // The providers this socket has a channel on.
+    let mut opened: HashSet<String> = HashSet::new();
     let mut session = match &shared.screen {
         Screen::Here(screen) => Some(screen::open(screen, id, &query, Arc::new(move |out| drop(tx.send(out))))),
         Screen::Provider(link) => {
-            link.open(id, &query, tx);
+            link.open_to(id, &query, tx);
             None
         }
     };
@@ -510,6 +615,28 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             _ => continue,
         };
         match serde_json::from_str::<CoreMsg>(&text) {
+            Ok(CoreMsg::Open { p }) => {
+                if let Some(link) = shared.providers.get(&p)
+                    && opened.insert(p.clone())
+                {
+                    link.open(id, &HashMap::new(), from_provider(&p, reply.clone()));
+                }
+            }
+            Ok(CoreMsg::To { p, m }) => {
+                if let (Some(link), true) = (shared.providers.get(&p), opened.contains(&p)) {
+                    if shared.view_only && acts(&m) {
+                        let refused = serde_json::json!({ "t": "error", "why": VIEW_ONLY });
+                        from_provider(&p, reply.clone())(Out::Text(refused.to_string()));
+                    } else {
+                        link.text(id, &m.to_string());
+                    }
+                }
+            }
+            Ok(CoreMsg::Close { p }) => {
+                if let (Some(link), true) = (shared.providers.get(&p), opened.remove(&p)) {
+                    link.close(id);
+                }
+            }
             Ok(CoreMsg::PairCode) => {
                 let shared = shared.clone();
                 let reply = reply.clone();
@@ -537,6 +664,11 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
         (Screen::Provider(link), _) => link.close(id),
         (Screen::Here(_), None) => {}
     }
+    for p in opened {
+        if let Some(link) = shared.providers.get(&p) {
+            link.close(id);
+        }
+    }
     writer.abort();
     crate::log!("client disconnected: {}", addr.ip());
 }
@@ -544,6 +676,30 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_only_host_passes_on_looking_and_not_acting() {
+        assert!(acts(&serde_json::json!({ "t": "do", "do": { "t": "anything" } })));
+        assert!(acts(&serde_json::json!({ "t": "peer", "do": {} })));
+        assert!(!acts(&serde_json::json!({ "t": "view", "place": "card" })));
+        assert!(!acts(&serde_json::json!({ "t": "info" })));
+    }
+
+    #[test]
+    fn a_providers_message_reaches_the_socket_under_its_name() {
+        let (tx, mut rx) = unbounded_channel();
+        let sink = from_provider("jobs", tx);
+        sink(Out::Text(r#"{"t":"view"}"#.into()));
+        // Not JSON, and not text: there is nowhere to put the name.
+        sink(Out::Text("3 jobs".into()));
+        sink(Out::Binary(vec![1, 2, 3]));
+        assert!(matches!(rx.try_recv(), Ok(Out::Text(t)) if t == r#"{"t":"from","p":"jobs","m":{"t":"view"}}"#));
+        assert!(rx.try_recv().is_err());
+        // And a socket's messages for a provider are the server's to route.
+        for text in [r#"{"t":"open","p":"jobs"}"#, r#"{"t":"to","p":"jobs","m":{"t":"view"}}"#, r#"{"t":"close","p":"jobs"}"#] {
+            assert!(serde_json::from_str::<CoreMsg>(text).is_ok(), "{text}");
+        }
+    }
 
     #[test]
     fn only_private_addresses_are_allowed() {
@@ -592,6 +748,8 @@ mod tests {
             ("[fd7a:115c:a1e0::1]:9182", "http://[fd7a:115c:a1e0::1]:9182"),
             ("desktop-work-ar:9182", "http://DESKTOP-WORK-AR:9182"),
             ("desktop-work-ar.tail1234.ts.net:9182", "http://desktop-work-ar.tail1234.ts.net:9182"),
+            // Through Tailscale Serve on a port other than 443.
+            ("desktop-work-ar.tail1234.ts.net:8443", "https://desktop-work-ar.tail1234.ts.net:8443"),
             ("localhost:9182", "http://localhost:9182"),
         ] {
             assert!(origin_ok(&headers(host, Some(origin)), true), "{host} from {origin}");
