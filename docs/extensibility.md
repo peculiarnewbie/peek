@@ -156,8 +156,8 @@ runs where there is no display and starts the whole of peek, listener
 included, in the session at the console. So every sign-out and switch of
 user ends that peek, and with it the port and every connection. With the
 core in the service and only the screen provider started in the session,
-the listener would stay up through both. The spike built this and a
-connection outlived its provider; a real sign-out has not been tried.
+the listener would stay up through both. The spike built this, and a
+connection outlived a sign-out.
 
 What the screen requires of the boundary:
 
@@ -343,9 +343,15 @@ itself before it does, so the provider is born holding them.
   the one place the core looks inside a message meant for a provider.
 - The provider is sent the service's flags, the log file among them, so
   its lines are in the same log.
-- Not yet tried: what the handover is for. A sign-out or a switch of
-  user moves the console to another session, and the same code should
-  start a provider there.
+- A connection outlived a sign-out and the sign-in after it. One socket
+  was open from before the sign-out until after the desktop was back, 65
+  seconds in all. The provider in the old session ended, the service
+  started one in the new session about three seconds later, and it
+  showed the login screen and then the desktop.
+- Two of those three seconds were wasted. For a moment the session being
+  signed out of is still the one at the console, and the service started
+  a provider there twice, each ended at once by the sign-out.
+- A switch of user has not been tried.
 
 ### What else it showed
 
@@ -383,8 +389,8 @@ itself before it does, so the provider is born holding them.
   signed providers.
 - **Scope.** Five times the work is the floor for one maintainer.
 - **Step 1 ships little that is new.** A local protocol and process
-  supervision come before any feature. The exception would be Windows,
-  if connections then outlive a sign-out or a switch of user.
+  supervision come before any feature. The exception is Windows, where
+  in the spike a connection outlived a sign-out.
 
 ## Open questions
 
