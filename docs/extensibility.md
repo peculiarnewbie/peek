@@ -1,8 +1,10 @@
 # Extending peek beyond the screen
 
-This is a design discussion from November 2026. Nothing in it is built. It
-records what was proposed, what was rejected and why, and what is still
-open, so the reasoning can be reviewed before any code is written.
+This is a design discussion from November 2026. Nothing in it is built,
+apart from a spike that tried the first step and measured it (see
+[What the spike found](#what-the-spike-found)). It records what was
+proposed, what was rejected and why, and what is still open, so the
+reasoning can be reviewed before any code is written.
 
 ## The idea
 
@@ -114,7 +116,7 @@ rewritten.
 
 | Route | Trade |
 |---|---|
-| **A. Native core, providers as processes speaking a local protocol, an SDK in TypeScript** (proposed) | The core stays small. A provider can crash without taking the node down, and can be written in any language. Costs a local protocol and process supervision on two operating systems |
+| **A. Native core, providers as processes speaking a local protocol, an SDK in TypeScript** (proposed) | The core stays small. A provider can crash without taking the node down, and can be written in any language. Costs a local protocol and process supervision. On Windows the [service](../README.md#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts) already supervises a peek in the session at the console; Linux has nothing yet |
 | B. Rewrite the host on a JavaScript runtime, with plugins in its process, as pi and opencode do | The best experience for plugin authors. Every machine carries the runtime, and plugins have no isolation in a program that injects input |
 | C. Embed a small JavaScript engine in the binary | Small, but npm packages and large libraries only partly work |
 | D. WebAssembly components | Sandboxed. Too much for now, and no answer for panels |
@@ -136,16 +138,25 @@ interface but in the same process, for two reasons. Neither held up:
   pixels. The largest moving frame in the README's table is 250 KB, so
   about 15 MB a second at 60 frames. A local socket carries that, and the
   extra copy is small next to the JPEG encoding. The hosted path already
-  puts a hop like this on every frame, through `tailscale serve`. This has
-  not been measured in peek.
+  puts a hop like this on every frame, through `tailscale serve`. The
+  spike measured it: about 0.1 ms a frame.
 - **The simple install.** One binary can run both roles: the core, and a
   screen provider it starts itself. Nobody installs anything more.
 
-There is also a reason to want the split. The screen needs a logged-in
-graphical session and the node does not. With the screen as a provider
-that connects to the core, the core can run as a system service: vitals
-work with nobody logged in, and a failure in capture no longer takes the
-node down.
+There is also a reason to want the split. The screen needs the session
+that has the display, and the node does not. On Linux that is the Wayland
+session. On Windows it is the session at the console, which a service is
+not in; since the service mode it no longer has to be a logged-in one.
+With the screen as a provider that connects to the core, the core can run
+as a system service: vitals work with nobody logged in, and a failure in
+capture no longer takes the node down.
+
+The Windows service is half of this already, cut in another place. It
+runs where there is no display and starts the whole of peek, listener
+included, in the session at the console. So every sign-out and switch of
+user ends that peek, and with it the port and every connection. With the
+core in the service and only the screen provider started in the session,
+the listener would stay up through both. That has not been tried.
 
 What the screen requires of the boundary:
 
@@ -168,7 +179,8 @@ for instance), not an exemption for the screen.
 The hosted client already asks each machine who it is, to show which ones
 are up. That answer becomes the descriptor: host ID, capabilities, and a
 snapshot of vitals. The devices page can then show vitals with no socket
-open, and the first capability that is not the screen exists.
+open, and the first capability that is not the screen exists. The spike
+built both the snapshot and a reading every second on an open socket.
 
 ### 6. Panels are compiled into the client, never loaded at run time
 
@@ -238,7 +250,9 @@ the screen.
 ## Order of work
 
 1. Split peek into a core and a screen provider over a local protocol,
-   within one binary. Measure before and after.
+   within one binary. Measure before and after. The spike did this far
+   enough to measure. On Windows the rest of the step is moving the core
+   into the service.
 2. The descriptor, with vitals as the second provider and the devices
    page showing them.
 3. Grants on pairing records, and Tailscale identity for the direct path.
@@ -247,6 +261,89 @@ the screen.
 6. The agent surface.
 
 Whether to call any of this a framework is a question for after step 4.
+
+## What the spike found
+
+On 12 November 2026 a spike tried step 1, with vitals from step 2 beside
+it. Its code is on a branch, `spike-provider-pipe`, that is not meant to
+be merged.
+
+`peek --split` makes the process the core: it listens, authenticates and
+routes. It starts `peek --provider screen` and `peek --provider vitals`,
+each on a pair of pipes (the provider's stdin and stdout). A client's
+socket becomes one channel on each provider, and what either sends on
+that channel goes out on the socket. Without `--split` the same build
+runs as one process, which is what it was measured against.
+
+- A message on a pipe is a length, a kind, a channel and a time stamp,
+  then the payload. To a provider: open (with the client's query), text,
+  close. From one: text and binary.
+- The core passes a client's messages on as they arrive. It answers only
+  `ping` and `paircode` itself.
+- The browser's protocol is unchanged, apart from one new message,
+  `vitals`.
+- The screen provider is the engine, input and the clipboard. Input and
+  the clipboard were on the server's side of the existing seam (`Cmd` in,
+  `Out` out) and had to move.
+
+### The cost of the boundary
+
+Windows 11, 32 threads, over loopback. The benchmark ran where there is
+no display, so the engine was given a made-up 2560 × 1440 picture in
+place of the desktop. 900 full frames in each mode, the modes taking
+turns over three rounds. The frames had a median of 495 KB; the largest
+in the README's table is 450 KB. Milliseconds:
+
+| | One process | Split | Difference |
+|---|---|---|---|
+| Engine handing a frame over, to it written to the socket (median) | 0.24 | 0.36 | +0.12 |
+| The same (99th percentile) | 0.39 | 0.53 | +0.14 |
+| First frame, capture already set up (median) | 10.00 | 10.28 | +0.28 |
+| A full frame asked for and received, less the host's own time (median) | 4.48 | 4.63 | +0.15 |
+| Host, capture to send (median) | 13.13 | 13.14 | +0.02 |
+
+- The cost grows with the frame. One shorter run with frames of 1.4 MB
+  added 0.65 ms from engine to socket. The pipes were left at their
+  default size.
+- On the real desktop (1920 × 1080) the split was used by hand, screen
+  and vitals together, and a frame of 282 KB came through the pipe. It
+  was not measured against one process there.
+- The first frame from idle took 272 and 284 ms on the real desktop with
+  the split. There is no figure for one process in the same conditions,
+  so whether the split adds to it is not known.
+
+### Against what the screen requires
+
+- **Binary messages from end to end.** Yes.
+- **Bounded buffering in the core.** The engine's rule of two frames
+  holds because acknowledgements are passed on to it. The core's own
+  queue has no limit, as today, and a slow client was not tried.
+- **Grants as channels.** Not done. View-only is still enforced where
+  the input is injected, in the provider.
+- **Opening a channel is one message.** Yes.
+
+### What else it showed
+
+- **The session is the first thing in the way.** Started over SSH, or by
+  anything else that runs as a service, the screen provider is in
+  Windows session 0 and finds no monitor. This happened twice while
+  testing. To see the real screen, peek had to be started in the session
+  at the console, which is what the service's launcher does.
+- **A second provider is little code.** Vitals is a separate process
+  that reads nothing while no channel is open. It needs no display, so
+  it worked in session 0 where the screen did not.
+- **The descriptor's snapshot is slow from cold.** Processor use needs
+  two readings, so a first reading takes a tenth of a second. A
+  descriptor that carries vitals wants a cached one.
+- **One listener, one firewall rule.** Only the core listens, so
+  providers need no rule of their own.
+- Checked: input sent to the core reached the screen provider, both
+  providers exited when the core was ended, and vitals arrived while
+  frames were streaming.
+- Not done: restarting a provider that exits, provider log lines in
+  `peek logs`, Linux (its vitals code has not been run), sustained
+  motion on a real screen, and whether held keys are let go of when a
+  socket closes.
 
 ## Risks
 
@@ -260,22 +357,34 @@ Whether to call any of this a framework is a question for after step 4.
   an audit log, grants enforced on the node and not only in a relay, and
   signed providers.
 - **Scope.** Five times the work is the floor for one maintainer.
-- **Step 1 ships nothing new.** A local protocol and process supervision
-  on two operating systems come before any feature.
+- **Step 1 ships little that is new.** A local protocol and process
+  supervision come before any feature. The exception would be Windows,
+  if connections then outlive a sign-out or a switch of user.
 
 ## Open questions
 
 - The local transport on each system (a Unix socket, a named pipe), its
-  framing, and whether shared memory is ever needed.
+  framing, and whether shared memory is ever needed. The spike used the
+  provider's stdin and stdout. At the sizes peek sends, that was enough.
 - How a core running as a system service and a screen provider running in
-  a user's session find and trust each other.
+  a user's session find and trust each other. On Windows the service
+  already creates the process in the session at the console, and could
+  hand it a pipe as it does: nothing to find, and nobody else holds the
+  other end. Untried. Linux is open.
 - Whether the core starts the providers bundled with it, or every
-  provider connects on its own.
+  provider connects on its own. The spike's core starts them. A provider
+  from outside this repository still needs an answer.
+- How a browser tells capabilities apart on one socket. The spike added
+  `vitals` to the screen's own set of messages, which does not scale past
+  a few.
+- Where view-only is enforced: in the core, by channel, or in the
+  provider as now.
+- What happens when a provider exits, and where its log lines go.
 - What happens to the `--no-token` direct path once a machine has grants.
 - Where the list of machines comes from: the browser's storage, as now,
   or a registry an organisation already keeps.
 - Whether vitals are a snapshot in the descriptor, a live channel, or
-  both.
+  both. The spike did both.
 - `/.well-known/peek` already carries the name. Whether the descriptor
   moves before anything else depends on it.
 - The shape of the agent surface, and what an agent's grants look like.
