@@ -151,7 +151,7 @@ export function Devices() {
               is then a click away, with mouse, keyboard and clipboard.</p>
             <p class="hint lead">This site only serves the page: your browser connects straight to each machine
               over Tailscale.</p>
-            <Commands lines={['npm install -g @peculiarnewbie/peek', 'peek install', 'peek pair']} />
+            <Commands lines={['npx @peculiarnewbie/peek pair']} />
             <ul class="figures">
               <li><b>125 ms</b>from connecting to a whole 1080p frame over Tailscale, with the machine idle until then</li>
               <li><b>24 ms</b>the same on the machine itself, peek's own share</li>
