@@ -14,6 +14,10 @@ export const rate: number[] = [];
 export const RATE_SECONDS = 60;
 export const ping = { n: 0, at: 0 };
 export const opened = performance.now();
+/** How long the screen took to show: from opening the socket (and, for the
+ *  page's first connection, from navigating to the page) to the first frame
+ *  drawn. Null until a connection made while watching has drawn one. */
+export const first: { connect: number | null; page: number | null } = { connect: null, page: null };
 
 export const countOut = (n: number) => { S.bytesOut += n; S.totalOut += n; };
 export const countIn = (n: number) => { S.bytesIn += n; S.totalIn += n; };

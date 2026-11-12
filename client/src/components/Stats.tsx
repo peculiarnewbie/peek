@@ -2,7 +2,7 @@ import { createEffect, createSignal, For, onCleanup, onMount } from 'solid-js';
 import { setStats, toggleStatsPin } from '../actions';
 import { cv, focusScreen } from '../screen';
 import { cfg, live, sleeping, statsMode, statsPinned } from '../state';
-import { L, opened, RATE_SECONDS, rate, S, shown } from '../stats';
+import { first, L, opened, RATE_SECONDS, rate, S, shown } from '../stats';
 import { bytes, duration, ms, perSec, store } from '../util';
 import { Icon } from './Icons';
 
@@ -106,7 +106,9 @@ export function Stats() {
       ['Host', `${ms(L.host)} from capture to send`],
       ['Network', `${ms(L.rtt)} round trip, half counted`],
       ['Browser', `${ms(L.client)} from receive to draw`],
-      ['Stream', `${cv.width} × ${cv.height}, ${cfg.quality} quality, ${cfg.soft ? 'soft' : 'sharp'} motion, ≤ ${cfg.fps} fps`],
+      ['First frame', first.connect == null ? '–'
+        : `${ms(first.connect)} after connecting` + (first.page == null ? '' : `, ${ms(first.page)} after opening the page`)],
+      ['Stream', `${cv.width} × ${cv.height}, ${cfg.quality} quality, ${cfg.soft ? 'soft' : 'sharp'} motion, ${cfg.lossless ? 'lossless' : 'JPEG'} text, ≤ ${cfg.fps} fps`],
       ['State', state],
     ];
   };
@@ -239,6 +241,8 @@ export function Stats() {
             <div><div class="k">Received</div><div class="v">{(shown(), bytes(S.totalIn))}</div></div>
             <div><div class="k">Sent</div><div class="v">{(shown(), bytes(S.totalOut))}</div></div>
             <div><div class="k">Open for</div><div class="v">{(shown(), duration(performance.now() - opened))}</div></div>
+            <div title="From connecting to the screen drawn here">
+              <div class="k">First frame</div><div class="v">{(shown(), ms(first.connect))}</div></div>
           </div>
         </div>
 

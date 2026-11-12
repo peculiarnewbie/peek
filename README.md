@@ -14,7 +14,82 @@ modern browser.
 
 ![peek in a browser: the host's desktop with the toolbar at the top and the stats panel open on the left](docs/screenshot.png)
 
+## Numbers
+
+The point is a short wait for the screen, so that is what is measured, with
+[`bench/first-frame.ts`](bench/first-frame.ts) at medium quality.
+
+**Over Tailscale**, from a Linux laptop to a Windows desktop (1920×1080) on
+another network, connected directly with a ping of about 8 ms, peek started
+with `--keep-gpu`:
+
+| | Median | p90 |
+|---|---|---|
+| Connect to an idle host, until the whole first frame (331 KB) has arrived | 125 ms | 157 ms |
+| The same within 5 s of the last connection (capture still set up) | 121 ms | 157 ms |
+| Of that, capturing and encoding the full screen | 11 ms | 15 ms |
+| Socket open | 15 ms | 18 ms |
+
+Most of the rest is carrying the frame: the more detail on the screen, the
+bigger it is and the longer it takes. Without `--keep-gpu`, starting from
+idle added about 200 ms on this machine.
+
+**On the machine itself**, a Linux laptop (niri, 1920×1080) connecting to its
+own peek, which is peek's own share of the wait:
+
+| | Median | p90 |
+|---|---|---|
+| Connect to an idle host, until the whole first frame (149 KB) has arrived | 24 ms | 26 ms |
+| The same within 5 s of the last connection (capture still set up) | 14 ms | 18 ms |
+| Of that, capturing and encoding the full screen | 13 ms | 14 ms |
+| Socket open | 1.3 ms | 1.6 ms |
+
+Idle, the host captures nothing: 10 ms of CPU over two minutes (0.01% of a
+core) and 17 MB of memory. The binary is 3.6 MB.
+
+The browser then decodes and draws the frame, a few milliseconds more.
+**Stats → First frame** in the client shows the whole wait as you see it.
+
+To measure a host yourself (it must accept the connection: use `--no-token`
+from the same machine, or pass the token):
+
+```
+bun bench/first-frame.ts ws://127.0.0.1:9182/ws [runs] [token]   # cold: waits out the 5 s idle release
+bun bench/first-frame.ts ws://127.0.0.1:9182/ws 20 --warm       # warm: back to back
+```
+
+## Install
+
+```
+npm install -g @peculiarnewbie/peek     (or: bun add -g, pnpm add -g)
+peek install
+peek pair
+```
+
+The package holds the binary for Windows x64 and Linux x64 and arm64; Node
+only starts it. `peek install` copies it to a fixed place and starts it at
+logon from there (details for [Windows](#install-on-windows-firewall-rule-and-start-at-logon-as-administrator)
+and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
+`peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
+After updating the package, run `peek install` again; `peek uninstall` removes
+it.
+
+To try peek once without installing anything, with Tailscale running:
+
+```
+npx @peculiarnewbie/peek pair
+```
+
+With no peek running yet, `peek pair` starts one in that terminal and prints
+a link and QR code to pair a browser; peek runs until you press Ctrl+C.
+
 ## Run
+
+```
+peek                           (Linux: from inside the Wayland session)
+```
+
+Or build it yourself:
 
 ```
 cargo build --release
@@ -44,8 +119,14 @@ tailnet decides who can connect (see [Security](#security)).
 | `--view-only` | Ignore mouse, keyboard and clipboard from clients |
 | `--no-clipboard` | Do not synchronise the clipboard |
 | `--detach` | Windows: start in the background with no window, then return |
+| `--keep-gpu` | Windows: keep the GPU device open while idle, so connecting from idle is faster (costs some memory; on a laptop it can keep a discrete GPU awake) |
+| `--service` | Windows: run as a service, for the login and lock screens and UAC prompts; set it up with `peek install --service` ([details](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts)) |
 | `--log <file>` | Also append log lines to a file |
 | `-v` | Log every input event and periodic throughput |
+
+`peek logs` shows the last 50 lines the running peek logged, however it was
+started (as a service it has no console); `-f` keeps showing new ones, `-n
+<lines>` shows more. Pass the same `--port` the host uses, if not the default.
 
 ### In the client
 
@@ -62,18 +143,27 @@ Hover the dot at the top to show the toolbar; the pin keeps it open.
   - **Resolution**: full, or half in each direction.
   - **Motion**: `soft` sends regions at half resolution while they change;
     they are re-sent at full resolution a quarter second after they stop.
+  - **Lossless text**: text and flat UI go out as lossless WebP, exact the
+    first time, so they need no sharp re-send; tiles that look like photos
+    or gradients stay JPEG. A first frame of text is 10 to 60% smaller and
+    a typed character about 240 bytes instead of 1.7 KB; browsers take a few
+    milliseconds longer to decode it. On by default. With soft
+    motion, changing regions still go soft and the lossless copy follows
+    once they stop.
   - **Frame rate**: at most 60, 30, 15 or 10 per second. Changes in between
     are combined, not dropped.
   - **Monitor**, when the host has more than one.
   - **Pause when unfocused**: sleep while the browser window is in the
-    background and resume when it is focused again. Remembered per browser.
+    background and resume when it is focused again. On by default;
+    remembered per browser.
 - **Stats** is one line (frame rate, receive rate, latency) until hovered;
   its pin keeps it open, and its title bar drags it anywhere. Open, it shows
   frame rate, receive rate and latency, a 60-second chart of
   data received (hover a bar for its value) with its average and peak,
   latency split into host (capture to send), network (half the round trip)
   and browser (receive to draw), and the data received and sent since the
-  page was opened.
+  page was opened, and the first frame: how long the screen took to appear
+  after connecting (and, in Details, after opening the page).
 
 ### On a phone or tablet
 
@@ -136,16 +226,71 @@ Two things need administrator rights once:
 - Windows drops input injected into windows that run as administrator (Task
   Manager, installers) unless peek is elevated too.
 
-From an elevated PowerShell:
+```
+peek install
+```
+
+Windows asks for administrator rights once. peek is copied to
+`%LOCALAPPDATA%\Programs\peek\peek.exe`, allowed through the firewall
+(private and Tailscale addresses only), and started elevated and hidden by a
+logon task, logging to `%APPDATA%\peek\peek.log`. Flags after `install` are
+for that peek: with `peek install --no-token` the firewall rule admits
+Tailscale addresses only. `peek uninstall` undoes all of it. To reach the
+login screen, the lock screen and UAC prompts as well, install it as a
+[service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts)
+instead.
+
+From a source checkout, the same from an elevated PowerShell, running
+`target\release\peek.exe` in place:
 
 ```
 .\scripts\install-autostart.ps1
 ```
 
-This allows `peek.exe` through the firewall (private and Tailscale addresses
-only) and registers a logon task that starts peek elevated and hidden.
-`-Remove` undoes both. Flags for peek go in `-PeekArgs`; with
-`-PeekArgs '--no-token'` the firewall rule admits Tailscale addresses only.
+`-Remove` undoes it, and flags for peek go in `-PeekArgs`.
+
+### Run as a Windows service: login screen, lock screen and UAC prompts
+
+peek started at logon runs inside your session, so it stops at the edges of
+it: Windows shows the login screen, the lock screen and UAC prompts on a
+secure desktop of its own, which peek cannot see or type into, and while
+nobody is signed in there is no peek at all. A service gets past both, the
+way [Sunshine](https://github.com/LizardByte/Sunshine) does:
+
+```
+peek install --service
+```
+
+This installs a Windows service named `peek` in place of the logon task. The
+service runs as SYSTEM in session 0, which has no screen, so it starts peek
+in the session at the console, also as SYSTEM, and starts it again in the
+new one when someone signs out or switches users. That peek follows Windows
+onto the secure desktop and back, so the login screen, the lock screen and
+UAC prompts show up and take input like anything else.
+
+- peek is copied to `%ProgramFiles%\peek\peek.exe`, where only
+  administrators can replace what SYSTEM runs.
+- Its token, paired browsers and log (`peek.log`) are in
+  `%ProgramData%\peek`. Only administrators and the user who ran
+  `peek install --service` can read that folder, so `peek pair`,
+  `peek clients` and `peek logs` work for that user without administrator
+  rights; anyone else needs an administrator terminal.
+- The token and paired browsers move over from `%APPDATA%\peek`, so
+  bookmarks and paired browsers keep working. `peek install` without
+  `--service` goes back to the logon task and takes them back.
+- `peek uninstall` removes the service; the settings folder stays.
+
+To reach the login screen over Tailscale, turn on **Run unattended** in
+Tailscale's settings on this PC: otherwise Tailscale disconnects while
+nobody is signed in.
+
+**The risk:** anyone with the token or a paired browser can then do
+anything someone at the keyboard could, at the login screen too: sign in
+with any password they know, and answer UAC prompts. Keep the token and
+paired browsers to devices you trust as much as the PC itself.
+
+Ctrl+Alt+Del cannot be sent yet, so a PC set to ask for it before signing
+in (common on a domain) stays at that prompt.
 
 ### Install on Linux: key access, start at login, firewall
 
@@ -163,8 +308,17 @@ udevadm control --reload && udevadm trigger --name-match=uinput
 Without it peek still shows the screen and the mouse and typed text still
 work; it says so at startup.
 
-To start peek with the graphical session (systemd user service, which niri
-and sway sessions start):
+To start peek with the graphical session (a systemd user service, which
+niri and sway sessions start):
+
+```
+peek install
+```
+
+This copies peek to `~/.local/share/peek/peek` and writes
+`~/.config/systemd/user/peek.service`; flags after `install` go on its
+`ExecStart` line, and `peek uninstall` removes both. From a source checkout,
+by hand:
 
 ```
 cp target/release/peek ~/.local/bin/
@@ -208,7 +362,7 @@ it would put peek on the internet.
 
 https://peek.peculiarnewbie.com is the same client, served from one place
 and paired with any number of machines. It opens on a page of them; each
-machine has its own address (`/hp-book`), and the toolbar's back button (or
+machine has its own address (`/screen/hp-book`), and the toolbar's back button (or
 the browser's) returns to the list, like a KVM switch. In Chrome, allow
 **Local network access** when the site asks, or it cannot reach your tailnet.
 The site only serves the page:
@@ -228,7 +382,8 @@ take a few seconds while Tailscale fetches its certificate.
 Then pair each browser with each machine:
 
 - `peek pair` on the machine prints a link and a QR code with a one-time
-  code (it works once, for five minutes). Open it on the device, or enter
+  code (it works once, for five minutes). If peek is not running, it starts
+  peek in that terminal first. Open the link on the device, or enter
   the machine's name and the code under **Add a machine**. On a phone,
   **Scan QR code** there reads it with the camera (where the browser can
   read QR codes, as Chrome on Android does); the camera app works too.
@@ -249,8 +404,9 @@ On the machine's side:
 - Chrome may ask once whether the site may access devices on your local
   network: allow it, since that is how it reaches your machines.
 
-The site also serves short setup docs at `/docs/` (`client/hosted/docs/index.html`; `client/hosted/` also has the link preview banner),
-and machine pages never take that path. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
+The site also serves short setup docs at `/docs/` (`client/hosted/docs/index.html`) and the changelog at
+`/changelog/` (`client/hosted/changelog/index.html`); `client/hosted/` also has the link preview banner.
+Machine pages are under `/screen/`, so they never take those paths. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
 deploy:hosted` (the script runs `cf` under Node, which it needs; Bun cannot
 load its config). To run your own copy, set your worker name and domain in
 `client/cloudflare.config.ts`, deploy, and start peek with `--web
@@ -265,6 +421,11 @@ https://your.domain`.
   with the last. Changed tiles are merged into rectangles.
 - **Encode**: each rectangle is sent as a JPEG, encoded in parallel. Regions
   go out at lower quality while changing and are re-sent sharply once still.
+  With lossless text, tiles where at least three quarters of the pixels
+  repeat their left or upper neighbour (text, flat UI) are sent as lossless
+  WebP instead, with the other tiles painted flat and sent as JPEG on top.
+  The WebP encoder (`src/webp.rs`) reads the screen buffer row by row, so it
+  needs no copy of the image.
 - **Backpressure**: the client acknowledges each frame after drawing it, and
   the host keeps at most two unacknowledged. A slow link gets fewer frames,
   not growing lag.
@@ -283,6 +444,7 @@ https://your.domain`.
 ## Security
 
 - Every socket needs the access token, stored in `%APPDATA%\peek\token`
+  (`%ProgramData%\peek\token` for the [service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts))
   (Windows) or `~/.config/peek/token` (Linux).
 - Connections from anything but private, link-local and Tailscale addresses
   are refused.
@@ -308,7 +470,9 @@ With `--no-token`:
 
 ## Limits
 
-- The lock screen and UAC prompts cannot be seen or controlled.
+- The lock screen, the login screen and UAC prompts can be seen and
+  controlled only with peek installed as a [service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts)
+  (Windows; Ctrl+Alt+Del cannot be sent).
 - On Wayland the drawn pointer is always an arrow: other programs cannot
   learn the pointer's shape there. niri shows peek as a screencast while a
   client is watching.
@@ -325,20 +489,24 @@ With `--no-token`:
 ## Layout
 
 ```
-src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair`
+src/main.rs               arguments, token, startup, `peek pair` / `clients` / `unpair` / `logs`
 src/server.rs             HTTP + WebSocket, authentication, pairing endpoints, input dispatch, clipboard watcher
 src/pairing.rs            one-time codes, paired browsers' token hashes
+src/install.rs            `peek install` / `uninstall`: the fixed copy, logon task, service or systemd unit
 src/engine.rs             capture loop, tile diff, JPEG encoding, per-client state
 src/platform/mod.rs       the interface a backend provides
-src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape
+src/platform/windows/     Desktop Duplication, SendInput, clipboard, pointer shape, the service
 src/platform/linux/       wlr-screencopy, virtual pointer, uinput, data-control
 build.rs                  builds the client before the host is compiled
+bench/first-frame.ts      time from connecting to the first frame (`bun bench/first-frame.ts`)
 client/src/connection.ts  the socket: connecting, frame decoding, stats counters
 client/src/input.ts       mouse, keyboard and clipboard to the host
 client/src/state.ts       settings and UI state, as Solid signals
 client/src/components/    toolbar, settings, stats panel, overlays, machine list, pairing
 client/src/hosted.ts      the hosted client: paired machines, pairing, reachability
 client/cloudflare.config.ts  deploys the hosted client to Cloudflare (`cf deploy --mode hosted`)
+npm/                      the npm package: its manifest and the launcher that picks a binary
+scripts/npm-release.mjs   builds every platform, packs the npm package, stages it
 ```
 
 The client is TypeScript and [Solid](https://www.solidjs.com), bundled by
@@ -356,3 +524,20 @@ that need a real desktop session. On Linux, the test that clicks and types
 only runs with `PEEK_TEST_NESTED=1`, against a nested compositor (start
 `niri` from inside the session; it opens as a window with its own
 `WAYLAND_DISPLAY`).
+
+### Releasing to npm
+
+The version is the one in `Cargo.toml`. On Windows, with the Linux targets
+and [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild):
+
+```
+rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+pip install ziglang
+cargo install cargo-zigbuild --locked
+node scripts/npm-release.mjs            # build all three, pack into dist/npm/
+node scripts/npm-release.mjs --stage    # and stage it on npm
+```
+
+Staging uses `npm login`, or a stage-only token in `NPM_TOKEN`. A staged
+version is not installable until it is approved with 2FA, on npmjs.com or
+with `npm stage approve <id>`. The Linux builds target glibc 2.28.

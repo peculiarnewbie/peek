@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HMODULE;
@@ -16,7 +17,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1,
+    CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1,
     IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
 };
 use windows::Win32::Graphics::Gdi::{
@@ -24,6 +25,8 @@ use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC,
     SRCCOPY, SelectObject,
 };
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
+use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::core::Interface;
 
 use crate::platform::{Monitor, Pixels};
@@ -31,8 +34,19 @@ use crate::platform::{Monitor, Pixels};
 /// How long to wait for a new duplication's first real image before falling
 /// back to a plain screenshot. The first frame Windows returns carries no
 /// image at all; the real one follows when the compositor next runs, which on
-/// a completely still desktop may be never.
-const FIRST_IMAGE_WAIT: Duration = Duration::from_millis(120);
+/// a completely still desktop may be never. Two refreshes at 60 Hz: a screen
+/// that is changing delivers within that, and a still one is not kept waiting
+/// (the screenshot takes about as long again).
+const FIRST_IMAGE_WAIT: Duration = Duration::from_millis(35);
+
+/// Keep the Direct3D device while idle, dropping only the duplication (see
+/// `--keep-gpu`). Connecting from idle then skips creating the device, for
+/// some memory, and on a laptop possibly a discrete GPU kept awake.
+static KEEP_DEVICE: AtomicBool = AtomicBool::new(false);
+
+pub fn keep_device(keep: bool) {
+    KEEP_DEVICE.store(keep, Ordering::Relaxed);
+}
 
 struct Output {
     adapter: IDXGIAdapter1,
@@ -43,10 +57,22 @@ struct Output {
 struct Duplication {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
-    dup: IDXGIOutputDuplication,
+    /// None while idle with the device kept.
+    dup: Option<IDXGIOutputDuplication>,
     staging: Option<(ID3D11Texture2D, u32, u32)>,
     /// No image has been read from this duplication yet.
     fresh: bool,
+    /// How starting this duplication went, logged with its first image.
+    startup: Option<Startup>,
+}
+
+/// Timings of a capture start, from idle, to see where connecting waits.
+struct Startup {
+    began: Instant,
+    /// Creating the device, and how much process memory it took (None when
+    /// it was kept from before).
+    device: Option<(Duration, i64)>,
+    duplicate: Duration,
 }
 
 pub struct Capture {
@@ -67,6 +93,7 @@ impl Capture {
     /// Re-enumerate monitors, dropping every open duplication.
     pub fn refresh(&mut self) {
         self.dups.clear();
+        follow_desktop();
         self.outputs = enumerate().unwrap_or_else(|e| {
             crate::log!("could not enumerate monitors: {e}");
             Vec::new()
@@ -77,41 +104,94 @@ impl Capture {
         self.outputs.iter().map(|o| o.monitor).collect()
     }
 
-    /// Stop duplicating (the device objects go with it). Called when nobody
-    /// is watching, so the compositor is left alone while idle.
+    /// Stop duplicating (the device objects go with it, unless kept). Called
+    /// when nobody is watching, so the compositor is left alone while idle.
     pub fn release(&mut self) {
-        self.dups.clear();
+        if KEEP_DEVICE.load(Ordering::Relaxed) {
+            for d in self.dups.values_mut() {
+                d.dup = None;
+                d.staging = None;
+            }
+        } else {
+            self.dups.clear();
+        }
     }
 
     /// Wait up to `timeout` for monitor `index` to change. When it has, `f`
     /// is called with the full current frame and `Ok(true)` is returned.
     /// On `Err` the caller should `refresh()` and try again a little later:
-    /// that is what a resolution change, a UAC prompt or the lock screen
-    /// look like from here.
+    /// that is what a resolution change or the display going to sleep look
+    /// like from here. (Input moving to another desktop, for a UAC prompt or
+    /// the lock screen, is `Ok(false)`: the next call starts capturing there.)
     pub fn acquire(
         &mut self,
         index: usize,
         timeout: Duration,
         f: impl FnOnce(Pixels<'_>),
     ) -> windows::core::Result<bool> {
-        let Some(out) = self.outputs.get(index) else { return Ok(false) };
-        let monitor = out.monitor;
-        let d = match self.dups.entry(index) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(v) => v.insert(open(out)?),
+        // No such monitor is a failure, not "nothing changed": enumerating
+        // while the display is off (going to sleep, say) finds none, and
+        // only a failure makes the caller look again once it is back.
+        let Some(out) = self.outputs.get(index) else {
+            return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "no monitor attached"));
         };
-        match unsafe { grab(d, monitor, timeout, f) } {
+        if self.dups.get(&index).is_none_or(|d| d.dup.is_none()) {
+            follow_desktop();
+        }
+        match duplicate_and_grab(&mut self.dups, out, index, timeout, f) {
             Ok(Some(cost)) => {
                 self.last_cost = cost;
                 Ok(true)
             }
             Ok(None) => Ok(false),
+            // Input moved to another desktop, which is what ended this
+            // duplication: start one there on the next call, keeping the
+            // device, rather than fail and wait to be retried.
+            Err(_) if follow_desktop() => {
+                if let Some(d) = self.dups.get_mut(&index) {
+                    d.dup = None;
+                }
+                Ok(false)
+            }
             Err(e) => {
                 self.dups.remove(&index);
                 Err(e)
             }
         }
     }
+}
+
+/// Open the device and duplication for `out` as far as they are not yet, and
+/// grab a frame. Returns how long reading it took, or `None` if nothing
+/// changed.
+fn duplicate_and_grab(
+    dups: &mut HashMap<usize, Duplication>,
+    out: &Output,
+    index: usize,
+    timeout: Duration,
+    f: impl FnOnce(Pixels<'_>),
+) -> windows::core::Result<Option<Duration>> {
+    let d = match dups.entry(index) {
+        Entry::Occupied(e) => e.into_mut(),
+        Entry::Vacant(v) => v.insert(open(out)?),
+    };
+    if d.dup.is_none() {
+        let began = Instant::now();
+        d.dup = Some(unsafe { out.output.DuplicateOutput(&d.device) }?);
+        d.fresh = true;
+        d.startup = Some(Startup { began, device: None, duplicate: began.elapsed() });
+    }
+    unsafe { grab(d, out.monitor, timeout, f) }
+}
+
+/// Duplication only works on the desktop taking input, which a UAC prompt or
+/// the lock screen moves away from the user's own (see `desktop`). Called
+/// before starting a duplication, and after one failed, which is how a
+/// switch shows up while capturing. Returns whether this thread moved.
+fn follow_desktop() -> bool {
+    let Some(name) = super::desktop::follow() else { return false };
+    crate::log!("capture: following input to the {name} desktop");
+    true
 }
 
 fn enumerate() -> windows::core::Result<Vec<Output>> {
@@ -149,6 +229,8 @@ fn enumerate() -> windows::core::Result<Vec<Output>> {
 
 fn open(out: &Output) -> windows::core::Result<Duplication> {
     unsafe {
+        let began = Instant::now();
+        let memory = private_bytes();
         let mut device = None;
         let mut context = None;
         // The device has to live on the adapter that drives this output.
@@ -164,18 +246,50 @@ fn open(out: &Output) -> windows::core::Result<Duplication> {
             Some(&mut context),
         )?;
         let device = device.unwrap();
+        let created = (began.elapsed(), private_bytes() - memory);
         let dup = out.output.DuplicateOutput(&device)?;
-        Ok(Duplication { device, context: context.unwrap(), dup, staging: None, fresh: true })
+        let duplicate = began.elapsed() - created.0;
+        Ok(Duplication {
+            device,
+            context: context.unwrap(),
+            dup: Some(dup),
+            staging: None,
+            fresh: true,
+            startup: Some(Startup { began, device: Some(created), duplicate }),
+        })
     }
+}
+
+/// Memory committed to this process alone, in bytes.
+fn private_bytes() -> i64 {
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+    let size = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), size) };
+    if ok.is_ok() { counters.PrivateUsage as i64 } else { 0 }
+}
+
+fn log_startup(s: Startup, first: Duration, screenshot: bool) {
+    let ms = |d: Duration| format!("{:.0} ms", d.as_secs_f64() * 1000.0);
+    let device = match s.device {
+        Some((took, bytes)) => format!("device {} (+{:.1} MB)", ms(took), bytes as f64 / (1 << 20) as f64),
+        None => "device kept".into(),
+    };
+    let how = if screenshot { "screenshot, screen still" } else { "duplication" };
+    crate::log!(
+        "capture started in {}: {device}, duplication {}, first image {} ({how})",
+        ms(s.began.elapsed()),
+        ms(s.duplicate),
+        ms(first),
+    );
 }
 
 /// One `AcquireNextFrame`. `None` means nothing new to show: the wait timed
 /// out, or only the pointer moved (the client draws its own pointer).
-unsafe fn next_image(d: &Duplication, wait: Duration) -> windows::core::Result<Option<ID3D11Texture2D>> {
+unsafe fn next_image(dup: &IDXGIOutputDuplication, wait: Duration) -> windows::core::Result<Option<ID3D11Texture2D>> {
     unsafe {
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
-        match d.dup.AcquireNextFrame(wait.as_millis() as u32, &mut info, &mut resource) {
+        match dup.AcquireNextFrame(wait.as_millis() as u32, &mut info, &mut resource) {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
             Err(e) => return Err(e),
@@ -184,7 +298,7 @@ unsafe fn next_image(d: &Duplication, wait: Duration) -> windows::core::Result<O
         match resource {
             Some(r) if info.LastPresentTime != 0 => Ok(Some(r.cast()?)),
             _ => {
-                d.dup.ReleaseFrame()?;
+                dup.ReleaseFrame()?;
                 Ok(None)
             }
         }
@@ -199,18 +313,20 @@ unsafe fn grab(
     f: impl FnOnce(Pixels<'_>),
 ) -> windows::core::Result<Option<Duration>> {
     unsafe {
+        let dup = d.dup.clone().expect("duplication started before grab");
+        let waiting = Instant::now();
         let texture = if d.fresh {
-            let deadline = Instant::now() + FIRST_IMAGE_WAIT;
+            let deadline = waiting + FIRST_IMAGE_WAIT;
             loop {
                 let left = deadline.saturating_duration_since(Instant::now());
-                match next_image(d, left)? {
+                match next_image(&dup, left)? {
                     Some(texture) => break Some(texture),
                     None if left.is_zero() => break None,
                     None => {}
                 }
             }
         } else {
-            next_image(d, timeout)?
+            next_image(&dup, timeout)?
         };
         let started = Instant::now();
         let Some(texture) = texture else {
@@ -218,11 +334,15 @@ unsafe fn grab(
                 return Ok(None);
             }
             // Still desktop: take the first image the old-fashioned way.
-            // Later changes arrive through the duplication as usual.
+            // Later changes arrive through the duplication as usual (and the
+            // engine compares them with this one, so nothing is sent twice).
             let (width, height) = (monitor.width as usize, monitor.height as usize);
             let data = screenshot(monitor)?;
             d.fresh = false;
             f(Pixels { width, height, stride: width * 4, data: &data });
+            if let Some(s) = d.startup.take() {
+                log_startup(s, waiting.elapsed(), true);
+            }
             return Ok(Some(started.elapsed()));
         };
 
@@ -244,7 +364,7 @@ unsafe fn grab(
         let staging = &d.staging.as_ref().unwrap().0;
         d.context.CopyResource(staging, &texture);
         drop(texture);
-        d.dup.ReleaseFrame()?;
+        dup.ReleaseFrame()?;
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         d.context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
@@ -257,6 +377,9 @@ unsafe fn grab(
         f(Pixels { width, height, stride, data });
         d.context.Unmap(staging, 0);
         d.fresh = false;
+        if let Some(s) = d.startup.take() {
+            log_startup(s, waiting.elapsed(), false);
+        }
         Ok(Some(started.elapsed()))
     }
 }

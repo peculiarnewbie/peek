@@ -1,16 +1,37 @@
 // Hosted client: the page of paired machines at `/`. Choosing one opens it
-// at `/<name>`; the toolbar's back button (or the browser's) returns here.
+// at `/screen/<name>`; the toolbar's back button (or the browser's) returns here.
 import { createEffect, createSignal, For, on, onCleanup, Show } from 'solid-js';
 import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
   BLOCKED_HELP, cleanHost, current, forget, localAccess, machines, navigate, openMachine, pair, parseLink,
-  probeAll, reach, slug, type Machine,
+  probeAll, reach, screenPath, type Machine,
 } from '../hosted';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
 import { Icon } from './Icons';
 import { canScan, QrScan } from './QrScan';
+
+/** Shell commands, one per line, with one button that copies them all. */
+function Commands(props: { lines: string[] }) {
+  const [copied, setCopied] = createSignal(false);
+  let timer: number | undefined;
+  const copy = () => {
+    navigator.clipboard.writeText(props.lines.join('\n')).then(() => {
+      setCopied(true);
+      clearTimeout(timer);
+      timer = window.setTimeout(() => setCopied(false), 1200);
+    }, () => {});
+  };
+  return (
+    <div class="cmds">
+      <code>{props.lines.join('\n')}</code>
+      <button type="button" class="cmd-copy" onClick={copy} aria-label="Copy commands" title="Copy">
+        <Icon name={copied() ? 'check' : 'copy'} />
+      </button>
+    </div>
+  );
+}
 
 const [error, setError] = createSignal('');
 const [hostField, setHostField] = createSignal('');
@@ -54,7 +75,7 @@ function Card(props: { m: Machine }) {
   const state = () => reach[props.m.id] ?? 'checking';
   return (
     <div class="dcard" classList={{ down: state() === 'down' }}>
-      <a class="dopen" href={`/${slug(props.m)}`} onClick={e => {
+      <a class="dopen" href={screenPath(props.m)} onClick={e => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;   // new tab still works
         e.preventDefault();
         openMachine(props.m);
@@ -115,6 +136,7 @@ export function Devices() {
               </button>
             </Show>
             <a class="tb" href="/docs/">Docs</a>
+            <a class="tb" href="/changelog/">Changelog</a>
             <a class="tb" href={GITHUB}>GitHub</a>
           </nav>
         </header>
@@ -129,6 +151,14 @@ export function Devices() {
               is then a click away, with mouse, keyboard and clipboard.</p>
             <p class="hint lead">This site only serves the page: your browser connects straight to each machine
               over Tailscale.</p>
+            <Commands lines={['npx @peculiarnewbie/peek pair']} />
+            <ul class="figures">
+              <li><b>125 ms</b>from connecting to a whole 1080p frame over Tailscale, with the machine idle until then</li>
+              <li><b>24 ms</b>the same on the machine itself, peek's own share</li>
+              <li><b>0.01%</b>of one CPU core while nobody is looking: no capture runs</li>
+              <li><b>17 MB</b>of memory, in a 3.6 MB program</li>
+              <li><a href="/docs/#numbers">How these were measured</a></li>
+            </ul>
           </section>
         }>
           <div class="dgrid">
@@ -138,8 +168,9 @@ export function Devices() {
         <Show when={showForm()}>
           <section class="dadd panel">
             <div class="label"><span>Add a machine</span></div>
-            <p class="hint">On the machine, run <code>peek pair</code>. Open the link it shows on this device (or
-              scan its QR code), or enter its name and code here.</p>
+            <p class="hint">On the machine, run <code>peek pair</code> (or, without installing peek,{' '}
+              <code>npx @peculiarnewbie/peek pair</code>). Open the link it shows on this device (or scan its QR
+              code), or enter its name and code here.</p>
             <Show when={canScan()}>
               <button class="btn alt scan" tabIndex={-1} onClick={() => { setError(''); setScanning(true); }}>
                 <Icon name="qr" /><span>Scan QR code</span>

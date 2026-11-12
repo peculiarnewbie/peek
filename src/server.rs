@@ -62,7 +62,7 @@ pub struct Shared {
     pub next_id: AtomicU64,
 }
 
-pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()> {
+pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/manifest.webmanifest", get(|| asset("application/manifest+json", MANIFEST)))
@@ -76,10 +76,11 @@ pub async fn serve(shared: Arc<Shared>, addr: SocketAddr) -> std::io::Result<()>
         .route("/api/pair-code", post(local_pair_code))
         .route("/api/clients", get(local_clients))
         .route("/api/clients/revoke", post(local_revoke))
+        .route("/api/logs", get(local_logs))
         .layer(middleware::from_fn_with_state(shared.clone(), ip_guard))
         .with_state(shared);
     // Input and small screen updates must not sit in Nagle's buffer.
-    let listener = NoDelay(TcpListener::bind(addr).await?);
+    let listener = NoDelay(listener);
     axum::serve(listener, app.into_make_service_with_connect_info::<Peer>()).await
 }
 
@@ -335,7 +336,7 @@ async fn pair(
 }
 
 /// A new pairing code, with the link that uses it.
-fn pairing_offer(shared: &Shared) -> serde_json::Value {
+pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
     let code = match shared.pairing.new_code() {
         Ok(code) => code,
         Err(e) => return serde_json::json!({ "error": e.to_string() }),
@@ -377,6 +378,21 @@ async fn local_clients(State(shared): State<Arc<Shared>>, headers: HeaderMap) ->
     }
     let list = serde_json::to_string(&shared.pairing.list()).unwrap_or_default();
     ([(header::CONTENT_TYPE, "application/json")], list).into_response()
+}
+
+async fn local_logs(
+    State(shared): State<Arc<Shared>>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if !local_ok(&shared, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let number = |key: &str| query.get(key).and_then(|v| v.parse::<u64>().ok());
+    let (last, lines) = crate::recent_log(number("after").unwrap_or(0), number("limit").unwrap_or(50) as usize);
+    let file = crate::LOG_PATH.get().map(|p| p.display().to_string());
+    let body = serde_json::json!({ "last": last, "lines": lines, "file": file });
+    ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
 }
 
 async fn local_revoke(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
@@ -430,6 +446,7 @@ enum ClientMsg {
         scale: Option<usize>,
         fps: Option<u32>,
         soft: Option<bool>,
+        lossless: Option<bool>,
     },
     #[serde(rename = "m")]
     Move { x: f64, y: f64 },
@@ -522,6 +539,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             scale: scale(param(&query, "scale")).unwrap_or(1),
             fps: fps(param(&query, "fps")).unwrap_or(0),
             soft: query.get("soft").is_some_and(|v| v == "1"),
+            lossless: query.get("lossless").is_some_and(|v| v == "1"),
         },
         visible: query.get("vis").is_none_or(|v| v != "0"),
     });
@@ -572,7 +590,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             ClientMsg::Visible { v } => {
                 let _ = shared.engine.send(Cmd::Visible { id, visible: v });
             }
-            ClientMsg::Configure { mon: m, q, scale: s, fps: f, soft } => {
+            ClientMsg::Configure { mon: m, q, scale: s, fps: f, soft, lossless } => {
                 mon = m.unwrap_or(mon);
                 let change = ViewChange {
                     mon: m,
@@ -580,6 +598,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                     scale: scale(s),
                     fps: fps(f),
                     soft,
+                    lossless,
                 };
                 let _ = shared.engine.send(Cmd::Configure { id, change });
             }

@@ -5,11 +5,13 @@
 //! WebSocket handshake plus one frame.
 
 mod engine;
+mod install;
 mod pairing;
 mod platform;
 mod server;
+mod webp;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
@@ -20,6 +22,13 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use clap::{Parser, Subcommand};
 
 static LOG_FILE: OnceLock<Mutex<File>> = OnceLock::new();
+/// Where `--log` writes, made absolute so `peek logs` can say where to look.
+pub static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// The latest log lines, numbered, for `peek logs`: a host started as a
+/// service has no console to read them from.
+static RECENT: Mutex<(u64, VecDeque<String>)> = Mutex::new((0, VecDeque::new()));
+const RECENT_LINES: usize = 1000;
 
 pub fn log_line(line: std::fmt::Arguments<'_>) {
     let line = format!("{} {line}", chrono::Local::now().format("%H:%M:%S"));
@@ -27,6 +36,21 @@ pub fn log_line(line: std::fmt::Arguments<'_>) {
     if let Some(file) = LOG_FILE.get() {
         let _ = writeln!(file.lock().unwrap(), "{line}");
     }
+    let mut recent = RECENT.lock().unwrap();
+    recent.0 += 1;
+    if recent.1.len() == RECENT_LINES {
+        recent.1.pop_front();
+    }
+    recent.1.push_back(line);
+}
+
+/// Log lines numbered above `after`, at most the last `limit`, with the
+/// number of the newest line (to ask for what follows it next time).
+pub fn recent_log(after: u64, limit: usize) -> (u64, Vec<String>) {
+    let recent = RECENT.lock().unwrap();
+    let (last, lines) = &*recent;
+    let new = last.saturating_sub(after).min(lines.len() as u64) as usize;
+    (*last, lines.iter().skip(lines.len() - new.min(limit)).cloned().collect())
 }
 
 #[macro_export]
@@ -68,23 +92,75 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     detach: bool,
+    /// Keep the GPU device open while nobody is watching, so connecting from
+    /// idle is faster. Costs some memory, and on a laptop can keep a discrete
+    /// GPU from sleeping
+    #[cfg(windows)]
+    #[arg(long)]
+    keep_gpu: bool,
+    /// Run as a Windows service, which starts peek as SYSTEM in the session
+    /// at the console, so it also shows the login and lock screens and UAC
+    /// prompts. Set it up with `peek install --service`
+    #[cfg(windows)]
+    #[arg(long)]
+    service: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Show a one-time code that pairs a browser with this machine (peek must be running)
+    /// Show a one-time code that pairs a browser with this machine. If peek
+    /// is not running yet, this starts it here and keeps it running
     Pair,
     /// List the browsers paired with this machine
     Clients,
     /// Unpair a browser, by the id `peek clients` shows
     Unpair { id: String },
+    /// Show what the running peek has logged recently
+    Logs {
+        /// Keep showing new lines as they come
+        #[arg(short, long)]
+        follow: bool,
+        /// How many recent lines to show first
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+    },
+    /// Start peek in the background at logon: copies it to a fixed place and
+    /// registers a logon task and firewall rule (Windows, asks for
+    /// administrator) or a systemd user service (Linux). Flags after it are
+    /// for that peek, like `peek install --no-token`; on Windows, `--service`
+    /// installs a service instead, which also works at the login screen.
+    /// Run again after an update
+    Install {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
+        args: Vec<String>,
+    },
+    /// Undo `peek install`
+    Uninstall,
 }
 
-/// Where the access token lives: %APPDATA%\peek on Windows, otherwise
-/// $XDG_CONFIG_HOME/peek or ~/.config/peek.
+/// Where the access token and pairing data live: %APPDATA%\peek on Windows
+/// (%ProgramData%\peek for the service), otherwise $XDG_CONFIG_HOME/peek or
+/// ~/.config/peek.
 fn config_dir() -> PathBuf {
+    #[cfg(windows)]
+    if platform::is_system() {
+        return machine_config_dir();
+    }
+    user_config_dir()
+}
+
+/// %ProgramData%\peek: the service's settings, as it runs as no user.
+#[cfg(windows)]
+fn machine_config_dir() -> PathBuf {
+    std::env::var_os("ProgramData")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from)
+        .join("peek")
+}
+
+fn user_config_dir() -> PathBuf {
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
     } else {
@@ -145,21 +221,65 @@ fn web_origin(arg: &str) -> Result<Option<String>, String> {
 }
 
 /// One request to the peek running on this machine, as its owner: the
-/// secret in the config folder proves it. Returns the status and body.
+/// secret in its config folder proves it. Returns the status and body.
 fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u16, String), String> {
-    use std::io::Read;
-    let secret = fs::read_to_string(config_dir().join("local-secret"))
-        .map_err(|_| "peek has not run on this machine yet (as this user)".to_string())?;
+    // The service keeps its secret machine-wide, readable by administrators
+    // and whoever installed it; any other peek keeps it in the user's folder.
+    #[cfg(windows)]
+    let folders = [machine_config_dir(), user_config_dir()];
+    #[cfg(not(windows))]
+    let folders = [user_config_dir()];
+    let secrets: Vec<String> = folders
+        .iter()
+        .filter_map(|dir| fs::read_to_string(dir.join("local-secret")).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    // The service's folder exists, but this account cannot read it.
+    #[cfg(windows)]
+    let shut_out = machine_config_dir().is_dir() && fs::read_to_string(machine_config_dir().join("local-secret")).is_err();
+    #[cfg(not(windows))]
+    let shut_out = false;
+    let refused = if shut_out {
+        "the running peek refused. If it is the peek service, this account may not use it: \
+         try again from an administrator terminal"
+    } else {
+        "the running peek refused: it was started by another user or with another config folder"
+    };
+    if secrets.is_empty() {
+        return Err(if shut_out { refused } else { "peek has not run on this machine yet (as this user)" }.into());
+    }
+    for (i, secret) in secrets.iter().enumerate() {
+        match local_request_with(args, method, path, body, secret)? {
+            (403, _) if i + 1 < secrets.len() => continue,
+            (403, _) => return Err(refused.into()),
+            reply => return Ok(reply),
+        }
+    }
+    unreachable!("the last secret returns either way")
+}
+
+/// Where a peek started with these flags listens, as seen from this machine.
+fn local_addr(args: &Args) -> SocketAddr {
     let ip = if args.bind.is_unspecified() { IpAddr::from([127, 0, 0, 1]) } else { args.bind };
-    let addr = SocketAddr::new(ip, args.port);
+    SocketAddr::new(ip, args.port)
+}
+
+/// Whether something already listens where this peek would.
+fn host_running(args: &Args) -> bool {
+    std::net::TcpStream::connect_timeout(&local_addr(args), std::time::Duration::from_secs(1)).is_ok()
+}
+
+fn local_request_with(args: &Args, method: &str, path: &str, body: &str, secret: &str) -> Result<(u16, String), String> {
+    use std::io::Read;
+    let addr = local_addr(args);
     let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3))
         .map_err(|e| format!("peek is not running on port {} ({e}). Start it first.", args.port))?;
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: text/plain\r\n\
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {secret}\r\nContent-Type: text/plain\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        secret.trim(),
         body.len()
     )
     .map_err(|e| e.to_string())?;
@@ -167,9 +287,6 @@ fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u
     stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
     let status = response.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let body = response.split_once("\r\n\r\n").map_or("", |(_, b)| b).to_string();
-    if status == 403 {
-        return Err("the running peek refused: it was started by another user or with another config folder".into());
-    }
     Ok((status, body))
 }
 
@@ -241,42 +358,64 @@ fn ensure_serve(args: &Args, tailscale: &str, host: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// `peek pair`. Returns true when no peek is running here yet, so this
+/// process should start the host and show the code itself.
+fn pair(args: &Args) -> Result<bool, String> {
+    match pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
+        Some((tailscale, host)) => ensure_serve(args, tailscale, &host)?,
+        None => {
+            return Err("Tailscale is not running here, and the hosted client reaches machines through it. \
+                        Start Tailscale and try again."
+                .into())
+        }
+    }
+    if !host_running(args) {
+        if web_origin(&args.web)?.is_none() {
+            return Err("with --web none there is no hosted client to pair".into());
+        }
+        #[cfg(windows)]
+        if args.detach || args.service {
+            return Err("`peek pair` shows its code in this terminal, so it cannot start peek with --detach or --service. \
+                        Start peek that way first, then run `peek pair`."
+                .into());
+        }
+        return Ok(true);
+    }
+    let (_, body) = local_request(args, "POST", "/api/pair-code", "")?;
+    let offer: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    print_offer(&offer)?;
+    Ok(false)
+}
+
+/// Print a pairing code and its link and QR code, as the host made them.
+fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
+    if let Some(e) = offer["error"].as_str() {
+        return Err(e.to_string());
+    }
+    let (code, name) = (offer["code"].as_str().unwrap_or(""), offer["name"].as_str().unwrap_or("this machine"));
+    let Some(web) = offer["web"].as_str() else {
+        return Err("this peek was started with --web none, so there is no hosted client to pair".into());
+    };
+    let Some(link) = offer["link"].as_str() else {
+        return Err(format!("peek could not find {name}'s Tailscale name. Is Tailscale up?"));
+    };
+    println!("Pair a browser with {name}:\n\n  {link}\n");
+    if let Ok(qr) = qrcode::QrCode::new(link.as_bytes()) {
+        let art = qr
+            .render::<qrcode::render::unicode::Dense1x2>()
+            .dark_color(qrcode::render::unicode::Dense1x2::Light)
+            .light_color(qrcode::render::unicode::Dense1x2::Dark)
+            .build();
+        println!("{art}\n");
+    }
+    println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
+    println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
+    Ok(())
+}
+
 fn run_command(args: &Args, command: &Command) -> Result<(), String> {
     match command {
-        Command::Pair => {
-            match pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
-                Some((tailscale, host)) => ensure_serve(args, tailscale, &host)?,
-                None => {
-                    return Err("Tailscale is not running here, and the hosted client reaches machines through it. \
-                                Start Tailscale and try again."
-                        .into())
-                }
-            }
-            let (_, body) = local_request(args, "POST", "/api/pair-code", "")?;
-            let offer: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-            if let Some(e) = offer["error"].as_str() {
-                return Err(e.to_string());
-            }
-            let (code, name) = (offer["code"].as_str().unwrap_or(""), offer["name"].as_str().unwrap_or("this machine"));
-            let Some(web) = offer["web"].as_str() else {
-                return Err("this peek was started with --web none, so there is no hosted client to pair".into());
-            };
-            let Some(link) = offer["link"].as_str() else {
-                return Err(format!("peek could not find {name}'s Tailscale name. Is Tailscale up?"));
-            };
-            println!("Pair a browser with {name}:\n\n  {link}\n");
-            if let Ok(qr) = qrcode::QrCode::new(link.as_bytes()) {
-                let art = qr
-                    .render::<qrcode::render::unicode::Dense1x2>()
-                    .dark_color(qrcode::render::unicode::Dense1x2::Light)
-                    .light_color(qrcode::render::unicode::Dense1x2::Dark)
-                    .build();
-                println!("{art}\n");
-            }
-            println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
-            println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
-            Ok(())
-        }
+        Command::Pair => unreachable!("main runs `peek pair` itself"),
         Command::Clients => {
             let (_, body) = local_request(args, "GET", "/api/clients", "")?;
             let clients: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -299,6 +438,37 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             }
             Ok(())
         }
+        Command::Logs { follow, lines } => {
+            let mut after = 0;
+            let mut limit = *lines;
+            loop {
+                let (status, body) = match local_request(args, "GET", &format!("/api/logs?after={after}&limit={limit}"), "") {
+                    Ok(reply) => reply,
+                    Err(e) if *follow && after > 0 => return Err(format!("peek stopped ({e})")),
+                    Err(e) => return Err(e),
+                };
+                if status == 404 {
+                    return Err("the running peek is too old for `peek logs`. Update and restart it.".into());
+                }
+                let reply: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                for line in reply["lines"].as_array().into_iter().flatten() {
+                    println!("{}", line.as_str().unwrap_or(""));
+                }
+                if after == 0 && !*follow {
+                    if let Some(file) = reply["file"].as_str() {
+                        eprintln!("(the full log is in {file})");
+                    }
+                }
+                if !*follow {
+                    return Ok(());
+                }
+                let last = reply["last"].as_u64().unwrap_or(after);
+                // peek restarted: its numbering began again.
+                after = if last < after { 0 } else { last };
+                limit = RECENT_LINES;
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
         Command::Unpair { id } => match local_request(args, "POST", "/api/clients/revoke", id)?.0 {
             204 => {
                 println!("Unpaired {id}. It can no longer connect; a session it has open stays until it disconnects.");
@@ -306,18 +476,47 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             }
             _ => Err(format!("no paired browser has the id {id} (see `peek clients`)")),
         },
+        Command::Install { args: flags } => {
+            // --bind and --port are global flags, so clap takes them even
+            // after `install`; hand them on to the background peek too.
+            let given = |name: &str| flags.iter().any(|f| f == name || f.starts_with(&format!("{name}=")));
+            let (add_bind, add_port) = (!args.bind.is_unspecified() && !given("--bind"), args.port != 9182 && !given("--port"));
+            let mut flags = flags.clone();
+            // So is --service, when it comes before `install`.
+            #[cfg(windows)]
+            if args.service && !given("--service") {
+                flags.push("--service".into());
+            }
+            if add_bind {
+                flags.extend(["--bind".into(), args.bind.to_string()]);
+            }
+            if add_port {
+                flags.extend(["--port".into(), args.port.to_string()]);
+            }
+            install::check_service_args(&flags)?;
+            install::install(&flags)
+        }
+        Command::Uninstall => install::uninstall(),
     }
 }
 
 fn main() {
     let args = Args::parse();
 
+    // `peek pair` with no peek running starts one here, then pairs.
+    let mut pair_here = false;
     if let Some(command) = &args.command {
-        if let Err(e) = run_command(&args, command) {
+        let result = match command {
+            Command::Pair => pair(&args).map(|start| pair_here = start),
+            command => run_command(&args, command),
+        };
+        if let Err(e) = result {
             eprintln!("{e}");
             std::process::exit(1);
         }
-        return;
+        if !pair_here {
+            return;
+        }
     }
     let web = match web_origin(&args.web) {
         Ok(web) => web,
@@ -328,6 +527,11 @@ fn main() {
     };
 
     #[cfg(windows)]
+    if args.detach && args.service {
+        eprintln!("--detach and --service do not go together: Windows starts the service itself");
+        std::process::exit(2);
+    }
+    #[cfg(windows)]
     if args.detach {
         if let Err(e) = detach() {
             eprintln!("could not start in the background: {e}");
@@ -336,14 +540,38 @@ fn main() {
         return;
     }
 
+    // SYSTEM's settings go in a folder of their own, which must not be
+    // readable by every user (as a new folder under ProgramData would be).
+    #[cfg(windows)]
+    if platform::is_system()
+        && let Err(e) = platform::create_private_dir(&config_dir())
+    {
+        eprintln!("cannot create {}: {e}", config_dir().display());
+        std::process::exit(1);
+    }
+
     if let Some(path) = &args.log {
         match OpenOptions::new().create(true).append(true).open(path) {
-            Ok(file) => drop(LOG_FILE.set(Mutex::new(file))),
+            Ok(file) => {
+                let _ = LOG_FILE.set(Mutex::new(file));
+                let _ = LOG_PATH.set(std::path::absolute(path).unwrap_or_else(|_| path.clone()));
+            }
             Err(e) => eprintln!("cannot write log file {}: {e}", path.display()),
         }
     }
 
+    #[cfg(windows)]
+    if args.service {
+        if let Err(e) = platform::service::run() {
+            log!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     platform::init();
+    #[cfg(windows)]
+    platform::keep_device(args.keep_gpu);
     if args.no_token && !(args.bind.is_unspecified() || args.bind.is_loopback() || server::tailnet(args.bind)) {
         eprintln!("--no-token accepts only Tailscale connections; --bind {} is not a Tailscale address", args.bind);
         std::process::exit(2);
@@ -398,6 +626,21 @@ fn main() {
             .expect("spawn clipboard thread");
     }
 
+    // Listen before saying so, and before handing out a pairing code.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("start async runtime");
+    let addr = SocketAddr::new(args.bind, args.port);
+    let listener = match runtime.block_on(tokio::net::TcpListener::bind(addr)) {
+        Ok(listener) => listener,
+        Err(e) => {
+            log!("cannot listen on {addr}: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let hosts: Vec<IpAddr> = if args.bind.is_unspecified() {
         let mut hosts = vec![IpAddr::from([127, 0, 0, 1])];
         if let Ok(addrs) = if_addrs::get_if_addrs() {
@@ -429,7 +672,7 @@ fn main() {
             println!("Tailscale is not up yet; connections are accepted as soon as it is.");
         }
     }
-    if let Some(web) = &web {
+    if let Some(web) = web.as_ref().filter(|_| !pair_here) {
         println!("To use it from {web}, pair the browser: run `peek pair`.");
     }
     if !args.view_only {
@@ -437,14 +680,16 @@ fn main() {
             println!("{note}");
         }
     }
+    if pair_here {
+        println!();
+        if let Err(e) = print_offer(&server::pairing_offer(&shared)) {
+            eprintln!("{e}");
+        }
+        println!("\npeek keeps running here; Ctrl+C stops it. For another code later, run `peek pair` in another terminal.");
+        println!("To start peek at logon instead, run `peek install`.");
+    }
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("start async runtime");
-    let addr = SocketAddr::new(args.bind, args.port);
-    if let Err(e) = runtime.block_on(server::serve(shared, addr)) {
+    if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
         log!("cannot listen on {addr}: {e}");
         std::process::exit(1);
     }

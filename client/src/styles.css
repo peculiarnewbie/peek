@@ -113,7 +113,7 @@ body.touch #stats-sum { visibility: hidden; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 8px; height: 8px; border-radius: 2px; }
 .legend b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
-.session { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.session { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .session .k { font-size: 12px; color: var(--muted); }
 .session .v { font-weight: 600; }
 details { margin-top: 14px; }
@@ -206,6 +206,16 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 .hint.lead { font-size: 14px; margin: 0 auto 18px; }
 .intro { margin-bottom: 18px; }
 .intro .hint.lead { margin: 0 0 8px; max-width: 620px; }
+.cmds { position: relative; margin: 14px 0 0; max-width: 620px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 10px; }
+.cmds code { display: block; padding: 10px 48px 10px 14px; background: none; border-radius: 0; color: var(--ink);
+  font-size: 12.5px; line-height: 1.8; word-break: normal; white-space: pre; overflow-x: auto;
+  -webkit-user-select: text; user-select: text; }
+.cmd-copy { position: absolute; top: 6px; right: 6px; display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 7px; color: var(--muted); }
+.cmd-copy:hover { background: var(--hover); color: var(--ink); }
+.figures { list-style: none; margin: 18px 0 0; padding: 0; color: var(--ink-2); font-size: 12.5px; line-height: 1.7; }
+.figures b { display: inline-block; min-width: 4.2em; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 .dhead h1 { display: flex; align-items: center; gap: 10px; }
 .dhead h1 img { border-radius: 7px; }
 .dnav { display: flex; align-items: center; gap: 2px; }

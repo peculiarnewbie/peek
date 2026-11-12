@@ -14,8 +14,17 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 fn send(input: INPUT) {
-    unsafe {
-        SendInput(&[input], size_of::<INPUT>() as i32);
+    send_all(&[input]);
+}
+
+/// Inject `inputs`. Windows refuses while this thread is on another desktop
+/// than the one taking input (a UAC prompt or the lock screen came up or went
+/// away); then move there and try again. (Only peek running as SYSTEM can.)
+fn send_all(inputs: &[INPUT]) {
+    let size = size_of::<INPUT>() as i32;
+    let sent = unsafe { SendInput(inputs, size) } as usize;
+    if sent < inputs.len() && super::desktop::follow().is_some() {
+        unsafe { SendInput(&inputs[sent..], size) };
     }
 }
 
@@ -218,7 +227,7 @@ pub fn text(s: &str) {
     let mut batch = Vec::new();
     let flush = |batch: &mut Vec<INPUT>| {
         if !batch.is_empty() {
-            unsafe { SendInput(batch, size_of::<INPUT>() as i32) };
+            send_all(batch);
             batch.clear();
         }
     };
