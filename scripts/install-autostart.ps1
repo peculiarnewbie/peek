@@ -158,10 +158,13 @@ function Protect-MachineConfig {
     New-Item -ItemType Directory -Force -Path $machineConfig | Out-Null
     $sid = (New-Object System.Security.Principal.NTAccount($user)).Translate(
         [System.Security.Principal.SecurityIdentifier]).Value
-    $acl = Get-Acl -LiteralPath $machineConfig
+    # Through .NET rather than Get-Acl and Set-Acl: their module has failed
+    # to load in an install started from an elevated PowerShell 7.
+    $dir = Get-Item -LiteralPath $machineConfig
+    $acl = $dir.GetAccessControl('Access')
     # Full control for SYSTEM and Administrators, read for the user.
     $acl.SetSecurityDescriptorSddlForm("D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;$sid)", 'Access')
-    Set-Acl -LiteralPath $machineConfig -AclObject $acl
+    $dir.SetAccessControl($acl)
 }
 
 try {
@@ -255,5 +258,11 @@ try {
     }
 } catch {
     Say "Error: $($_.Exception.Message)"
+    # Whatever failed, do not leave this PC without the peek it had: start
+    # the service again if it is still there.
+    if ($hadService -and -not $Remove -and (Get-Service -Name $name -ErrorAction SilentlyContinue)) {
+        Start-Service -Name $name -ErrorAction SilentlyContinue
+        if ((Get-Service -Name $name).Status -eq 'Running') { Say "Started the '$name' service again." }
+    }
     exit 1
 }
