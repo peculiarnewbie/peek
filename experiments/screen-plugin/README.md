@@ -48,7 +48,7 @@ The generated package contains the binary for the machine it was built on.
 ## Checks and measured cost
 
 ```powershell
-cargo build --release --manifest-path examples/provider/files/Cargo.toml
+cargo build --release --manifest-path apps/files/Cargo.toml
 bun bench/plugins.ts --browser --screen
 bun bench/screen-plugin.ts 30
 bun bench/screen-plugin.ts 3 --cold

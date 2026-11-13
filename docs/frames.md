@@ -41,7 +41,7 @@ A provider can hand peek a file. On the pipe, `OFFER` (kind 8) is sent on the pa
 
 The frame needs `allow-downloads` for this. Which files a provider may offer is its own business: it runs as peek's user, and could send the bytes itself.
 
-`examples/provider/files` is a file explorer built on this, written in Rust as a plugin of its own (a crate with only `serde_json`, nothing of peek's):
+`apps/files` is a file explorer built into peek, off by default. Turn it on and choose folders on the Plugins page. It is also buildable alone as an example plugin in its own Rust crate (with only `serde_json`, nothing of peek's):
 - the machine's owner names the shared folders in its settings;
 - the browser can't add a folder;
 - paths are checked after links and junctions are followed;
@@ -67,6 +67,7 @@ A plugin is a folder with a `peek-plugin.json`:
 - **What it's written in:** anything that reads and writes its stdin and stdout. The examples are one of each: `files` in Rust (a 213 KB program, which ran in about 4 MB, 0.6 MB of it its own), `frame` (notes) in Node (an idle Node is about 35 MB).
 - **What isn't copied:** a folder's `.git`, and `target/`, where building a Rust plugin leaves its output.
 - **Its data:** `PEEK_DATA_DIR` names a separate folder for persistent data.
+- **Default state:** `on_by_default` is an optional boolean, true by default.
 - **Its version:** `version` is an optional string shown when inspecting a plugin.
 - **Its settings** (kinds `folders`, `text`, `switch`) reach it as JSON in `PEEK_SETTINGS`.
 - **What it needs:** peek checks `needs` and says what's missing. It doesn't bundle a runtime.

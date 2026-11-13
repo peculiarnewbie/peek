@@ -63,6 +63,7 @@ view-only host also sets `PEEK_VIEW_ONLY=1`. The provider must honor that mode
 for its own protocols: the host recognizes conventional `do`/`peer` actions
 and rejects inbound binary, but cannot infer effects of arbitrary messages.
 
+`on_by_default` is an optional boolean, true by default; it sets the initial enabled state.
 `version` is an optional string, shown as given. `PEEK_DATA_DIR` names a
 folder for the plugin's persistent data, kept apart from its installed files.
 Updating keeps valid settings, the on/off state and that data. Removing keeps
@@ -89,7 +90,7 @@ From the repository root, on Windows:
 ```powershell
 cargo test
 cargo build --release
-cargo build --release --manifest-path examples/provider/files/Cargo.toml
+cargo build --release --manifest-path apps/files/Cargo.toml
 node experiments/screen-plugin/build.mjs
 bun bench/plugins.ts --browser --screen
 bun bench/screen-plugin.ts 30

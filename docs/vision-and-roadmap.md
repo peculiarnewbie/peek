@@ -76,6 +76,8 @@ and the hardening recorded in [plugin-release.md](plugin-release.md). Its
 package version still reads 0.2.2, and nothing is released. Do not confuse
 its behavior with released guarantees.
 
+Files is built in, uses the same manifest, and is off by default.
+
 It already has:
 
 - Process providers with a framed stdin/stdout protocol, restart behavior,
