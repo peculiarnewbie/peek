@@ -88,6 +88,8 @@ struct State {
     /// Each plugin's settings, as last saved.
     #[serde(default)]
     settings: BTreeMap<String, Map<String, Value>>,
+    #[serde(default)]
+    sources: BTreeMap<String, String>,
 }
 
 fn contract_version() -> u32 { 1 }
@@ -98,7 +100,7 @@ fn yes() -> bool {
 
 impl Default for State {
     fn default() -> Self {
-        State { remote_install: true, off: BTreeSet::new(), settings: BTreeMap::new() }
+        State { remote_install: true, off: BTreeSet::new(), settings: BTreeMap::new(), sources: BTreeMap::new() }
     }
 }
 
@@ -162,6 +164,19 @@ impl Catalog {
     pub fn data_dir(&self, name: &str) -> PathBuf {
         let dir = self.dir.join(DATA_DIR).join(name);
         if dir.is_absolute() { dir } else { std::env::current_dir().unwrap_or_default().join(dir) }
+    }
+
+    fn has_data(&self, name: &str) -> bool {
+        fs::read_dir(self.data_dir(name)).ok().is_some_and(|mut entries| entries.next().is_some())
+    }
+
+    pub fn kept_data(&self) -> Vec<String> {
+        let specs = self.specs();
+        let mut names: Vec<String> = fs::read_dir(self.dir.join(DATA_DIR)).into_iter().flatten().flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| name_ok(n) && self.has_data(n) && !specs.iter().any(|s| s.name == *n && s.kind == Kind::Plugin)).collect();
+        names.sort();
+        names
     }
 
     fn state(&self) -> State {
@@ -314,6 +329,11 @@ impl Catalog {
     /// folder on this machine, a git repository (https), or npm.
     fn fetch(&self, source: &str) -> Result<Staged, String> {
         let source = source.trim();
+        let local = Path::new(source);
+        let absolute = if local.is_dir() || (local.is_file() && source.ends_with(".tgz")) {
+            Some(fs::canonicalize(local).map_err(|e| format!("cannot find {source}: {e}"))?.to_string_lossy().into_owned())
+        } else { None };
+        let source = absolute.as_deref().unwrap_or(source);
         let staging = self.plugins_dir().join(STAGING_DIR).join(crate::pairing::random_hex(8).map_err(|e| e.to_string())?);
         fs::create_dir_all(&staging).map_err(|e| format!("cannot make {}: {e}", staging.display()))?;
         let fetched = (|| {
@@ -362,10 +382,15 @@ impl Catalog {
     fn describe(&self, staged: &Staged) -> Map<String, Value> {
         let m = &staged.manifest;
         let missing: Vec<&String> = m.needs.iter().filter(|n| find_program(n, None).is_none()).collect();
-        let taken = self.specs().iter().any(|s| s.name == m.name);
+        let specs = self.specs();
+        let taken = specs.iter().any(|s| s.name == m.name);
+        let installed = specs.iter().find(|s| s.name == m.name && s.kind == Kind::Plugin).and_then(|s| s.manifest.as_ref());
         let deps = has_dependencies(&staged.root);
         let mut out = Map::new();
         out.insert("name".into(), m.name.clone().into());
+        out.insert("version".into(), m.version.clone().into());
+        out.insert("installed".into(), installed.map_or(Value::Null, |m| json!({"version": m.version})));
+        out.insert("data".into(), self.has_data(&m.name).into());
         out.insert("description".into(), m.description.clone().into());
         out.insert("runs".into(), m.run.join(" ").into());
         out.insert("needs".into(), json!(m.needs));
@@ -405,6 +430,7 @@ impl Catalog {
             fs::rename(&staged.root, &dest).map_err(|e| format!("cannot move it into {}: {e}", dest.display()))?;
             let mut state = self.state();
             state.off.remove(&name);
+            state.sources.insert(name.clone(), staged.from.clone());
             self.save(&state)
         })();
         let _ = fs::remove_dir_all(&staged.dir);
@@ -600,6 +626,9 @@ impl Plugins {
                 "page": link.as_ref().is_some_and(|l| l.about().contains_key("page")),
             });
             if let Some(m) = &s.manifest {
+                item["version"] = json!(m.version);
+                item["from"] = json!(state.sources.get(&s.name));
+                item["data"] = json!(self.catalog.has_data(&s.name));
                 item["settings"] = Value::Object(m.settings.clone());
                 item["values"] = Value::Object(settings_of(m, state.settings.get(&s.name)));
                 item["needs"] = json!(m.needs);
@@ -612,6 +641,7 @@ impl Plugins {
             "t": "list",
             "machine": crate::pairing::machine_name(),
             "items": items,
+            "kept_data": self.catalog.kept_data(),
             "remote_install": state.remote_install,
             "view_only": self.view_only,
         })
@@ -816,6 +846,28 @@ mod tests {
         let Start::Program(program) = spec.start else { panic!("not a program") };
         assert!(program.env.iter().any(|(key, value)| key == "PEEK_DATA_DIR" && Path::new(value) == catalog.data_dir("sample")));
         assert!(!catalog.data_dir("sample").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_and_data_are_described() {
+        let root = std::env::temp_dir().join(format!("peek-source-{}", crate::pairing::random_hex(6).unwrap()));
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join(MANIFEST), r#"{"name":"sample","version":"1","run":["bin/app"]}"#).unwrap();
+        fs::create_dir_all(source.join("bin")).unwrap();
+        fs::write(source.join("bin").join(if cfg!(windows) { "app.exe" } else { "app" }), "").unwrap();
+        let catalog = Catalog::new(root.join("config"), Vec::new());
+        let staged = catalog.fetch(source.to_str().unwrap()).unwrap();
+        assert_eq!(catalog.describe(&staged)["installed"], Value::Null);
+        assert_eq!(catalog.describe(&staged)["data"], false);
+        catalog.install(staged).unwrap();
+        assert_eq!(catalog.state().sources["sample"], fs::canonicalize(&source).unwrap().to_string_lossy());
+        fs::create_dir_all(catalog.data_dir("sample")).unwrap();
+        fs::write(catalog.data_dir("sample").join("file"), "data").unwrap();
+        let staged = catalog.fetch(source.to_str().unwrap()).unwrap();
+        assert_eq!(catalog.describe(&staged)["installed"]["version"], "1");
+        assert_eq!(catalog.describe(&staged)["data"], true);
         fs::remove_dir_all(root).unwrap();
     }
 
