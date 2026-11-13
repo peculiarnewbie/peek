@@ -422,6 +422,19 @@ impl Catalog {
             if self.specs().iter().any(|s| s.name == name) {
                 return Err(format!("{name} is installed already: remove it first"));
             }
+            self.prepare(&staged)?;
+            let dest = self.plugins_dir().join(&name);
+            fs::rename(&staged.root, &dest).map_err(|e| format!("cannot move it into {}: {e}", dest.display()))?;
+            let mut state = self.state();
+            state.off.remove(&name);
+            state.sources.insert(name.clone(), staged.from.clone());
+            self.save(&state)
+        })();
+        let _ = fs::remove_dir_all(&staged.dir);
+        result.map(|()| name)
+    }
+
+    fn prepare(&self, staged: &Staged) -> Result<(), String> {
             let missing: Vec<_> = staged.manifest.needs.iter().filter(|n| find_program(n, None).is_none()).collect();
             if !missing.is_empty() {
                 return Err(format!("missing required programs: {}", missing.into_iter().cloned().collect::<Vec<_>>().join(", ")));
@@ -436,15 +449,63 @@ impl Catalog {
             if find_program(&staged.manifest.run[0], Some(&staged.root)).is_none() {
                 return Err(format!("plugin program not found: {}", staged.manifest.run[0]));
             }
+        Ok(())
+    }
+
+    fn update(&self, staged: Staged) -> Result<String, String> {
+        let name = staged.manifest.name.clone();
+        let result = (|| {
+            if staged.until <= Instant::now() { return Err("look at it again first: the staged plugin expired".into()); }
+            if !self.specs().iter().any(|s| s.name == name && s.kind == Kind::Plugin) {
+                return Err(format!("{name} is not installed: install it instead"));
+            }
+            self.prepare(&staged)?;
             let dest = self.plugins_dir().join(&name);
-            fs::rename(&staged.root, &dest).map_err(|e| format!("cannot move it into {}: {e}", dest.display()))?;
+            let old = staged.dir.join("old");
+            let until = Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                match fs::rename(&dest, &old) {
+                    Ok(()) => break,
+                    Err(e) if Instant::now() >= until => return Err(format!("cannot move {}: {e}", dest.display())),
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                }
+            }
+            if let Err(e) = fs::rename(&staged.root, &dest) {
+                fs::rename(&old, &dest).map_err(|restore| format!("cannot move it into {}: {e}; cannot restore old plugin: {restore}", dest.display()))?;
+                return Err(format!("cannot move it into {}: {e}", dest.display()));
+            }
             let mut state = self.state();
-            state.off.remove(&name);
+            if let Some(settings) = state.settings.get_mut(&name) {
+                settings.retain(|key, value| staged.manifest.settings.get(key).is_some_and(|def| check_setting(key, def, value).is_ok()));
+            }
             state.sources.insert(name.clone(), staged.from.clone());
             self.save(&state)
         })();
-        let _ = fs::remove_dir_all(&staged.dir);
+        // Keep the backup if restoring it failed.
+        if !staged.dir.join("old").exists() || self.plugins_dir().join(&name).exists() {
+            let _ = fs::remove_dir_all(&staged.dir);
+        }
         result.map(|()| name)
+    }
+
+    pub fn update_from(&self, name: &str, source: Option<&str>, say: impl Fn(&str)) -> Result<String, String> {
+        let source = source.map(str::to_owned).or_else(|| self.state().sources.get(name).cloned())
+            .ok_or_else(|| format!("give a source for {name}"))?;
+        let staged = self.fetch(&source)?;
+        if staged.manifest.name != name {
+            let other = staged.manifest.name.clone();
+            let _ = fs::remove_dir_all(&staged.dir);
+            return Err(format!("that is {other}, not {name}"));
+        }
+        let old = self.specs().into_iter().find(|s| s.name == name).and_then(|s| s.manifest).map(|m| m.version).unwrap_or_else(|| "unknown".into());
+        let new = if staged.manifest.version.is_empty() { "unknown" } else { &staged.manifest.version };
+        let d = self.describe(&staged);
+        say(&format!("{name}: {} ({old} to {new})", staged.manifest.description));
+        say(&format!("  runs:  {} (as this machine's peek user, with its full rights)", d["runs"].as_str().unwrap_or("")));
+        if let Some(missing) = d["missing"].as_array().filter(|m| !m.is_empty()) {
+            say(&format!("  needs: {} (not found here)", missing.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
+        }
+        self.update(staged)
     }
 
     /// Fetch and install at once, saying first what it is: for `peek plugin add`.
@@ -555,7 +616,7 @@ impl Plugins {
         if self.view_only {
             return done(Err("this machine is view-only".into()));
         }
-        let changes = matches!(what, "settings" | "remove" | "inspect" | "install");
+        let changes = matches!(what, "settings" | "remove" | "inspect" | "install" | "update");
         if changes && !self.catalog.remote_install() {
             return done(Err("Installing and changing plugins from a browser is turned off on this machine. \
                              On it, `peek plugin remote-install on` turns it on."
@@ -591,6 +652,18 @@ impl Plugins {
                 }
                 Err(why) => done(Err(why)),
             },
+            "update" => {
+                let staged = self.staged.lock().unwrap().remove(ask["id"].as_str().unwrap_or(""));
+                let Some(staged) = staged else { return done(Err("look at it again first: that was a while ago".into())) };
+                let name = staged.manifest.name.clone();
+                match self.stop_then(&name, || self.catalog.update(staged).map(|_| ())) {
+                    Ok(()) => {
+                        crate::log!("plugins: updated {name} from a browser");
+                        json!({ "t": "ok", "ref": at, "name": name })
+                    }
+                    Err(why) => done(Err(why)),
+                }
+            }
             "install" => {
                 let staged = self.staged.lock().unwrap().remove(ask["id"].as_str().unwrap_or(""));
                 let Some(staged) = staged else { return done(Err("look at it again first: that was a while ago".into())) };
@@ -907,6 +980,39 @@ mod tests {
         fs::write(catalog.data_dir("sample").join("file"), "data").unwrap();
         catalog.remove("sample", true).unwrap();
         assert!(!catalog.data_dir("sample").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn update_preserves_state_and_rejects_invalid_replacements() {
+        let root = std::env::temp_dir().join(format!("peek-update-{}", crate::pairing::random_hex(6).unwrap()));
+        let source = root.join("source");
+        fs::create_dir_all(source.join("bin")).unwrap();
+        let manifest = |version: &str, run: &str, settings: Value| json!({"name":"sample","version":version,"run":[run],"settings":settings}).to_string();
+        let settings = json!({"keep":{"kind":"switch","default":false},"drop":{"kind":"switch","default":false}});
+        fs::write(source.join(MANIFEST), manifest("1", "bin/app", settings)).unwrap();
+        fs::write(source.join("bin").join(if cfg!(windows) { "app.exe" } else { "app" }), "one").unwrap();
+        let catalog = Catalog::new(root.join("config"), Vec::new());
+        assert!(catalog.update(catalog.fetch(source.to_str().unwrap()).unwrap()).is_err());
+        assert!(catalog.update_from("sample", None, |_| {}).is_err());
+        catalog.install(catalog.fetch(source.to_str().unwrap()).unwrap()).unwrap();
+        catalog.set_on("sample", false).unwrap();
+        catalog.set_settings("sample", json!({"keep":true,"drop":true}).as_object().unwrap()).unwrap();
+        fs::create_dir_all(catalog.data_dir("sample")).unwrap();
+        fs::write(catalog.data_dir("sample").join("file"), "data").unwrap();
+        fs::write(source.join(MANIFEST), manifest("2", "bin/missing", json!({}))).unwrap();
+        assert!(catalog.update(catalog.fetch(source.to_str().unwrap()).unwrap()).is_err());
+        assert_eq!(read_manifest(&catalog.plugins_dir().join("sample")).unwrap().version, "1");
+        fs::write(source.join(MANIFEST), manifest("2", "bin/app", json!({"keep":{"kind":"switch","default":false},"drop":{"kind":"text","default":"new"}}))).unwrap();
+        fs::write(source.join("bin").join(if cfg!(windows) { "app.exe" } else { "app" }), "two").unwrap();
+        catalog.update_from("sample", Some(source.to_str().unwrap()), |_| {}).unwrap();
+        assert_eq!(read_manifest(&catalog.plugins_dir().join("sample")).unwrap().version, "2");
+        assert_eq!(catalog.state().settings["sample"].get("keep"), Some(&json!(true)));
+        assert!(!catalog.state().settings["sample"].contains_key("drop"));
+        assert!(catalog.state().off.contains("sample"));
+        assert!(catalog.data_dir("sample").join("file").exists());
+        assert!(catalog.state().sources.contains_key("sample"));
+        assert!(catalog.update_from("other", Some(source.to_str().unwrap()), |_| {}).unwrap_err().contains("that is sample, not other"));
         fs::remove_dir_all(root).unwrap();
     }
 
