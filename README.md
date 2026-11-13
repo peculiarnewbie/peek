@@ -85,6 +85,14 @@ npx @peculiarnewbie/peek pair
 With no peek running yet, `peek pair` starts one in that terminal and prints
 a link and QR code to pair a browser; peek runs until you press Ctrl+C.
 
+## Update
+
+Run `peek update` to update the installed peek from this build's release channel.
+Use `peek update --channel next` for nightlies, `peek update --check` to compare
+versions, and `peek update --rollback` to return to the previous version.
+A Windows service install needs an administrator terminal. The hosted client at
+https://next.peek.peculiarnewbie.com matches the nightly builds.
+
 ## Run
 
 ```

@@ -11,7 +11,7 @@
 //   node scripts/nightly.mjs --skip-build publish binaries already in target/
 //   node scripts/nightly.mjs --cf-profile <name>   default: peculiarnewbie
 //
-// What it publishes is what `peek update --channel next` reads: one rolling
+// What it publishes is what `peek update --channel next` installs: one rolling
 // release whose tag moves to each nightly's commit, with these assets:
 //   peek-win32-x64.exe, peek-linux-x64, peek-linux-arm64
 //   SHA256SUMS     "<sha256>  <asset>" per binary
