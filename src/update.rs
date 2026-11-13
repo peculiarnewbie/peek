@@ -149,7 +149,8 @@ pub fn run(channel: Option<&str>, check: bool, no_restart: bool, back: bool) -> 
     let sum = sum_for(&sums, name);
     let old = version(&target).and_then(|s| s.strip_prefix("peek ").map(str::to_owned)).unwrap_or_else(|| "unknown".into());
     if check { println!("installed: {old}; {channel}: {published}"); return Ok(()); }
-    if published == env!("PEEK_VERSION") && sum.as_ref().is_some_and(|s| hash(&target).is_ok_and(|h| h == *s)) { println!("peek {published} is already the latest on {channel}"); return Ok(()); }
+    // The installed file itself, whichever peek runs this command.
+    if sum.as_ref().is_some_and(|s| hash(&target).is_ok_and(|h| h == *s)) { println!("peek {published} is already the latest on {channel}"); return Ok(()); }
     println!("downloading {name}");
     let file = temp.0.join(name); download(&format!("{url}{name}"), &file)?;
     println!("checking the download");

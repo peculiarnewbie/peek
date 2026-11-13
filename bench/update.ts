@@ -44,8 +44,9 @@ try {
   result = await run(['--rollback']); assert.equal(result.code, 0, result.text); assert.equal(await digest(target), sum);
   await sums('0'.repeat(64)); const saved = await snapshot();
   result = await run([]); assert.notEqual(result.code, 0); assert.match(result.text, /the download does not match SHA256SUMS; nothing was changed/); assert.deepEqual(await snapshot(), saved);
-  await sums(sum); await versionFile('0.0.0-wrong');
-  result = await run([]); assert.notEqual(result.code, 0); assert.match(result.text, /the downloaded peek says .* not 0\.0\.0-wrong; nothing was changed/); assert.deepEqual(await snapshot(), saved);
-  result = await run([], 'http://example.com/'); assert.notEqual(result.code, 0); assert.match(result.text, /update address/); assert.deepEqual(await snapshot(), saved);
+  // An outdated install, so that the update gets as far as the version check.
+  await sums(sum); await versionFile('0.0.0-wrong'); await writeFile(target, 'old'); const outdated = await snapshot();
+  result = await run([]); assert.notEqual(result.code, 0); assert.match(result.text, /the downloaded peek says .* not 0\.0\.0-wrong; nothing was changed/); assert.deepEqual(await snapshot(), outdated);
+  result = await run([], 'http://example.com/'); assert.notEqual(result.code, 0); assert.match(result.text, /update address/); assert.deepEqual(await snapshot(), outdated);
   console.log('update end-to-end scenarios passed');
 } finally { server?.stop(true); await rm(temp, { recursive: true, force: true }); }
