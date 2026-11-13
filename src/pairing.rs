@@ -340,6 +340,11 @@ pub fn pair_link(web: &str, host: &str, name: &str, code: &str) -> String {
     format!("{web}/pair?host={}&name={}#code={}", enc(host), enc(name), format_code(code))
 }
 
+/// The link that pairs a browser with the client this machine serves itself.
+pub fn own_link(host: &str, code: &str) -> String {
+    format!("https://{host}/#code={}", format_code(code))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +392,7 @@ mod tests {
     fn links_carry_the_code_in_the_fragment() {
         let link = pair_link("https://peek.example.com", "hp-book.tail1.ts.net", "hp book", "ABCDEFGHJKLM");
         assert_eq!(link, "https://peek.example.com/pair?host=hp-book.tail1.ts.net&name=hp%20book#code=ABCD-EFGH-JKLM");
+        assert_eq!(own_link("hp-book.tail1.ts.net:8443", "ABCDEFGHJKLM"), "https://hp-book.tail1.ts.net:8443/#code=ABCD-EFGH-JKLM");
     }
 
     #[test]

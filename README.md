@@ -71,6 +71,8 @@ only starts it. `peek install` copies it to a fixed place and starts it at
 logon from there (details for [Windows](#install-on-windows-firewall-rule-and-start-at-logon-as-administrator)
 and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
 `peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
+It also prints a link to the machine's own page, which pairs a browser with that
+machine alone; that page asks for the code when opened without one.
 After updating the package, run `peek install` again; `peek uninstall` removes
 it.
 

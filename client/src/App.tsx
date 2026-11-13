@@ -1,6 +1,6 @@
 import { SCREEN_PLUGIN } from './plugin-mode';
 import { createEffect } from 'solid-js';
-import { BlockedNote, Message, SleepCard } from './components/Overlays';
+import { BlockedNote, Message, PairPrompt, SleepCard } from './components/Overlays';
 import { IconSprite } from './components/Icons';
 import { Keyboard } from './components/Keyboard';
 import { Devices } from './components/Devices';
@@ -31,6 +31,7 @@ export function App() {
       <Show when={HOSTED}><Devices /></Show>
       <BlockedNote />
       <Keyboard />
+      <Show when={!HOSTED && !SCREEN_PLUGIN}><PairPrompt /></Show>
     </>
   );
 }

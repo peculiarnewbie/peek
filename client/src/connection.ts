@@ -10,6 +10,7 @@ import { BLOCKED_HELP, current, HOSTED, localAccess } from './hosted';
 import { store } from './util';
 import { dropPages, fromProvider } from './views';
 import type { PairOffer } from './components/PairDevice';
+import { codeInUrl, pairFromHash, setPairing } from './pair-here';
 
 /** Must match the host's wire format version. */
 const PROTOCOL = 4;
@@ -22,6 +23,8 @@ const CLOSE_OUTDATED = 4426;
 // A host started with --no-token needs none, so connecting without one is fine.
 // (The hosted client pairs instead: see hosted.ts.)
 function takeToken() {
+  // `#code=…` is a pairing code, not a token (pair-here.ts).
+  if (codeInUrl()) return '';
   const t = location.hash.slice(1);
   if (t) { store.set('token', t); history.replaceState(null, '', location.pathname); }
   return t;
@@ -29,7 +32,10 @@ function takeToken() {
 const token = HOSTED || SCREEN_PLUGIN ? '' : takeToken() || store.get('token') || '';
 // Entering the full URL in a tab that already shows this page only changes the
 // fragment, which does not reload the page, so pick the token up here.
-if (!HOSTED && !SCREEN_PLUGIN) addEventListener('hashchange', () => { if (takeToken()) location.reload(); });
+if (!HOSTED && !SCREEN_PLUGIN) addEventListener('hashchange', () => {
+  if (codeInUrl()) pairFromHash();
+  else if (takeToken()) location.reload();
+});
 
 /** Where the socket goes: the host that served this page, or the chosen machine. */
 function target(): { url: string; token: string; name: string } | null {
@@ -145,8 +151,8 @@ export function connect() {
         return;
       }
       store.set('token', '');
-      setMessage((token ? 'Wrong access token.' : 'This host needs an access token.') +
-        ' Open the full URL the host printed (it ends in #token).');
+      setMessage('');
+      setPairing(token ? 'wrong' : 'needed');
       return;
     }
     if (e.code === CLOSE_BAD_ORIGIN) {
