@@ -30,6 +30,7 @@ use crate::provider::{Link, Program, Start};
 pub const PROVIDERS_FILE: &str = "providers.json";
 const STATE_FILE: &str = "plugins.json";
 const PLUGINS_DIR: &str = "plugins";
+const DATA_DIR: &str = "plugin-data";
 const STAGING_DIR: &str = ".staging";
 const MANIFEST: &str = "peek-plugin.json";
 /// Names that are peek's own, which nothing added may take.
@@ -61,6 +62,8 @@ pub struct Manifest {
     #[serde(default = "contract_version")]
     pub provider_protocol: u32,
     pub name: String,
+    #[serde(default)]
+    pub version: String,
     #[serde(default)]
     pub description: String,
     /// The command that runs it, started in its folder.
@@ -156,6 +159,11 @@ impl Catalog {
         self.dir.join(PLUGINS_DIR)
     }
 
+    pub fn data_dir(&self, name: &str) -> PathBuf {
+        let dir = self.dir.join(DATA_DIR).join(name);
+        if dir.is_absolute() { dir } else { std::env::current_dir().unwrap_or_default().join(dir) }
+    }
+
     fn state(&self) -> State {
         fs::read_to_string(self.dir.join(STATE_FILE)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
@@ -243,7 +251,8 @@ impl Catalog {
                 start: Start::Program(Program {
                     words,
                     dir: Some(dir.clone()),
-                    env: vec![("PEEK_SETTINGS".into(), Value::Object(settings).to_string())],
+                    env: vec![("PEEK_SETTINGS".into(), Value::Object(settings).to_string()),
+                        ("PEEK_DATA_DIR".into(), self.data_dir(&manifest.name).to_string_lossy().into_owned())],
                 }),
                 description: manifest.description.clone(),
                 manifest: Some(manifest),
@@ -477,6 +486,12 @@ impl Plugins {
         }
         for spec in wanted {
             if !running.contains_key(&spec.name) {
+                if spec.kind == Kind::Plugin {
+                    let dir = self.catalog.data_dir(&spec.name);
+                    if let Err(e) = fs::create_dir_all(&dir) {
+                        crate::log!("plugins: cannot make {}: {e}", dir.display());
+                    }
+                }
                 crate::log!("plugins: starting {} ({})", spec.name, spec.runs);
                 running.insert(spec.name.clone(), Link::spawn(&spec.name, spec.start, self.view_only));
             }
@@ -608,6 +623,9 @@ impl Plugins {
 fn read_manifest(dir: &Path) -> Result<Manifest, String> {
     let text = fs::read_to_string(dir.join(MANIFEST)).map_err(|_| format!("there is no {MANIFEST} in it"))?;
     let manifest: Manifest = serde_json::from_str(&text).map_err(|e| format!("{MANIFEST} cannot be read: {e}"))?;
+    if manifest.version.chars().count() > 64 {
+        return Err(format!("{MANIFEST} version is longer than 64 characters"));
+    }
     if manifest.manifest_version != contract_version() || manifest.provider_protocol != contract_version() {
         return Err(format!("unsupported plugin contract: manifest {}, provider {}; this host supports version 1", manifest.manifest_version, manifest.provider_protocol));
     }
@@ -784,6 +802,20 @@ mod tests {
         let staged = catalog.fetch(source.to_str().unwrap()).unwrap();
         assert!(catalog.install(staged).unwrap_err().contains("missing required programs"));
         assert!(catalog.list().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn specs_expose_data_dir_without_creating_it() {
+        let root = std::env::temp_dir().join(format!("peek-data-{}", crate::pairing::random_hex(6).unwrap()));
+        let plugin = root.join("plugins").join("sample");
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join(MANIFEST), r#"{"name":"sample","run":["node"]}"#).unwrap();
+        let catalog = Catalog::new(root.clone(), Vec::new());
+        let spec = catalog.specs().pop().unwrap();
+        let Start::Program(program) = spec.start else { panic!("not a program") };
+        assert!(program.env.iter().any(|(key, value)| key == "PEEK_DATA_DIR" && Path::new(value) == catalog.data_dir("sample")));
+        assert!(!catalog.data_dir("sample").exists());
         fs::remove_dir_all(root).unwrap();
     }
 
