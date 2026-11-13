@@ -272,15 +272,15 @@ fn plugin_command(args: &Args, action: &PluginCommand) -> Result<(), String> {
             for (name, kind, runs, on) in catalog.list() {
                 println!("{name:<16} {:<4} {kind:<11} {runs}", if on { "on" } else { "off" });
             }
-            let kept = catalog.kept_data();
-            if !kept.is_empty() {
-                println!("Kept data: {}. Delete with `peek plugin remove <name> --purge`.", kept.join(", "));
-            }
             println!(
                 "
 A browser {} install, remove and change plugins here (`peek plugin remote-install on|off`).",
                 if catalog.remote_install() { "may" } else { "may not" }
             );
+            let kept = catalog.kept_data();
+            if !kept.is_empty() {
+                println!("Kept data: {}. Delete with `peek plugin remove <name> --purge`.", kept.join(", "));
+            }
             Ok(())
         }
         PluginCommand::Add { source } => {
