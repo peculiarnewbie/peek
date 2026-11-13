@@ -49,6 +49,7 @@ A minimal manifest:
   "manifest_version": 1,
   "provider_protocol": 1,
   "name": "my-app",
+  "version": "1.0.0",
   "description": "What the app does.",
   "run": ["bin/my-app"],
   "needs": []
@@ -58,7 +59,10 @@ A minimal manifest:
 `run` is an argument array, not a shell command. Its working directory is the
 installed plugin directory. Bundle a binary for the installation's OS/CPU,
 or declare the runtime in `needs`. Settings arrive in `PEEK_SETTINGS`; a
-view-only host also sets `PEEK_VIEW_ONLY=1`. The provider must honor that mode
+view-only host also sets `PEEK_VIEW_ONLY=1`. `version` is an optional string.
+`PEEK_DATA_DIR` names a separate folder for persistent data. Updating keeps
+valid settings, the on/off state and data. Removing keeps data unless `--purge`
+is given. Peek does not check for newer versions or update automatically. The provider must honor that mode
 for its own protocols: the host recognizes conventional `do`/`peer` actions
 and rejects inbound binary, but cannot infer effects of arbitrary messages.
 
@@ -132,5 +136,5 @@ The repository's default `cargo fmt --check` currently reports formatting
 changes throughout the existing codebase. This branch does not reformat the
 whole repository as part of plugin work.
 
-Keep updates/data migration, fleet enrollment, agent tool discovery, and sync
+Keep data migration, fleet enrollment, agent tool discovery, and sync
 out of this release. They are later slices in [the roadmap](vision-and-roadmap.md).

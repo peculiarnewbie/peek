@@ -55,6 +55,7 @@ A plugin is a folder with a `peek-plugin.json`:
 ```json
 {
   "name": "files",
+  "version": "1.0.0",
   "description": "Browse the folders you share, and download their files.",
   "run": ["bin/peek-files"],
   "settings": { "folders": { "label": "Shared folders", "kind": "folders", "default": [] } }
@@ -65,6 +66,8 @@ A plugin is a folder with a `peek-plugin.json`:
 - **How it starts:** `run` is started in that folder. Its first word is a program on the machine (`node`), or one the plugin brings (`bin/peek-files`, which is `bin\peek-files.exe` on Windows).
 - **What it's written in:** anything that reads and writes its stdin and stdout. The examples are one of each: `files` in Rust (a 213 KB program, which ran in about 4 MB, 0.6 MB of it its own), `frame` (notes) in Node (an idle Node is about 35 MB).
 - **What isn't copied:** a folder's `.git`, and `target/`, where building a Rust plugin leaves its output.
+- **Its data:** `PEEK_DATA_DIR` names a separate folder for persistent data.
+- **Its version:** `version` is an optional string shown when inspecting a plugin.
 - **Its settings** (kinds `folders`, `text`, `switch`) reach it as JSON in `PEEK_SETTINGS`.
 - **What it needs:** peek checks `needs` and says what's missing. It doesn't bundle a runtime.
 
@@ -84,6 +87,8 @@ From a folder on the machine, an https git address, or an npm package:
 - or the Plugins page, which first fetches the plugin to look at, then shows exactly what it runs (with peek's user's full rights), what it needs, and whether it brings npm dependencies (installed without their install scripts).
 
 Peek can't hold a plugin to what it says it does; the page says so.
+
+`peek plugin update <name> [source]` updates an installed plugin, using its recorded source if none is given. Settings that remain valid, its on/off state and its data are kept. Removing a plugin keeps its data; `peek plugin remove <name> --purge` deletes it, including data kept after an earlier removal.
 
 ### Who may change what
 
@@ -170,7 +175,7 @@ Results:
 - **Not tried across two machines.** All of it ran on one PC: a test copy of peek, reached through Tailscale Serve.
 - **The explorer can't search** beyond the folder it shows, and has no previews.
 - **`peek plugin` commands weren't run here.** On a machine with the service installed they act on the service's config folder, which needs an administrator. They're covered by unit tests through the same code.
-- **No updates.** A plugin must be removed and installed again.
+- **No automatic updates.** Peek does not check for newer versions.
 - **No real install from npm or git.** No plugin is published yet.
 - **Under the service, `node` must be on the machine's PATH,** not just the user's: a Node from a per-user installer like scoop won't be found by SYSTEM. A plugin that brings its own program doesn't have this problem.
 - **A plugin that brings a program needs one for each OS and processor.** A folder holds the one for its machine; how a git repository or an npm package would carry several (npm's per-platform packages, as esbuild does, say) isn't decided.
