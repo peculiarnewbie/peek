@@ -292,7 +292,8 @@ async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Respons
     for (name, link) in shared.plugins.running() {
         let mut about = link.about();
         // Where its page is stays here; the client hears only that there is one.
-        if about.remove("page").is_some() {
+        about.remove("page");
+        if page_available(&shared, &name) {
             about.insert("frame".into(), true.into());
         }
         about.insert("name".into(), name.as_str().into());
@@ -445,9 +446,18 @@ const TICKET_FOR: Duration = Duration::from_secs(12 * 60 * 60);
 const PLUGINS: &str = "plugins";
 const PLUGINS_PAGE: &str = include_str!("plugins.html");
 
-fn page_dir(shared: &Shared, name: &str) -> Option<std::path::PathBuf> {
-    let about = shared.plugins.get(name)?.about();
-    about.get("page")?.as_str().map(std::path::PathBuf::from)
+enum Page { Builtin(&'static str), Folder(std::path::PathBuf) }
+
+fn provider_page(name: &str, link: Option<&crate::provider::Link>) -> Option<Page> {
+    const PAGES: &[(&str, &str)] = &[("plugins", PLUGINS_PAGE), ("files", peek_files::PAGE)];
+    if name == PLUGINS { return Some(Page::Builtin(PLUGINS_PAGE)); }
+    let link = link?;
+    if let Some((_, page)) = PAGES.iter().find(|(n, _)| *n == name) { return Some(Page::Builtin(page)); }
+    link.about().get("page")?.as_str().map(|p| Page::Folder(p.into()))
+}
+
+fn page_available(shared: &Shared, name: &str) -> bool {
+    provider_page(name, shared.plugins.get(name).as_deref()).is_some()
 }
 
 fn ticket_ok(shared: &Shared, ticket: &str, name: &str) -> bool {
@@ -481,7 +491,7 @@ async fn frame_ticket(
     if !token_ok(&shared, &given, web) {
         return reply(StatusCode::FORBIDDEN, serde_json::json!({ "error": "token" }));
     }
-    if name != PLUGINS && page_dir(&shared, &name).is_none() {
+    if !page_available(&shared, &name) {
         return reply(StatusCode::NOT_FOUND, serde_json::json!({ "error": "no page" }));
     }
     let Ok(ticket) = pairing::random_hex(24) else {
@@ -506,27 +516,19 @@ async fn page_file(state: State<Arc<Shared>>, Path((name, path)): Path<(String, 
 /// own pages, may frame it.
 async fn page(State(shared): State<Arc<Shared>>, name: String, path: String) -> Response {
     let mime = content_type(&path);
-    let body = if name == PLUGINS {
-        if !(path.is_empty() || path == "index.html") {
-            return StatusCode::NOT_FOUND.into_response();
+    let body = match provider_page(&name, shared.plugins.get(&name).as_deref()) {
+        Some(Page::Builtin(page)) if path.is_empty() || path == "index.html" => page.as_bytes().to_vec(),
+        Some(Page::Folder(dir)) => {
+            let Ok(Ok(body)) = tokio::task::spawn_blocking(move || {
+                let file = page_path(&dir, &path).ok_or_else(|| std::io::Error::other("invalid page path"))?;
+                let root = std::fs::canonicalize(&dir)?;
+                let file = std::fs::canonicalize(file)?;
+                if !file.starts_with(root) { return Err(std::io::Error::other("page path leaves its folder")); }
+                std::fs::read(file)
+            }).await else { return StatusCode::NOT_FOUND.into_response(); };
+            body
         }
-        PLUGINS_PAGE.as_bytes().to_vec()
-    } else {
-        let Some(dir) = page_dir(&shared, &name) else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        let Ok(Ok(body)) = tokio::task::spawn_blocking(move || {
-            let file = page_path(&dir, &path).ok_or_else(|| std::io::Error::other("invalid page path"))?;
-            let root = std::fs::canonicalize(&dir)?;
-            let file = std::fs::canonicalize(file)?;
-            if !file.starts_with(root) {
-                return Err(std::io::Error::other("page path leaves its folder"));
-            }
-            std::fs::read(file)
-        }).await else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        body
+        _ => return StatusCode::NOT_FOUND.into_response(),
     };
     let ancestors = match &shared.web {
         Some(web) => format!("frame-ancestors 'self' {web}"),
@@ -1024,6 +1026,14 @@ mod tests {
         for text in [r#"{"t":"open","p":"jobs"}"#, r#"{"t":"to","p":"jobs","m":{"t":"view"}}"#, r#"{"t":"close","p":"jobs"}"#] {
             assert!(serde_json::from_str::<CoreMsg>(text).is_ok(), "{text}");
         }
+    }
+
+    #[test]
+    fn built_in_pages_require_a_running_provider() {
+        assert!(provider_page("files", None).is_none());
+        let link = crate::provider::Link::new("files");
+        assert!(matches!(provider_page("files", Some(&link)), Some(Page::Builtin(p)) if p == peek_files::PAGE));
+        assert!(matches!(provider_page("plugins", None), Some(Page::Builtin(_))));
     }
 
     #[test]
