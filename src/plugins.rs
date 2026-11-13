@@ -34,7 +34,7 @@ const DATA_DIR: &str = "plugin-data";
 const STAGING_DIR: &str = ".staging";
 const MANIFEST: &str = "peek-plugin.json";
 /// Names that are peek's own, which nothing added may take.
-pub const OWN: [&str; 4] = ["screen", "vitals", "power", "plugins"];
+pub const OWN: [&str; 5] = ["screen", "vitals", "power", "plugins", "files"];
 /// How long a plugin fetched to be looked at waits to be installed.
 const STAGED_FOR: Duration = Duration::from_secs(10 * 60);
 
@@ -939,6 +939,7 @@ mod tests {
             json!({"name":"sample","run":["node"],"provider_protocol":2}),
             json!({"name":"sample","run":[""]}),
             json!({"name":"screen","run":["node"]}),
+            json!({"name":"files","run":["node"]}),
             json!({"name":"sample","run":["node"],"settings":{"bad":{"kind":"switch","default":"yes"}}}),
         ] {
             fs::write(root.join(MANIFEST), manifest.to_string()).unwrap();

@@ -225,6 +225,7 @@ fn own_providers(args: &Args) -> Vec<(&'static str, provider::Start)> {
     vec![
         (include_str!("apps/vitals.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
         (include_str!("apps/power.json"), Start::Own { flags: power_flags(args), env: Vec::new() }),
+        (include_str!("apps/files.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
     ]
 }
 
@@ -846,10 +847,11 @@ fn main() {
     // A provider for a core, which listens, keeps the settings and logs for
     // both.
     if let Some(kind) = &args.provider {
-        if !matches!(kind.as_str(), "screen" | "vitals" | "power") {
+        if !matches!(kind.as_str(), "screen" | "vitals" | "power" | "files") {
             eprintln!("no provider is called {kind}");
             std::process::exit(2);
         }
+        if kind == "files" { peek_files::run(None); return; }
         let (from_core, core) = provider::connect();
         let _ = LOG_TO_CORE.set(core.clone());
         if let Some(page) = &args.provider_page {
@@ -1011,6 +1013,7 @@ mod tests {
         let args = Args::try_parse_from(["peek", "--provider", "screen", "--provider-page", "page"]).unwrap();
         assert_eq!(args.provider.as_deref(), Some("screen"));
         assert!(Args::try_parse_from(["peek"]).unwrap().provider_page.is_none());
+        assert_eq!(Args::try_parse_from(["peek", "--provider", "files"]).unwrap().provider.as_deref(), Some("files"));
     }
 
     #[test]

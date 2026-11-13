@@ -66,13 +66,15 @@ struct Root {
     real: PathBuf,
 }
 
-fn main() {
+pub const PAGE: &str = include_str!("../page/index.html");
+
+pub fn run(page: Option<PathBuf>) {
     let mut pipe = Pipe(BufWriter::new(io::stdout()));
 
     // From the plugin's settings (PEEK_SETTINGS), or the arguments.
     let settings: Value = std::env::var("PEEK_SETTINGS").ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
     let mut asked: Vec<String> = settings["folders"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
-    if asked.is_empty() {
+    if asked.is_empty() && page.is_some() {
         asked = std::env::args().skip(1).collect();
     }
     let mut roots = Vec::new();
@@ -88,7 +90,9 @@ fn main() {
         }
     }
 
-    pipe.json(ABOUT, 0, json!({ "page": page_dir().display().to_string(), "places": [] }));
+    let mut about = json!({ "places": [] });
+    if let Some(page) = page { about["page"] = page.display().to_string().into(); }
+    pipe.json(ABOUT, 0, about);
     let shared: Vec<String> = roots.iter().map(|r| r.real.display().to_string()).collect();
     pipe.log(&format!("sharing {}", if shared.is_empty() { "nothing".into() } else { shared.join(", ") }));
 
@@ -241,14 +245,6 @@ fn inside(path: &Path, root: &Path) -> bool {
     } else {
         path.starts_with(root)
     }
-}
-
-/// The page beside this program: `page/` in the plugin's folder, which is
-/// the folder above `bin/`, and the folder peek starts it in.
-fn page_dir() -> PathBuf {
-    let beside = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.parent()?.join("page")));
-    let page = beside.filter(|p| p.is_dir()).unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join("page"));
-    real(&page).unwrap_or(page)
 }
 
 #[cfg(test)]
