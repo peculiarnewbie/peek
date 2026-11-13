@@ -578,6 +578,13 @@ it serves the client with hot reload on http://localhost:5173 and forwards
 the socket to the host on port 9182. `bun run dev:hosted` serves the hosted
 client the same way, in Cloudflare's local runtime.
 
+To try a client change against your other machines, `npm run dev:tunnel` in
+`client/` serves the hosted client from the dev server at
+https://dev.peek.peculiarnewbie.com, through a Cloudflare Tunnel, with hot
+reload. Machines on a nightly (`peek update --channel next`) trust that site
+by default; released builds do not. It needs the tunnel's credentials, which
+live on one machine: setting it up is described in `scripts/dev-tunnel.mjs`.
+
 `cargo test` runs the unit tests. `cargo test -- --ignored` adds the ones
 that need a real desktop session. On Linux, the test that clicks and types
 only runs with `PEEK_TEST_NESTED=1`, against a nested compositor (start

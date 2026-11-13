@@ -446,12 +446,20 @@ fn detach() -> std::io::Result<()> {
 /// The hosted client's sites: released builds, and nightlies (scripts/nightly.mjs).
 const STABLE_WEB: &str = "https://peek.peculiarnewbie.com";
 const NEXT_WEB: &str = "https://next.peek.peculiarnewbie.com";
+/// The client's dev server, tunnelled out while someone works on it
+/// (scripts/dev-tunnel.mjs). Only nightlies trust it.
+const DEV_WEB: &str = "https://dev.peek.peculiarnewbie.com";
+
+fn default_web() -> Vec<String> {
+    web_for(env!("PEEK_CHANNEL"))
+}
 
 /// Both sites, this build's channel first: either works with any host, and
-/// `peek pair` links to the one that matches it.
-fn default_web() -> Vec<String> {
-    let order = if env!("PEEK_CHANNEL") == "next" { [NEXT_WEB, STABLE_WEB] } else { [STABLE_WEB, NEXT_WEB] };
-    order.map(String::from).to_vec()
+/// `peek pair` links to the one that matches it. Nightlies also take the dev
+/// server, so a client change can be tried on every machine before it ships.
+fn web_for(channel: &str) -> Vec<String> {
+    let order: &[&str] = if channel == "next" { &[NEXT_WEB, STABLE_WEB, DEV_WEB] } else { &[STABLE_WEB, NEXT_WEB] };
+    order.iter().map(|s| s.to_string()).collect()
 }
 
 /// The hosted clients' origins from `--web`, in order, or none at all if
@@ -1063,6 +1071,8 @@ mod tests {
         let web = |argv: &[&str]| web_origins(&Args::try_parse_from(argv).unwrap().web);
         // A build with no channel set is a stable one.
         assert_eq!(web(&["peek"]).unwrap(), [STABLE_WEB, NEXT_WEB]);
+        assert_eq!(web_for("stable"), [STABLE_WEB, NEXT_WEB]);
+        assert_eq!(web_for("next"), [NEXT_WEB, STABLE_WEB, DEV_WEB]);
         assert_eq!(web(&["peek", "--web", "https://a.example/", "--web", "http://localhost:5173"]).unwrap(),
             ["https://a.example", "http://localhost:5173"]);
         assert_eq!(web(&["peek", "--web", "https://A.example", "--web", "https://a.example"]).unwrap(), ["https://a.example"]);

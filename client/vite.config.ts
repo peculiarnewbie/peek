@@ -71,6 +71,10 @@ export default defineConfig(async ({ mode }) => ({
   // (The Cloudflare plugin puts the hosted build in .cloudflare/output.)
   build: { target: 'es2022', outDir: mode === 'screen-plugin' ? 'dist-screen' : 'dist', emptyOutDir: true },
   // `bun run dev` serves the client with hot reload and forwards the socket
-  // to a host running on this machine.
-  server: { proxy: { '/ws': { target: 'ws://127.0.0.1:9182', ws: true } } },
+  // to a host running on this machine. The dev server also answers as
+  // dev.peek.peculiarnewbie.com, through scripts/dev-tunnel.mjs.
+  server: {
+    proxy: { '/ws': { target: 'ws://127.0.0.1:9182', ws: true } },
+    allowedHosts: ['dev.peek.peculiarnewbie.com'],
+  },
 }));
