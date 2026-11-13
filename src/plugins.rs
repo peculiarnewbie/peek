@@ -989,7 +989,7 @@ mod tests {
         let source = root.join("source");
         fs::create_dir_all(source.join("bin")).unwrap();
         let manifest = |version: &str, run: &str, settings: Value| json!({"name":"sample","version":version,"run":[run],"settings":settings}).to_string();
-        let settings = json!({"keep":{"kind":"switch","default":false},"drop":{"kind":"switch","default":false}});
+        let settings = json!({"keep":{"kind":"switch","default":false},"drop":{"kind":"switch","default":false},"gone":{"kind":"switch","default":false}});
         fs::write(source.join(MANIFEST), manifest("1", "bin/app", settings)).unwrap();
         fs::write(source.join("bin").join(if cfg!(windows) { "app.exe" } else { "app" }), "one").unwrap();
         let catalog = Catalog::new(root.join("config"), Vec::new());
@@ -997,7 +997,7 @@ mod tests {
         assert!(catalog.update_from("sample", None, |_| {}).is_err());
         catalog.install(catalog.fetch(source.to_str().unwrap()).unwrap()).unwrap();
         catalog.set_on("sample", false).unwrap();
-        catalog.set_settings("sample", json!({"keep":true,"drop":true}).as_object().unwrap()).unwrap();
+        catalog.set_settings("sample", json!({"keep":true,"drop":true,"gone":true}).as_object().unwrap()).unwrap();
         fs::create_dir_all(catalog.data_dir("sample")).unwrap();
         fs::write(catalog.data_dir("sample").join("file"), "data").unwrap();
         fs::write(source.join(MANIFEST), manifest("2", "bin/missing", json!({}))).unwrap();
@@ -1005,10 +1005,15 @@ mod tests {
         assert_eq!(read_manifest(&catalog.plugins_dir().join("sample")).unwrap().version, "1");
         fs::write(source.join(MANIFEST), manifest("2", "bin/app", json!({"keep":{"kind":"switch","default":false},"drop":{"kind":"text","default":"new"}}))).unwrap();
         fs::write(source.join("bin").join(if cfg!(windows) { "app.exe" } else { "app" }), "two").unwrap();
-        catalog.update_from("sample", Some(source.to_str().unwrap()), |_| {}).unwrap();
+        let replacement = root.join("replacement");
+        copy_dir(&source, &replacement).unwrap();
+        catalog.update_from("sample", Some(replacement.to_str().unwrap()), |_| {}).unwrap();
         assert_eq!(read_manifest(&catalog.plugins_dir().join("sample")).unwrap().version, "2");
         assert_eq!(catalog.state().settings["sample"].get("keep"), Some(&json!(true)));
         assert!(!catalog.state().settings["sample"].contains_key("drop"));
+        assert!(!catalog.state().settings["sample"].contains_key("gone"));
+        assert_eq!(catalog.state().sources["sample"], std::path::absolute(&replacement).unwrap().to_string_lossy());
+        assert_eq!(fs::read(catalog.plugins_dir().join("sample").join("bin").join(if cfg!(windows) { "app.exe" } else { "app" })).unwrap(), b"two");
         assert!(catalog.state().off.contains("sample"));
         assert!(catalog.data_dir("sample").join("file").exists());
         assert!(catalog.state().sources.contains_key("sample"));
