@@ -1,0 +1,48 @@
+import { strict as assert } from 'node:assert';
+import { mkdtemp, mkdir, readFile, writeFile, cp, copyFile, rm, readdir, stat, open } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { relay } from './relay';
+
+const root = resolve(import.meta.dir, '../..');
+const temp = await mkdtemp(join(tmpdir(), 'peek-sync-spike-'));
+const exe = join(root, 'target/release', process.platform === 'win32' ? 'peek.exe' : 'peek');
+const pluginExe = process.platform === 'win32' ? 'peek-sync-spike.exe' : 'peek-sync-spike';
+const hosts: Host[] = [];
+async function until<T>(fn: () => Promise<T>, label: string, ms = 30000): Promise<T> { const end = Date.now() + ms; let error: unknown; while (Date.now() < end) { try { const v = await fn(); if (v) return v; } catch (e) { error = e; } await Bun.sleep(100); } throw new Error(`Timeout ${label}: ${error || ''}`); }
+async function hash(p: string) { const h = createHash('sha256'); for await (const b of createReadStream(p)) h.update(b); return h.digest('hex'); }
+class Host {
+  config: string; port: number; process!: ReturnType<typeof Bun.spawn>; token = ''; manager!: WebSocket; messages: any[] = [];
+  constructor(name: string) { this.config = join(temp, name); const s = Bun.serve({ port: 0, fetch: () => new Response() }); this.port = s.port!; s.stop(true); hosts.push(this); }
+  get base() { return `http://127.0.0.1:${this.port}`; }
+  async start() { this.process = Bun.spawn([exe, '--bind', '127.0.0.1', '--port', String(this.port), '--web', 'none'], { env: { ...process.env, PEEK_CONFIG_DIR: this.config }, stdout: 'ignore', stderr: 'ignore' }); await until(async () => (await fetch(`${this.base}/.well-known/peek`)).ok, 'host'); this.token = (await readFile(join(this.config, 'token'), 'utf8')).trim(); }
+  async stop() { if (this.process && this.process.exitCode === null) { this.process.kill(); await this.process.exited; } }
+  async cli(...args: string[]) { const p = Bun.spawn([exe, '--port', String(this.port), 'plugin', ...args], { env: { ...process.env, PEEK_CONFIG_DIR: this.config }, stdout: 'pipe', stderr: 'pipe' }); const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]); assert.equal(code, 0, `${out} ${err}`); }
+  async ready() { await until(async () => ((await (await fetch(`${this.base}/.well-known/peek`)).json()) as any).providers.some((p: any) => p.name === 'sync-spike' && p.frame), 'plugin'); }
+  async manage() { const r = await fetch(`${this.base}/api/frame/plugins`, { method: 'POST', headers: { 'content-type': 'application/json', Origin: this.base }, body: JSON.stringify({ token: this.token }) }); const { ticket } = await r.json() as any; this.manager = new WebSocket(`${this.base.replace('http','ws')}/api/frame/plugins/ws?ticket=${ticket}`, { headers: { Origin: this.base } } as any); this.manager.onmessage = e => this.messages.push(JSON.parse(e.data)); await new Promise<void>((res, rej) => { this.manager.onopen = () => res(); this.manager.onerror = () => rej(new Error('manager socket')); }); }
+  async command(m: object) { this.messages.length = 0; this.manager.send(JSON.stringify(m)); const answer: any = await until(async () => this.messages.find(x => x.t === 'ok' || x.t === 'error'), 'manager answer'); assert.equal(answer.t, 'ok', JSON.stringify(answer)); }
+  async settings(values: object) { await this.command({ t: 'settings', name: 'sync-spike', values }); await this.ready(); }
+}
+async function files(dir: string, prefix = ''): Promise<string[]> { const out: string[] = []; for (const e of await readdir(join(dir, prefix), { withFileTypes: true })) { if (e.name.startsWith('.')) continue; const p = prefix ? `${prefix}/${e.name}` : e.name; if (e.isDirectory()) out.push(...await files(dir, p)); else out.push(p); } return out; }
+async function runRelay(a: Host, b: Host, opts: any = {}, onData?: (side: string, data: any) => void) { let done: any[] = []; let failure: unknown; const started = performance.now(); const r = await relay(a, b, { ...opts, onMessage: (side: string, data: any) => { try { if (typeof data === 'string') { const m = JSON.parse(data); if (side === 'b' && m.t === 'done') done.push(m); } onData?.(side, data); } catch (e) { failure = e; } } }); await until(async () => done.length >= 2 || r.closes.length > 0 || failure, 'relay', 900000); if (failure) throw failure; if (done.length >= 2) r.close(); await until(async () => r.closes.length === 2, 'relay close'); return { seconds: (performance.now() - started) / 1000, done, counts: r.counts, closes: r.closes }; }
+try {
+  const source = join(temp, 'source'), dest = join(temp, 'destination'), pkg = join(temp, 'package'); await mkdir(source); await mkdir(dest);
+  for (let i = 0; i < 2000; i++) { const dir = join(source, `d${Math.floor(i/100)}`, `s${i%7}`); await mkdir(dir, { recursive: true }); await writeFile(join(dir, `${i}.dat`), randomBytes(1024 + i % (15*1024))); }
+  for (let i = 0; i < 20; i++) await writeFile(join(source, `medium-${i}`), randomBytes((1 + i % 8) * 1024 * 1024));
+  await writeFile(join(source, 'Résumé – final.txt'), 'accent'); await writeFile(join(source, '日本語.txt'), 'japanese');
+  const big = join(source, 'big'); const bigFile = await open(big, 'w'); for (let i = 0; i < 512; i++) await bigFile.write(randomBytes(1024*1024)); await bigFile.close();
+  await writeFile(join(dest, 'destination-only'), 'keep');
+  let started = performance.now(); await copyFile(big, join(temp, 'baseline')); console.log('baseline', JSON.stringify({ seconds: (performance.now()-started)/1000, bytes: (await stat(big)).size })); await rm(join(temp, 'baseline'));
+  await mkdir(pkg); await cp(join(root, 'experiments/sync-spike/page'), join(pkg, 'page'), { recursive: true }); await copyFile(join(root, 'experiments/sync-spike/peek-plugin.json'), join(pkg, 'peek-plugin.json')); await mkdir(join(pkg, 'bin')); await copyFile(join(root, 'experiments/sync-spike/target/release', pluginExe), join(pkg, 'bin', pluginExe));
+  const a = new Host('a'), b = new Host('b'); await a.start(); await b.start(); await a.cli('add', pkg); await b.cli('add', pkg); await a.ready(); await b.ready(); await a.manage(); await b.manage(); await a.settings({ send: source, receive: '', window: '4' }); await b.settings({ send: '', receive: dest, window: '4' });
+  const initial = await runRelay(a,b); console.log('initial', JSON.stringify(initial)); assert.equal(initial.done.length,2); assert.equal(initial.done[0].errors.length,0); for (const p of await files(source)) assert.equal(await hash(join(source,p)),await hash(join(dest,p)), p);
+  const nothing = await runRelay(a,b); console.log('nothing',JSON.stringify(nothing)); assert.equal(nothing.done[0].copied,0); assert.equal(nothing.counts.aToB.binaryBytes,0);
+  await rm(join(dest,'big')); const dropped = await runRelay(a,b,{dropAfterBytes: 205*1024*1024}); console.log('drop',JSON.stringify(dropped)); const resumed = await runRelay(a,b); console.log('resume',JSON.stringify(resumed)); assert.ok(resumed.done[0].resumed>0); assert.equal(await hash(big),await hash(join(dest,'big')));
+  await rm(join(dest,'big')); let interruptedBytes = 0; let stopping = false; const interrupted = await runRelay(a,b,{},(side,data) => { if (!stopping && side==='a' && data instanceof ArrayBuffer && data.byteLength && (interruptedBytes+=data.byteLength)>180*1024*1024) { stopping=true; void b.stop(); } }); console.log('restart interrupted',JSON.stringify(interrupted)); await b.start(); await b.ready(); await b.manage(); const restarted=await runRelay(a,b); console.log('restart resumed',JSON.stringify(restarted)); assert.ok(restarted.done[0].resumed>0); assert.equal(await hash(big),await hash(join(dest,'big')));
+  await rm(join(dest,'big')); let changed=false; const changing=await runRelay(a,b,{},(side,data)=>{ if (!changed && side==='a' && data instanceof ArrayBuffer) { changed=true; require('node:fs').appendFileSync(big, 'changed'); } }); console.log('changed',JSON.stringify(changing)); assert.equal(await hash(big),await hash(join(dest,'big')));
+  for (const window of [4,16,64]) { await rm(join(dest,'big'),{force:true}); await a.settings({send:source,receive:'',window:String(window)}); const result=await runRelay(a,b,{delayMs:20}); console.log(`slow ${window}`,JSON.stringify(result)); }
+  assert.equal(await readFile(join(dest,'destination-only'),'utf8'),'keep'); console.log('destination-only preserved');
+} finally { for (const h of hosts) { try { h.manager?.close(); await h.stop(); } catch {} } await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 }); }
+
