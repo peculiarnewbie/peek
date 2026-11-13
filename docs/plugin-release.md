@@ -1,10 +1,15 @@
 # Plugin foundation: implementation and release gates
 
-13 November 2026. Work branch: `feat/plugin-foundation-screen`.
+13 November 2026. Work branch: `feat/plugin-foundation-screen` (PR #20),
+merged to main.
 
 This branch includes a copy of the uncommitted `spike-frames` implementation
 and hardening on top. The original `D:/git/peek-frames` checkout is untouched.
-The package is still version 0.2.2; this work does not publish a 0.3.0 release.
+
+**This is the fallback for 0.3.0.** The package version still reads 0.2.2 and
+nothing is published. The experiments after this merge (a sync spike, peer
+access, sync) may change what 0.3.0 contains. If they all fail, this state is
+released as 0.3.0, once the release gates below are met.
 
 ## What is implemented
 
@@ -104,7 +109,7 @@ the executable. No test injects desktop input or signs the user out.
 
 Verified here:
 
-- 64 Windows host Rust tests and two native file-plugin tests pass; two
+- 70 Windows host Rust tests and two native file-plugin tests pass; two
   existing host capture/benchmark tests remain ignored. Normal, hosted, and
   experimental client builds and TypeScript checks pass.
 - A local npm tarball installs through the real CLI without lifecycle scripts.

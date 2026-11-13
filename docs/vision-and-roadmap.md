@@ -71,10 +71,12 @@ feature sets or claims that their future scopes cannot overlap Peek.
 
 ## Current baseline
 
-The plugin work is on the branch `feat/plugin-foundation-screen`: the spike,
-and the hardening recorded in [plugin-release.md](plugin-release.md). Its
-package version still reads 0.2.2, and nothing is released. Do not confuse
-its behavior with released guarantees.
+The plugin work is on main, merged from `feat/plugin-foundation-screen`
+(PR #20): the spike, and the hardening recorded in
+[plugin-release.md](plugin-release.md). Its package version still reads
+0.2.2, and nothing is released. Do not confuse its behavior with released
+guarantees. It is the fallback for 0.3.0: if the experiments after it fail,
+this state is released as 0.3.0, once its release gates are met.
 
 Files is built in, uses the same manifest, and is off by default.
 
@@ -100,8 +102,8 @@ Important limits:
   security sandbox, and frame tickets do not restrict native process rights.
 - View-only relies partly on recognized message names, not a complete model
   of arbitrary plugin effects. Caller-specific provider grants are missing.
-- Updates, data preservation conventions, and platform package selection are
-  unfinished. Tickets are lost on host restart. Cross-machine and browser
+- Updates keep settings and data, but platform package selection and
+  user-session execution are unfinished. Tickets are lost on host restart. Cross-machine and browser
   coverage remains incomplete.
 - Channel restoration is not durable app state or guaranteed task delivery.
 

@@ -432,10 +432,10 @@ function settingRows(it, canChange) {
     if (!draft) return;
     save.disabled = true;
     draft.focused = false;
-    const r = await act({ t: 'settings', name: it.name, values: draft.values }, `Saved; ${it.name} restarted`);
+    const r = await act({ t: 'settings', name: it.name, values: draft.values }, it.on ? `Saved; ${it.name} restarted` : 'Saved');
     if (r.t === 'error') { draft.error = r.why; save.disabled = false; draw(); }
     else { drafts.delete(it.name); draw(); }
-  } }, 'Save and restart');
+  } }, it.on ? 'Save and restart' : 'Save');
   const reset = el('button', { class: 'btn small ghost', onclick: () => { drafts.delete(it.name); draw(); } }, 'Undo');
   // Only there once something has been changed.
   const bar = el('div', { class: 'save', hidden: !dirty }, save, reset,
