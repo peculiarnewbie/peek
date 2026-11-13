@@ -27,6 +27,7 @@ export async function relay(a: Host, b: Host, options: RelayOptions = {}) {
     const i = side === 'a' ? 0 : 1, dest = i ? left : right, count = i ? counts.bToA : counts.aToB;
     options.onMessage?.(side, data);
     chains[i] = chains[i].then(async () => {
+      if (ended) return;
       if (options.delayMs) await Bun.sleep(options.delayMs);
       if (dest.readyState !== WebSocket.OPEN || ended) return;
       const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
