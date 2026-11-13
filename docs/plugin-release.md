@@ -59,12 +59,15 @@ A minimal manifest:
 `run` is an argument array, not a shell command. Its working directory is the
 installed plugin directory. Bundle a binary for the installation's OS/CPU,
 or declare the runtime in `needs`. Settings arrive in `PEEK_SETTINGS`; a
-view-only host also sets `PEEK_VIEW_ONLY=1`. `version` is an optional string.
-`PEEK_DATA_DIR` names a separate folder for persistent data. Updating keeps
-valid settings, the on/off state and data. Removing keeps data unless `--purge`
-is given. Peek does not check for newer versions or update automatically. The provider must honor that mode
+view-only host also sets `PEEK_VIEW_ONLY=1`. The provider must honor that mode
 for its own protocols: the host recognizes conventional `do`/`peer` actions
 and rejects inbound binary, but cannot infer effects of arbitrary messages.
+
+`version` is an optional string, shown as given. `PEEK_DATA_DIR` names a
+folder for the plugin's persistent data, kept apart from its installed files.
+Updating keeps valid settings, the on/off state and that data. Removing keeps
+the data unless `--purge` is given. Peek does not check for newer versions or
+update automatically.
 
 The pipe format and view/page conventions are in [providers.md](providers.md)
 and [frames.md](frames.md). Stdout is only for protocol frames; use the LOG

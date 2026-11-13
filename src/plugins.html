@@ -89,7 +89,11 @@
   .chip.missing { background: rgba(240,138,107,.12); color: var(--bad); }
   .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .actions .grow { flex: 1; }
-  .confirm { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); }
+  .confirm { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); flex-wrap: wrap; }
+  .check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
+  .check input { margin: 0; accent-color: var(--bad); }
+  .kept { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 10px 2px 0; color: var(--muted); font-size: 12.5px; }
+  .kept b { color: var(--ink-2); font-weight: 500; }
 
   .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg); }
   /* A setting sits in the list like any other line: its label lines up with the text in the box. */
@@ -227,6 +231,8 @@ function toast(text) {
 
 // ---- the list ----
 const open = new Set(), openLogs = new Set(), confirming = new Set();
+/** Plugins being removed with what they kept, chosen in the confirm. */
+const purging = new Set();
 /** Settings being edited, by plugin: what is typed, and what went wrong. */
 const drafts = new Map();
 const rowErrors = new Map();
@@ -249,7 +255,7 @@ function draw() {
   if ([...drafts.values()].some(d => d.focused)) return;
   const shared = JSON.stringify([busy, canAct, canChange]);
   const rowOf = it => {
-    const key = JSON.stringify([it, shared, open.has(it.name), openLogs.has(it.name), confirming.has(it.name),
+    const key = JSON.stringify([it, shared, open.has(it.name), openLogs.has(it.name), confirming.has(it.name), purging.has(it.name),
       rowErrors.get(it.name) ?? null, drafts.get(it.name) ?? null]);
     const old = rows.get(it.name);
     if (old && old.key === key) return old.node;
@@ -261,11 +267,12 @@ function draw() {
   const own = data.items.filter(i => i.kind === "peek's own");
   if (!groupsBuilt) {
     $('groups').replaceChildren(el('h2', {}, 'Built in'), el('div', { class: 'group', id: 'own' }),
-      el('h2', {}, 'Installed'), el('div', { class: 'group', id: 'added' }));
+      el('h2', {}, 'Installed'), el('div', { class: 'group', id: 'added' }), el('div', { id: 'kept' }));
     groupsBuilt = true;
   }
   sync($('added'), added.length ? added.map(rowOf) : [emptyNote(canChange)]);
   sync($('own'), own.map(rowOf));
+  keptNote(data.kept_data ?? [], canChange);
   for (const name of rows.keys()) if (!data.items.some(i => i.name === name)) rows.delete(name);
 }
 
@@ -282,6 +289,20 @@ function emptyNote(canChange) {
     empty = el('div', { class: 'empty', 'data-text': text }, el('b', {}, 'Nothing installed yet'), text);
   }
   return empty;
+}
+
+/** What removed plugins left behind, which installing them again finds. */
+let keptKey = '';
+function keptNote(names, canChange) {
+  const key = JSON.stringify([names, canChange, busy]);
+  if (key === keptKey) return;
+  keptKey = key;
+  $('kept').replaceChildren(...(names.length ? [el('div', { class: 'kept' },
+    `Kept from removed plugins: `,
+    names.map((name, n) => [n ? ', ' : null, el('b', {}, name)]),
+    '. Installing one again finds its data.',
+    canChange ? names.map(name => el('button', { class: 'btn small ghost danger', disabled: !!busy,
+      onclick: () => act({ t: 'remove', name, purge: true }, `Deleted what ${name} kept`) }, `Delete ${name}'s data`)) : null)] : []));
 }
 
 function banner(title, rest) {
@@ -318,7 +339,9 @@ function row(it, canAct, canChange) {
 function details(it, canAct, canChange) {
   const s = it.status || {};
   const facts = [
+    it.version ? ['Version', it.version] : null,
     ['Runs', el('code', {}, it.runs)],
+    it.from ? ['From', el('code', {}, it.from)] : null,
     it.needs?.length ? ['Needs', el('div', { class: 'chips' }, it.needs.map(n => {
       const missing = it.missing?.includes(n);
       return el('span', { class: 'chip' + (missing ? ' missing' : '') }, icon(missing ? ICON.x : ICON.check), n, missing ? ' — not found' : '');
@@ -343,16 +366,22 @@ function details(it, canAct, canChange) {
   const actions = [];
   if (it.on && !it.fixed) actions.push(el('button', { class: 'btn small', disabled: !canAct || !!busy,
     onclick: () => act({ t: 'restart', name: it.name }, `Restarted ${it.name}`) }, 'Restart'));
+  if (it.kind === 'a plugin' && canChange) actions.push(el('button', { class: 'btn small', disabled: !!busy,
+    onclick: () => openAdd({ name: it.name, version: it.version, from: it.from }) }, 'Update'));
   actions.push(el('span', { class: 'grow' }));
   if (it.removable) {
+    const purge = purging.has(it.name);
     actions.push(confirming.has(it.name)
-      ? el('span', { class: 'confirm' }, `Remove ${it.name}${it.kind === 'a plugin' ? ' and delete its folder' : ''}?`,
+      ? el('span', { class: 'confirm' }, `Remove ${it.name}?`,
+          it.data ? el('label', { class: 'check' },
+            el('input', { type: 'checkbox', checked: purge, onchange: e => { e.target.checked ? purging.add(it.name) : purging.delete(it.name); draw(); } }),
+            'Delete what it kept too') : null,
           el('button', { class: 'btn small danger', onclick: async () => {
-            confirming.delete(it.name); open.delete(it.name);
-            const r = await act({ t: 'remove', name: it.name }, `Removed ${it.name}`);
+            confirming.delete(it.name); purging.delete(it.name); open.delete(it.name);
+            const r = await act({ t: 'remove', name: it.name, purge }, `Removed ${it.name}${it.data && !purge ? '; what it kept is still here' : ''}`);
             if (r.t === 'error') { rowErrors.set(it.name, r.why); open.add(it.name); draw(); }
           } }, 'Remove'),
-          el('button', { class: 'btn small ghost', onclick: () => { confirming.delete(it.name); draw(); } }, 'Keep'))
+          el('button', { class: 'btn small ghost', onclick: () => { confirming.delete(it.name); purging.delete(it.name); draw(); } }, 'Keep'))
       : el('button', { class: 'btn small ghost danger', disabled: !canChange, title: canChange ? '' : 'Turned off on this machine',
           onclick: () => { confirming.add(it.name); draw(); } }, 'Remove'));
   }
@@ -418,10 +447,13 @@ function settingRows(it, canChange) {
 
 // ---- adding ----
 const EXAMPLES = [['a folder', 'D:\\plugins\\files'], ['git', 'https://github.com/you/peek-plugin'], ['npm', 'peek-plugin-files']];
-function openAdd() {
+/** Add a plugin; or, given one that is installed, update it from where it came from. */
+function openAdd(updating = null) {
   let review = null, error = '', fetching = false, installing = false;
   const input = el('input', { type: 'text', placeholder: 'A folder, a git address, or an npm package', autocomplete: 'off', spellcheck: 'false' });
+  if (updating?.from) input.value = updating.from;
   const close = () => $('modal').replaceChildren();
+  const title = updating ? `Update ${updating.name}` : 'Add a plugin';
   async function look() {
     const source = input.value.trim();
     if (!source || fetching) return;
@@ -433,17 +465,26 @@ function openAdd() {
   }
   async function install() {
     installing = true; render();
-    const r = await act({ t: 'install', id: review.id }, `Installed ${review.name}`);
+    const r = updating
+      ? await act({ t: 'update', id: review.id }, `Updated ${review.name}`)
+      : await act({ t: 'install', id: review.id }, `Installed ${review.name}`);
     installing = false;
     if (r.t === 'error') { error = r.why; render(); return; }
     close(); open.add(r.name);
   }
+  // What stops it being installed (or updated) from what was looked at.
+  const blocked = r => !r ? null
+    : updating && r.name !== updating.name ? `That is ${r.name}, not ${updating.name}.`
+    : !updating && r.taken ? `Something called ${r.name} is installed already. Update it from its row instead.`
+    : null;
   function render() {
     const body = [
       el('div', { class: 'inline' }, input,
         el('button', { class: 'btn', disabled: fetching, onclick: look }, fetching ? el('span', { class: 'spin' }) : null, fetching ? 'Fetching' : 'Look at it')),
-      el('div', { class: 'hint' }, 'For example', EXAMPLES.map(([k, v], n) => [n ? '·' : null,
-        el('button', { title: v, onclick: () => { input.value = v; input.focus(); } }, k)])),
+      updating
+        ? el('div', { class: 'hint' }, updating.from ? 'Where it was installed from. Change it to update from somewhere else.' : 'Where to get the new version from.')
+        : el('div', { class: 'hint' }, 'For example', EXAMPLES.map(([k, v], n) => [n ? '·' : null,
+            el('button', { title: v, onclick: () => { input.value = v; input.focus(); } }, k)])),
     ];
     if (error) body.push(el('div', { class: 'err' }, error));
     if (review) {
@@ -451,6 +492,8 @@ function openAdd() {
       body.push(el('div', { class: 'card' },
         el('div', { class: 'who' }, avatar(r.name), el('div', {}, el('b', {}, r.name), el('div', { class: 'desc' }, r.description || 'No description'))),
         el('dl', { class: 'facts', style: 'margin:12px 0 0' },
+          updating ? [el('dt', {}, 'Version'), el('dd', {}, `${updating.version || 'unknown'} → ${r.version || 'unknown'}`)]
+            : r.version ? [el('dt', {}, 'Version'), el('dd', {}, r.version)] : null,
           el('dt', {}, 'Runs'), el('dd', {}, el('code', {}, r.runs)),
           r.needs.length ? [el('dt', {}, 'Needs'), el('dd', {}, el('div', { class: 'chips' }, r.needs.map(n => {
             const missing = r.missing.includes(n);
@@ -458,26 +501,33 @@ function openAdd() {
           })))] : null,
           r.dependencies ? [el('dt', {}, 'Brings'), el('dd', {}, 'npm dependencies, installed without running their scripts')] : null,
           el('dt', {}, 'From'), el('dd', {}, el('code', {}, r.from)))));
-      body.push(r.taken
-        ? el('div', { class: 'err' }, `Something called ${r.name} is installed already. Remove it first.`)
-        : el('div', { class: 'caution' }, icon(ICON.warn), el('div', {}, el('b', {}, 'It runs with full rights. '),
-            "It runs as peek's user on this machine and can do anything that user can. Peek can't limit what it does: install only what you trust.")));
+      const why = blocked(r);
+      if (why) body.push(el('div', { class: 'err' }, why));
+      else {
+        if (updating) body.push(el('div', { class: 'hint' }, `${updating.name} stops while it is replaced. Its settings and what it kept stay; a setting the new version no longer has goes back to its default.`));
+        else if (r.data) body.push(el('div', { class: 'hint' }, `What ${r.name} kept when it was removed is still here, and it will find it again.`));
+        body.push(el('div', { class: 'caution' }, icon(ICON.warn), el('div', {}, el('b', {}, 'It runs with full rights. '),
+          "It runs as peek's user on this machine and can do anything that user can. Peek can't limit what it does: install only what you trust.")));
+      }
     }
+    const verb = updating ? 'Update' : 'Install';
     $('modal').replaceChildren(el('div', { class: 'scrim', onclick: e => { if (e.target === e.currentTarget && !installing) close(); } },
-      el('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Add a plugin' },
-        el('div', { class: 'head' }, el('h2', {}, 'Add a plugin'),
+      el('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+        el('div', { class: 'head' }, el('h2', {}, title),
           el('button', { class: 'btn small ghost', 'aria-label': 'Close', onclick: close }, icon(ICON.x))),
         el('div', { class: 'body' }, body),
         el('div', { class: 'foot' },
           el('button', { class: 'btn ghost', onclick: close, disabled: installing }, 'Cancel'),
-          el('button', { class: 'btn primary', disabled: !review || review.taken || review.missing.length > 0 || installing, onclick: install },
-            installing ? el('span', { class: 'spin' }) : null, review ? `Install ${review.name}` : 'Install')))));
+          el('button', { class: 'btn primary', disabled: !review || !!blocked(review) || review.missing.length > 0 || installing, onclick: install },
+            installing ? el('span', { class: 'spin' }) : null, review ? `${verb} ${review.name}` : verb)))));
   }
   input.onkeydown = e => { if (e.key === 'Enter') look(); if (e.key === 'Escape') close(); };
   render();
   input.focus();
+  // Updating from where it came from: look at it straight away.
+  if (updating?.from) look();
 }
-$('add').onclick = openAdd;
+$('add').onclick = () => openAdd();
 
 // The client's colours, if it sends them.
 addEventListener('message', e => {
