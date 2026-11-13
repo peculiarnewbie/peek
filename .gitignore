@@ -1,2 +1,5 @@
 target/
 dist/
+examples/provider/files/bin/
+client/dist-screen/
+experiments/screen-plugin/package/

@@ -1,0 +1,16 @@
+{
+  "manifest_version": 1,
+  "provider_protocol": 1,
+  "name": "files",
+  "description": "Browse the folders you share, and download their files.",
+  "run": [
+    "bin/peek-files"
+  ],
+  "settings": {
+    "folders": {
+      "label": "Shared folders",
+      "kind": "folders",
+      "default": []
+    }
+  }
+}

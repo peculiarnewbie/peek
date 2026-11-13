@@ -59,13 +59,20 @@ export function navigate(to: string, replace = false) {
   history[replace ? 'replaceState' : 'pushState'](null, '', to);
   setPath(to);
 }
+/** `/screen/<machine>[/<provider>]`, in parts. */
+const screenParts = () => {
+  if (!path().startsWith(SCREEN)) return [];
+  try { return decodeURIComponent(path().slice(SCREEN.length)).split('/').filter(Boolean); } catch { return []; }
+};
 /** The machine this page shows, or null on the list. */
 export const current = () => {
-  if (!path().startsWith(SCREEN)) return null;
-  let name: string;
-  try { name = decodeURIComponent(path().slice(SCREEN.length)).replace(/\/+$/, '').toLowerCase(); } catch { return null; }
+  const name = screenParts()[0]?.toLowerCase();
   return (name && machines().find(m => slug(m) === name || m.id === name)) || null;
 };
+/** The provider whose own page is shown in place of the screen, if one is
+ *  (`/screen/<machine>/<provider>`: see components/Frame.tsx). */
+export const shownPage = () => current() ? screenParts()[1] ?? null : null;
+export const pagePath = (m: Machine, provider: string) => `${screenPath(m)}/${encodeURIComponent(provider)}`;
 export const openMachine = (m: Machine) => navigate(screenPath(m));
 export const home = () => navigate('/');
 

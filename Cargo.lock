@@ -728,6 +728,7 @@ dependencies = [
  "image-webp",
  "jpeg-encoder",
  "libc",
+ "peek-files",
  "qrcode",
  "rayon",
  "serde",
@@ -738,6 +739,13 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "windows",
+]
+
+[[package]]
+name = "peek-files"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

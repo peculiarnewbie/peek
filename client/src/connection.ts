@@ -1,3 +1,4 @@
+import { SCREEN_PLUGIN } from './plugin-mode';
 // The WebSocket to the host: connecting, reconnecting, decoding frames.
 import {
   active, cfg, setBlocked, setCfg, setClipboardOn, setLive, setMessage, setMonitors, setViewOnly,
@@ -25,19 +26,29 @@ function takeToken() {
   if (t) { store.set('token', t); history.replaceState(null, '', location.pathname); }
   return t;
 }
-const token = HOSTED ? '' : takeToken() || store.get('token') || '';
+const token = HOSTED || SCREEN_PLUGIN ? '' : takeToken() || store.get('token') || '';
 // Entering the full URL in a tab that already shows this page only changes the
 // fragment, which does not reload the page, so pick the token up here.
-if (!HOSTED) addEventListener('hashchange', () => { if (takeToken()) location.reload(); });
+if (!HOSTED && !SCREEN_PLUGIN) addEventListener('hashchange', () => { if (takeToken()) location.reload(); });
 
 /** Where the socket goes: the host that served this page, or the chosen machine. */
 function target(): { url: string; token: string; name: string } | null {
+  if (SCREEN_PLUGIN) {
+    const name = location.pathname.split('/')[2];
+    const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket') || '';
+    return { url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/frame/${encodeURIComponent(name)}/ws`, token: ticket, name };
+  }
   if (!HOSTED) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     return { url: `${proto}://${location.host}/ws`, token, name: 'the host' };
   }
   const m = current();
   return m && { url: `wss://${m.host}/ws`, token: m.token, name: m.name };
+}
+/** The machine's address and token, for what is not the screen's socket. */
+export function machine(): { base: string; token: string; name: string } | null {
+  const t = target();
+  return t && { base: t.url.replace(/^ws/, 'http').replace(/\/ws$/, ''), token: t.token, name: t.name };
 }
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
 /** Failed attempts in a row, to say so once a machine stays away. */
@@ -92,6 +103,7 @@ export function connect() {
     v: String(PROTOCOL), token: t.token, q: cfg.quality, scale: String(cfg.scale), fps: String(cfg.fps),
     soft: cfg.soft ? '1' : '0', lossless: cfg.lossless ? '1' : '0', mon: String(cfg.mon), vis: active() ? '1' : '0',
   });
+  if (SCREEN_PLUGIN) { q.delete('token'); q.set('ticket', t.token); }
   firstFrameFrom = active() ? performance.now() : null;
   fromPageLoad = startup;
   const sock = ws = new WebSocket(`${t.url}?${q}`);
@@ -103,6 +115,7 @@ export function connect() {
     setLive(true);
     // Pausing or resuming while the socket was still connecting (focus often
     // arrives just after a reload) could not be sent; restate where we are now.
+    if (SCREEN_PLUGIN) send({ t: 'cfg', q: cfg.quality, scale: cfg.scale, mon: cfg.mon, fps: cfg.fps, soft: cfg.soft, lossless: cfg.lossless });
     send({ t: 'vis', v: active() });
   };
   sock.onmessage = e => {
@@ -122,6 +135,11 @@ export function connect() {
     setBlocked(false);
     dropPages();
     if (e.code === CLOSE_BAD_TOKEN) {
+      if (SCREEN_PLUGIN) {
+        setMessage('Authorization expired. Reopening…');
+        if (parent !== window) parent.postMessage({ t: 'renew-ticket' }, '*');
+        return;
+      }
       if (HOSTED) {
         setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`);
         return;

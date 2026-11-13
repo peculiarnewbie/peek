@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files</title>
+<style>
+  :root { --bg: #0d0d0d; --surface: #1a1a19; --raised: #2c2c2a; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --line: rgba(255,255,255,.10); --accent: #3987e5; --bad: #f08a6b; --sans: system-ui, "Segoe UI", sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--ink); font: 13px/1.4 var(--sans); display: grid; grid-template-columns: 200px 1fr; }
+  aside { border-right: 1px solid var(--line); padding: 12px 8px; overflow: auto; }
+  aside h2 { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin: 4px 8px 8px; }
+  aside button { display: flex; width: 100%; gap: 8px; align-items: center; padding: 6px 8px; border: 0; border-radius: 7px;
+    background: none; color: var(--ink-2); font: inherit; text-align: left; cursor: pointer; overflow: hidden; }
+  aside button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  aside button:hover { background: rgba(255,255,255,.04); }
+  aside button[aria-current] { background: var(--raised); color: var(--ink); }
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  nav { flex: 1; display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; white-space: nowrap; }
+  nav button { border: 0; background: none; color: var(--ink-2); font: inherit; padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+  nav button:hover { background: rgba(255,255,255,.05); color: var(--ink); }
+  nav button:last-child { color: var(--ink); font-weight: 600; }
+  nav i { color: var(--muted); font-style: normal; }
+  input { width: 200px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: inherit; font: inherit; }
+  .list { flex: 1; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; background: var(--bg); text-align: left; font-weight: 500; color: var(--muted); padding: 8px 14px;
+    border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; white-space: nowrap; }
+  th.num, td.num { text-align: right; }
+  td { padding: 7px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; color: var(--ink-2); }
+  td.name { color: var(--ink); max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  tr.row { cursor: pointer; }
+  tr.row:hover td, tr.row:focus td { background: rgba(255,255,255,.04); outline: none; }
+  .ico { display: inline-block; width: 16px; margin-right: 8px; color: var(--muted); }
+  .dir .ico { color: var(--accent); }
+  .act { opacity: 0; color: var(--accent); }
+  tr.row:hover .act, tr.row:focus .act { opacity: 1; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  footer { padding: 6px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; gap: 12px; }
+  footer .bad { color: var(--bad); }
+  @media (max-width: 560px) { body { grid-template-columns: 1fr; } aside { display: none; } input { width: 120px; } .when { display: none; } }
+</style>
+</head>
+<body>
+<aside><h2>Shared</h2><div id="roots"></div></aside>
+<main>
+  <header><nav id="crumbs"></nav><input id="filter" placeholder="Filter" autocomplete="off"></header>
+  <div class="list"><table><thead><tr>
+    <th data-k="name">Name</th><th data-k="size" class="num">Size</th><th data-k="mtime" class="when">Modified</th><th></th>
+  </tr></thead><tbody id="rows"></tbody></table><div id="empty" class="empty" hidden></div></div>
+  <footer><span id="count"></span><span id="status"></span></footer>
+</main>
+<script>
+const name = location.pathname.split('/')[2];
+const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket') || '';
+const $ = id => document.getElementById(id);
+const state = { roots: [], root: null, path: '', entries: [], sort: 'name', desc: false, filter: '' };
+let ws, nextRef = 1;
+
+function connect() {
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/frame/${name}/ws?ticket=${ticket}`);
+  ws.onopen = () => { status(''); ask({ t: 'roots' }); };
+  ws.onclose = e => { status(e.code === 4403 ? 'Refused: open it again from peek.' : 'Reconnecting…', true); if (e.code !== 4403) setTimeout(connect, 2000); };
+  ws.onmessage = e => receive(JSON.parse(e.data));
+}
+const ask = m => ws.readyState === 1 && ws.send(JSON.stringify(m));
+function status(text, bad) { const s = $('status'); s.textContent = text; s.className = bad ? 'bad' : ''; }
+
+function receive(m) {
+  if (m.t === 'roots') {
+    state.roots = m.roots;
+    if (!state.roots.some(r => r.id === state.root)) open(state.roots[0]?.id ?? null, '');
+    else open(state.root, state.path);
+    drawRoots();
+  } else if (m.t === 'list' && m.root === state.root && m.path === state.path) {
+    state.entries = m.entries; status(''); drawRows();
+  } else if (m.t === 'file') {
+    if (m.error) return status(`Cannot download: ${m.error}`, true);
+    // A link peek made for this one file, on this machine: the browser downloads it.
+    const a = document.createElement('a'); a.href = m.url; a.download = m.name; document.body.append(a); a.click(); a.remove();
+    status(`Downloading ${m.name} (${size(m.size)})`);
+  } else if (m.t === 'error') status(m.why, true);
+}
+
+function open(root, path) {
+  state.root = root; state.path = path; state.entries = []; state.filter = ''; $('filter').value = '';
+  drawRoots(); drawCrumbs(); drawRows();
+  if (root != null) { status('Loading…'); ask({ t: 'list', root, path }); }
+}
+const enter = e => open(state.root, state.path ? `${state.path}/${e.name}` : e.name);
+const download = e => { status(`Preparing ${e.name}…`); ask({ t: 'get', root: state.root, path: state.path ? `${state.path}/${e.name}` : e.name, ref: nextRef++ }); };
+
+function drawRoots() {
+  $('roots').replaceChildren(...state.roots.map(r => {
+    const b = document.createElement('button');
+    b.innerHTML = '<span class="ico">▣</span>'; const s = document.createElement('span'); s.textContent = r.label; b.append(s);
+    if (r.id === state.root) b.setAttribute('aria-current', 'true');
+    b.onclick = () => open(r.id, ''); return b;
+  }));
+}
+function drawCrumbs() {
+  const root = state.roots.find(r => r.id === state.root);
+  const parts = state.path ? state.path.split('/') : [];
+  const nav = $('crumbs'); nav.replaceChildren();
+  if (!root) return;
+  const crumb = (label, path) => { const b = document.createElement('button'); b.textContent = label; b.onclick = () => open(state.root, path); return b; };
+  nav.append(crumb(root.label, ''));
+  parts.forEach((p, i) => { const sep = document.createElement('i'); sep.textContent = '›'; nav.append(sep, crumb(p, parts.slice(0, i + 1).join('/'))); });
+}
+function drawRows() {
+  const f = state.filter.toLowerCase();
+  const list = state.entries.filter(e => !f || e.name.toLowerCase().includes(f)).sort((a, b) => {
+    if (a.dir !== b.dir) return a.dir ? -1 : 1;
+    const k = state.sort, x = a[k] ?? 0, y = b[k] ?? 0;
+    const c = k === 'name' ? String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' }) : x - y;
+    return state.desc ? -c : c;
+  });
+  $('rows').replaceChildren(...list.map(e => {
+    const tr = document.createElement('tr'); tr.className = 'row' + (e.dir ? ' dir' : ''); tr.tabIndex = 0;
+    const td = (text, cls) => { const c = document.createElement('td'); c.textContent = text; if (cls) c.className = cls; tr.append(c); return c; };
+    const n = td('', 'name'); n.innerHTML = `<span class="ico">${e.dir ? '▸' : '·'}</span>`; n.append(e.name); n.title = e.name;
+    td(e.dir ? '' : size(e.size), 'num'); td(when(e.mtime), 'when'); td(e.dir ? '' : 'Download', 'act');
+    const go = () => e.dir ? enter(e) : download(e);
+    tr.onclick = go; tr.onkeydown = k => { if (k.key === 'Enter') go(); };
+    return tr;
+  }));
+  const empty = $('empty');
+  empty.hidden = list.length > 0;
+  empty.textContent = state.root == null ? 'Nothing is shared on this machine yet: choose folders in the settings of files, on the Plugins page.' : state.filter ? 'Nothing matches.' : 'This folder is empty.';
+  const files = state.entries.filter(e => !e.dir);
+  $('count').textContent = state.root == null ? '' : `${state.entries.length - files.length} folders, ${files.length} files`;
+}
+function size(n) {
+  if (n == null) return '';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${i ? n.toFixed(n < 10 ? 1 : 0) : n} ${u[i]}`;
+}
+const when = ms => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+$('filter').oninput = e => { state.filter = e.target.value; drawRows(); };
+document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
+  state.desc = state.sort === th.dataset.k ? !state.desc : false; state.sort = th.dataset.k; drawRows();
+});
+// Backspace goes up a folder, as in Explorer.
+addEventListener('keydown', e => {
+  if (e.key === 'Backspace' && document.activeElement?.tagName !== 'INPUT' && state.path) open(state.root, state.path.split('/').slice(0, -1).join('/'));
+});
+// The client's colours, if it sends them.
+addEventListener('message', e => {
+  if (e.source !== parent || e.data?.t !== 'theme') return;
+  const vars = e.data.vars || {}, mine = { '--bg': '--page', '--surface': '--surface', '--raised': '--raised', '--ink': '--ink',
+    '--ink-2': '--ink-2', '--muted': '--muted', '--line': '--line', '--accent': '--s1', '--sans': '--sans' };
+  for (const [k, theirs] of Object.entries(mine)) if (vars[theirs]) document.documentElement.style.setProperty(k, String(vars[theirs]));
+});
+connect();
+</script>
+</body>
+</html>

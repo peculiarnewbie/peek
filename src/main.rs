@@ -8,6 +8,7 @@ mod engine;
 mod install;
 mod pairing;
 mod platform;
+mod plugins;
 mod power;
 mod provider;
 mod screen;
@@ -119,6 +120,9 @@ struct Args {
     /// stdin and stdout. The core starts these itself
     #[arg(long, hide = true, value_name = "KIND")]
     provider: Option<String>,
+    /// Serve a provider-owned page (used by the opt-in screen plugin spike).
+    #[arg(long, hide = true, requires = "provider", value_name = "FOLDER")]
+    provider_page: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -166,6 +170,36 @@ enum Command {
         #[command(subcommand)]
         action: ProviderCommand,
     },
+    /// Plugins: folders with a peek-plugin.json, installed here from a
+    /// folder, a git repository or npm. Also on the Plugins page in a browser
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Install a plugin: a folder on this machine, an https address of a git
+    /// repository, or an npm package
+    Add { source: String },
+    /// Update a plugin, keeping its settings and data
+    Update { name: String, source: Option<String> },
+    /// Remove a plugin, or a command added with `peek provider add`
+    Remove {
+        name: String,
+        /// Also delete the plugin's data
+        #[arg(long)]
+        purge: bool,
+    },
+    /// List everything beside the screen, and whether it is on
+    List,
+    /// Whether a paired browser may install, remove and change plugins (it
+    /// can always turn them on and off)
+    RemoteInstall {
+        #[arg(value_parser = ["on", "off"])]
+        on: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -183,48 +217,26 @@ enum ProviderCommand {
     List,
 }
 
-/// The providers added with `peek provider add`: name, and the command that
-/// starts it.
-const PROVIDERS_FILE: &str = "providers.json";
-/// peek's own, which nothing added may take the name of.
-const OWN_PROVIDERS: [&str; 3] = ["screen", "vitals", "power"];
-
-/// A name that can stand in an address and a message: short, lowercase
-/// letters, digits and dashes, and not one of peek's own.
-fn provider_name_ok(name: &str) -> bool {
-    (1..=32).contains(&name.len())
-        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !OWN_PROVIDERS.contains(&name)
+/// What peek has beside the screen: its own providers, then the commands
+/// and plugins added here. Each is a process of its own, started now and
+/// again if it ends, and stopped when it is turned off.
+fn own_providers(args: &Args) -> Vec<(&'static str, provider::Start)> {
+    use provider::Start;
+    vec![
+        (include_str!("apps/vitals.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
+        (include_str!("apps/power.json"), Start::Own { flags: power_flags(args), env: Vec::new() }),
+        (include_str!("apps/files.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
+    ]
 }
 
-fn read_providers(dir: &std::path::Path) -> BTreeMap<String, Vec<String>> {
-    fs::read_to_string(dir.join(PROVIDERS_FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str::<BTreeMap<String, Vec<String>>>(&text).ok())
-        .unwrap_or_default()
-}
-
-/// Everything beside the screen: peek's own providers, then the ones added
-/// here. Each is a process of its own, started now and again if it ends.
-fn providers(args: &Args) -> BTreeMap<String, Arc<provider::Link>> {
-    use provider::{Link, Start};
-    let mut all = BTreeMap::new();
-    all.insert("vitals".to_string(), Link::spawn("vitals", Start::Own(Vec::new()), args.view_only));
-    all.insert("power".to_string(), Link::spawn("power", Start::Own(power_flags(args)), args.view_only));
-    for (name, command) in read_providers(&config_dir()) {
-        if !provider_name_ok(&name) || command.is_empty() {
-            log!("{PROVIDERS_FILE}: skipped {name:?}, which is no name for a provider or has no command");
-            continue;
-        }
-        log!("provider {name}: {}", command.join(" "));
-        all.insert(name.clone(), Link::spawn(&name, Start::Program(command), args.view_only));
-    }
-    all
+fn plugins(args: &Args) -> Arc<plugins::Plugins> {
+    plugins::Plugins::start(plugins::Catalog::new(config_dir(), own_providers(args)), args.view_only)
 }
 
 /// The config folder of the peek installed here, for commands that change
 /// its settings: the service's if there is one, otherwise this user's.
 fn installed_config_dir() -> PathBuf {
+    if let Some(dir) = config_override() { return dir; }
     #[cfg(windows)]
     if machine_config_dir().is_dir() {
         return machine_config_dir();
@@ -232,10 +244,84 @@ fn installed_config_dir() -> PathBuf {
     config_dir()
 }
 
+fn plugin_command(args: &Args, action: &PluginCommand) -> Result<(), String> {
+    let catalog = plugins::Catalog::new(installed_config_dir(), own_providers(args));
+    // A running peek starts and stops providers to match; one that is not
+    // running reads it all when it starts.
+    let tell = || match local_request(args, "POST", "/api/plugins/reload", "") {
+        Ok((204, _)) => println!("The running peek has it now."),
+        _ => println!("peek reads this when it starts."),
+    };
+    let change = |name: &str, action: &dyn Fn() -> Result<(), String>| -> Result<(), String> {
+        let on = catalog.list().iter().find(|(n, ..)| n == name).map(|(_, _, _, on)| *on);
+        if on == Some(true) {
+            catalog.set_on(name, false)?;
+            tell();
+        }
+        let result = action();
+        if on == Some(true) && catalog.list().iter().any(|(n, ..)| n == name) {
+            let restored = catalog.set_on(name, true);
+            tell();
+            restored?;
+        } else {
+            tell();
+        }
+        result
+    };
+    match action {
+        PluginCommand::List => {
+            for (name, kind, runs, on) in catalog.list() {
+                println!("{name:<16} {:<4} {kind:<11} {runs}", if on { "on" } else { "off" });
+            }
+            println!(
+                "
+A browser {} install, remove and change plugins here (`peek plugin remote-install on|off`).",
+                if catalog.remote_install() { "may" } else { "may not" }
+            );
+            let kept = catalog.kept_data();
+            if !kept.is_empty() {
+                println!("Kept data: {}. Delete with `peek plugin remove <name> --purge`.", kept.join(", "));
+            }
+            Ok(())
+        }
+        PluginCommand::Add { source } => {
+            let name = catalog.add(source, |line| println!("{line}"))?;
+            println!("Installed {name}.");
+            tell();
+            Ok(())
+        }
+        PluginCommand::Update { name, source } => {
+            change(name, &|| catalog.update_from(name, source.as_deref(), |line| println!("{line}")).map(|_| ()))?;
+            println!("Updated {name}.");
+            Ok(())
+        }
+        PluginCommand::Remove { name, purge } => {
+            change(name, &|| catalog.remove(name, *purge))?;
+            if !purge && catalog.has_data(name) {
+                println!("Data kept at {}. Delete it with `peek plugin remove {name} --purge`.", catalog.data_dir(name).display());
+            }
+            println!("Removed {name}.");
+            Ok(())
+        }
+        PluginCommand::RemoteInstall { on } => {
+            catalog.set_remote_install(on == "on")?;
+            println!(
+                "{}",
+                if on == "on" {
+                    "A paired browser may now install, remove and change plugins here."
+                } else {
+                    "A paired browser may now only turn plugins on and off, and restart them."
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
 fn provider_command(action: &ProviderCommand) -> Result<(), String> {
     let dir = installed_config_dir();
-    let path = dir.join(PROVIDERS_FILE);
-    let mut all = read_providers(&dir);
+    let path = dir.join(plugins::PROVIDERS_FILE);
+    let mut all = plugins::read_commands(&dir);
     let save = |all: &BTreeMap<String, Vec<String>>| {
         fs::create_dir_all(&dir)
             .and_then(|()| fs::write(&path, serde_json::to_string_pretty(all).unwrap_or_default()))
@@ -252,10 +338,10 @@ fn provider_command(action: &ProviderCommand) -> Result<(), String> {
             Ok(())
         }
         ProviderCommand::Add { name, command } => {
-            if !provider_name_ok(name) {
+            if !plugins::name_ok(name) {
                 return Err(format!(
                     "{name:?} cannot name a provider: use up to 32 lowercase letters, digits and dashes, and not {}",
-                    OWN_PROVIDERS.join(", ")
+                    plugins::OWN.join(", ")
                 ));
             }
             all.insert(name.clone(), command.clone());
@@ -278,6 +364,7 @@ fn provider_command(action: &ProviderCommand) -> Result<(), String> {
 /// (%ProgramData%\peek for the service), otherwise $XDG_CONFIG_HOME/peek or
 /// ~/.config/peek.
 fn config_dir() -> PathBuf {
+    if let Some(dir) = config_override() { return dir; }
     #[cfg(windows)]
     if platform::is_system() {
         return machine_config_dir();
@@ -292,6 +379,11 @@ fn machine_config_dir() -> PathBuf {
         .filter(|v| !v.is_empty())
         .map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from)
         .join("peek")
+}
+
+/// Isolate a development/test host from the installed host and its secrets.
+fn config_override() -> Option<PathBuf> {
+    std::env::var_os("PEEK_CONFIG_DIR").filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 fn user_config_dir() -> PathBuf {
@@ -363,6 +455,7 @@ fn local_request(args: &Args, method: &str, path: &str, body: &str) -> Result<(u
     let folders = [machine_config_dir(), user_config_dir()];
     #[cfg(not(windows))]
     let folders = [user_config_dir()];
+    let folders: Vec<PathBuf> = config_override().map_or_else(|| folders.into_iter().collect(), |dir| vec![dir]);
     let secrets: Vec<String> = folders
         .iter()
         .filter_map(|dir| fs::read_to_string(dir.join("local-secret")).ok())
@@ -638,6 +731,7 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
         }
         Command::Uninstall => install::uninstall(),
         Command::Provider { action } => provider_command(action),
+        Command::Plugin { action } => plugin_command(args, action),
     }
 }
 
@@ -666,10 +760,11 @@ fn core_in_service() -> Arc<provider::Link> {
         web,
         pairing,
         screen: server::Screen::Provider(screen.clone()),
-        providers: providers(&args),
+        plugins: plugins(&args),
         view_only: args.view_only,
         serve_target: pairing::serve_target(args.bind, args.port),
         next_id: AtomicU64::new(1),
+        tickets: Default::default(),
     });
     let addr = SocketAddr::new(args.bind, args.port);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -752,20 +847,29 @@ fn main() {
     // A provider for a core, which listens, keeps the settings and logs for
     // both.
     if let Some(kind) = &args.provider {
-        if !matches!(kind.as_str(), "screen" | "vitals" | "power") {
+        if !matches!(kind.as_str(), "screen" | "vitals" | "power" | "files") {
             eprintln!("no provider is called {kind}");
             std::process::exit(2);
         }
+        if kind == "files" { peek_files::run(None); return; }
         let (from_core, core) = provider::connect();
         let _ = LOG_TO_CORE.set(core.clone());
+        if let Some(page) = &args.provider_page {
+            let page = match fs::canonicalize(page).ok().filter(|p| p.is_dir()) {
+                Some(page) => page,
+                None => { log!("provider page is not a directory"); std::process::exit(2); }
+            };
+            core.about(&serde_json::json!({"page":page}).to_string());
+        }
+        let view_only = args.view_only || std::env::var("PEEK_VIEW_ONLY").is_ok_and(|v| v == "1");
         match kind.as_str() {
             "vitals" => vitals::run(from_core, core),
-            "power" => power::run(from_core, core, args.view_only),
+            "power" => power::run(from_core, core, view_only),
             _ => {
                 platform::init();
                 #[cfg(windows)]
                 platform::keep_device(args.keep_gpu);
-                let screen = screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps);
+                let screen = screen::start(view_only, !args.no_clipboard, args.verbose, args.fps);
                 provider::run_screen(screen, from_core, core);
             }
         }
@@ -824,9 +928,10 @@ fn main() {
         serve_target: pairing::serve_target(args.bind, args.port),
         pairing,
         screen: server::Screen::Here(screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps)),
-        providers: providers(&args),
+        plugins: plugins(&args),
         view_only: args.view_only,
         next_id: AtomicU64::new(1),
+        tickets: Default::default(),
     });
 
     // Listen before saying so, and before handing out a pairing code.
@@ -903,12 +1008,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_pages_are_opt_in_and_require_a_provider() {
+        assert!(Args::try_parse_from(["peek", "--provider-page", "page"]).is_err());
+        let args = Args::try_parse_from(["peek", "--provider", "screen", "--provider-page", "page"]).unwrap();
+        assert_eq!(args.provider.as_deref(), Some("screen"));
+        assert!(Args::try_parse_from(["peek"]).unwrap().provider_page.is_none());
+        assert_eq!(Args::try_parse_from(["peek", "--provider", "files"]).unwrap().provider.as_deref(), Some("files"));
+    }
+
+    #[test]
     fn a_provider_added_here_cannot_take_a_name_of_peeks_own() {
         for ok in ["jobs", "build-2", "a"] {
-            assert!(provider_name_ok(ok), "{ok}");
+            assert!(plugins::name_ok(ok), "{ok}");
         }
-        for bad in ["", "screen", "vitals", "power", "Jobs", "my jobs", "a/b", "../x", &"x".repeat(33)] {
-            assert!(!provider_name_ok(bad), "{bad}");
+        for bad in ["", "screen", "vitals", "power", "plugins", "Jobs", "my jobs", "a/b", "../x", &"x".repeat(33)] {
+            assert!(!plugins::name_ok(bad), "{bad}");
         }
     }
 }

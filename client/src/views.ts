@@ -1,3 +1,4 @@
+import { createSignal } from 'solid-js';
 // What a machine's providers ask to be shown, and asking them.
 //
 // A provider is a program on a machine, beside its screen: peek's own
@@ -54,7 +55,20 @@ export interface ProviderAbout {
   places?: string[];
   /** It wants the records of the same provider on the other machines. */
   peers?: boolean;
+  /** It has a page of its own, which the machine serves (Frame.tsx). */
+  frame?: boolean;
 }
+
+/** Descriptor for the client served by a machine itself. Refresh after a
+ * management page changes providers, just as the hosted client does. */
+export const [own, setOwn] = createSignal<{ providers?: ProviderAbout[] } | null>(null);
+export async function refreshOwn() {
+  try { const r = await fetch('/.well-known/peek', { cache: 'no-store' }); if (r.ok) setOwn(await r.json()); }
+  catch { /* the main connection reports availability */ }
+}
+
+export const frameProviders = (m: { providers?: ProviderAbout[] } | null | undefined) =>
+  (m?.providers ?? []).filter(p => p.frame).map(p => p.name);
 
 interface Answer { t: string; why?: string; place?: string; view?: View; record?: unknown; again?: number | null }
 

@@ -296,3 +296,27 @@ code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-si
   background: rgba(255, 255, 255, .07); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
 .qr { width: 184px; margin: 4px auto 0; background: #fff; border-radius: 8px; padding: 6px; }
 .qr svg { display: block; width: 100%; height: auto; }
+/* A provider's own page (components/Frame.tsx): a big box, always named. */
+#frame { position: fixed; z-index: 3; left: 50%; top: 56px; transform: translateX(-50%);
+  width: min(960px, calc(100vw - 16px)); height: min(720px, calc(100vh - 72px)); display: flex; flex-direction: column;
+  overflow: hidden; }
+#frame-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 6px 0 14px; flex: none;
+  border-bottom: 1px solid var(--line); }
+#frame-title { font-weight: 600; }
+#frame-from { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#frame iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
+#frame-wait { flex: 1; display: grid; place-items: center; color: var(--muted); padding: 16px; text-align: center; }
+body.home #frame { visibility: hidden; }
+/* A provider's page in place of the screen (/screen/<machine>/<provider>). */
+#ppage { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--page); }
+#ppage-head { display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 10px; flex: none;
+  background: #1a1a19; border-bottom: 1px solid var(--line); }
+#ppage-tabs { display: flex; gap: 2px; margin-left: 8px; min-width: 0; overflow-x: auto; }
+.ptab { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 0; border-radius: 8px;
+  background: none; color: var(--ink-2); font: inherit; cursor: pointer; white-space: nowrap; }
+.ptab:hover { background: var(--hover); color: var(--ink); }
+.ptab[aria-selected="true"] { background: var(--raised); color: var(--ink); }
+.ptab svg.i { width: 15px; height: 15px; }
+#ppage-from { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#ppage iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
+@media (max-width: 600px) { #ppage-from { display: none; } }

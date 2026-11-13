@@ -6,7 +6,7 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 // Headers for the hosted client on Cloudflare (Workers static assets read
 // `_headers`). Sockets and requests may only go to Tailscale HTTPS names.
 const HOSTED_HEADERS = `/*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://*.ts.net wss://*.ts.net; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://*.ts.net wss://*.ts.net; frame-src https://*.ts.net; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   Permissions-Policy: camera=(self), microphone=(), geolocation=()
@@ -68,7 +68,7 @@ export default defineConfig(async ({ mode }) => ({
     ...(mode === 'hosted' ? [hostedFiles(), (await import('@cloudflare/vite-plugin')).cloudflare()] : []),
   ],
   // (The Cloudflare plugin puts the hosted build in .cloudflare/output.)
-  build: { target: 'es2022', outDir: 'dist', emptyOutDir: true },
+  build: { target: 'es2022', outDir: mode === 'screen-plugin' ? 'dist-screen' : 'dist', emptyOutDir: true },
   // `bun run dev` serves the client with hot reload and forwards the socket
   // to a host running on this machine.
   server: { proxy: { '/ws': { target: 'ws://127.0.0.1:9182', ws: true } } },

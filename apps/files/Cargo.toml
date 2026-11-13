@@ -1,0 +1,21 @@
+[package]
+name = "peek-files"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A peek plugin: browse the folders shared on a machine, and download their files."
+publish = false
+
+# A crate of its own, not part of peek's: a plugin knows peek only by the
+# messages on its pipe.
+[workspace]
+
+[dependencies]
+serde_json = "1.0.154"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

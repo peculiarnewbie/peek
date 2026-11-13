@@ -53,8 +53,10 @@ export const [message, setMessage] = createSignal('');
 export const [sleeping, setSleeping] = createSignal(false);
 /** Paused by "Pause when unfocused" rather than by the user. */
 export const [autoSlept, setAutoSlept] = createSignal(false);
+/** A provider's own page is shown in place of the screen (Frame.tsx). */
+export const [onPage, setOnPage] = createSignal(false);
 /** The host only sends the screen while this is true. */
-export const active = () => !document.hidden && !sleeping();
+export const active = () => !document.hidden && !sleeping() && !onPage();
 
 // Panels.
 export const [settingsOpen, setSettingsOpen] = createSignal(false);

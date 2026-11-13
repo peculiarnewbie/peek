@@ -1,3 +1,4 @@
+import { SCREEN_PLUGIN } from '../plugin-mode';
 import { For, Show } from 'solid-js';
 import { applyCfg } from '../actions';
 import { focusScreen } from '../screen';
@@ -75,7 +76,7 @@ export function Settings() {
           </Group>
         </Show>
       }</For>
-      <Show when={!viewOnly()}>
+      <Show when={!SCREEN_PLUGIN && !viewOnly()}>
         <Group label="Pair a device" value="">
           <PairDevice />
         </Group>

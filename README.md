@@ -427,8 +427,9 @@ https://your.domain`.
 ## Beyond the screen: providers
 
 A machine can offer more than its screen, through providers: programs peek
-starts beside itself. A provider says what to show and the client draws
-it; none of a provider's code runs in the browser. Two come with peek:
+starts beside itself. A provider can describe a view using the client's stock
+controls, or offer its own page served by the machine in a frame. Two come
+with peek:
 
 - **Vitals.** Processor, memory and storage: one line on each machine's
   card in the hosted client, and figures in the stats panel.
@@ -445,6 +446,13 @@ peek. It runs as the same user as peek. [docs/providers.md](docs/providers.md)
 has what a provider and a client say to each other, and
 `examples/provider/hello.mjs` is one in a single file. The parts of that
 which let a provider know of your other machines are provisional.
+
+The upcoming plugin foundation also packages providers with a
+`peek-plugin.json`, settings, pages, and live management. See
+[the implementation and release checklist](docs/plugin-release.md) and
+[the page protocol](docs/frames.md). The default screen stays built in;
+[screen as a plugin](experiments/screen-plugin/README.md) is an opt-in
+viability experiment.
 
 ## How it works
 
