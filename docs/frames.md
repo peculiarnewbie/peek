@@ -26,10 +26,11 @@ and automatic frame-ticket recovery after a host restart.
 ## Where a page shows
 
 - **In place of the screen,** at `/screen/<machine>/<provider>` on the hosted client.
-  - A tab bar has Screen and each provider with a page; the toolbar gets a button for each provider too.
+  - A tab bar has Screen and each app with a page; the toolbar gets a button for each app too.
   - Back, bookmarks and reloads work.
   - The machine stops sending the screen while a page is shown.
-- **In a panel over the screen,** on the client a machine serves itself.
+- **In a panel over the screen,** on the client a machine serves itself, opened from a toolbar button for each app.
+- **The Plugins page is reached from Settings** (Manage plugins) on both clients, not from the toolbar.
 
 ## Downloads
 
@@ -74,7 +75,7 @@ A plugin is a folder with a `peek-plugin.json`:
 
 ### Managing them
 
-The **Plugins** page is peek's own page, served by peek itself at `/p/plugins/`, and shown as a tab like any provider's page. It lists:
+The **Plugins** page is peek's own page, served by peek itself at `/p/plugins/`, and opened from Settings → Manage plugins. It lists:
 - peek's own providers;
 - commands added with `peek provider add`;
 - plugins.
