@@ -148,6 +148,7 @@ try {
   assert.equal((await manager.answer({ t: 'settings', name: 'files', values: { folders: [shared] } }, 'ok')).t, 'ok');
   assert.equal((await manager.answer({ t: 'on', name: 'files', on: true }, 'ok')).t, 'ok');
   await a.ready('files');
+  assert.equal((await fetch(`${a.base}/p/files/`)).status, 200);
   const builtinPage = await a.page('files');
   const builtinRoots = await builtinPage.answer({ t: 'roots' }, 'roots');
   assert.equal(builtinRoots.roots.length, 1);

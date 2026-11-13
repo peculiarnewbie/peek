@@ -1,11 +1,13 @@
 //! A file explorer for peek, as a plugin: browse the folders shared on this
 //! machine, and download their files (a spike: see docs/frames.md).
 //!
-//! It is a program of its own, with nothing of peek's in it. Peek starts it
-//! in the plugin's folder and talks to it over its stdin and stdout; the
-//! page in `page/` talks to it through peek.
+//! Peek builds it in as its own `files` app, off by default, and serves
+//! `PAGE` itself. It has nothing of peek's in it, so it also builds alone
+//! as a plugin (`src/main.rs`): peek starts that in the plugin's folder and
+//! talks to it over its stdin and stdout; the page in `page/` talks to it
+//! through peek.
 //!
-//! Build it, and put the program where `peek-plugin.json` says it is:
+//! To build it alone, put the program where `peek-plugin.json` says it is:
 //!
 //!   cargo build --release
 //!   (Windows)  copy target\release\peek-files.exe bin\

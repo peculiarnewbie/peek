@@ -218,7 +218,7 @@ impl Catalog {
                 ("PEEK_DATA_DIR".into(), self.data_dir(&name).to_string_lossy().into_owned())];
             let start = match start { Start::Own { flags, .. } => Start::Own { flags: flags.clone(), env }, _ => start.clone() };
             Some(Spec { name, kind: Kind::Own, start, description: manifest.description.clone(),
-                runs: manifest.run.join(" "), manifest: Some(manifest), dir: None })
+                runs: format!("peek --provider {}", manifest.name), manifest: Some(manifest), dir: None })
         }).collect();
         for (name, words) in read_commands(&self.dir) {
             if !name_ok(&name) || words.is_empty() || all.iter().any(|s| s.name == name) {
