@@ -71,17 +71,18 @@ macro_rules! log {
 }
 
 #[derive(Parser)]
-#[command(version, about = "Instant-connect remote desktop host for LAN and Tailscale.")]
+#[command(version = env!("PEEK_VERSION"), about = "Instant-connect remote desktop host for LAN and Tailscale.")]
 struct Args {
     /// Address to listen on
     #[arg(long, default_value = "0.0.0.0", global = true)]
     bind: IpAddr,
     #[arg(long, default_value_t = 9182, global = true)]
     port: u16,
-    /// Origin of the hosted client, whose pages may connect with a paired
-    /// token ("none" to refuse them)
-    #[arg(long, value_name = "ORIGIN", default_value = "https://peek.peculiarnewbie.com")]
-    web: String,
+    /// Origin of a hosted client, whose pages may connect with a paired
+    /// token. Give it more than once for several; the first is the one
+    /// `peek pair` links to ("none" to refuse them all)
+    #[arg(long, value_name = "ORIGIN", default_values_t = default_web())]
+    web: Vec<String>,
     /// Maximum frames per second
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
     fps: u32,
@@ -430,6 +431,31 @@ fn detach() -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// The hosted client's sites: released builds, and nightlies (scripts/nightly.mjs).
+const STABLE_WEB: &str = "https://peek.peculiarnewbie.com";
+const NEXT_WEB: &str = "https://next.peek.peculiarnewbie.com";
+
+/// Both sites, this build's channel first: either works with any host, and
+/// `peek pair` links to the one that matches it.
+fn default_web() -> Vec<String> {
+    let order = if env!("PEEK_CHANNEL") == "next" { [NEXT_WEB, STABLE_WEB] } else { [STABLE_WEB, NEXT_WEB] };
+    order.map(String::from).to_vec()
+}
+
+/// The hosted clients' origins from `--web`, in order, or none at all if
+/// any of them is "none".
+fn web_origins(args: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for arg in args {
+        match web_origin(arg)? {
+            None => return Ok(Vec::new()),
+            Some(origin) if !out.contains(&origin) => out.push(origin),
+            Some(_) => {}
+        }
+    }
+    Ok(out)
+}
+
 /// The hosted client's origin from `--web`, or `None` for "none".
 fn web_origin(arg: &str) -> Result<Option<String>, String> {
     let arg = arg.trim().trim_end_matches('/');
@@ -603,9 +629,7 @@ fn pair(args: &Args, serve_port: Option<u16>) -> Result<bool, String> {
         }
     }
     if !host_running(args) {
-        if web_origin(&args.web)?.is_none() {
-            return Err("with --web none there is no hosted client to pair".into());
-        }
+        web_origins(&args.web)?;
         #[cfg(windows)]
         if args.detach || args.service {
             return Err("`peek pair` shows its code in this terminal, so it cannot start peek with --detach or --service. \
@@ -750,7 +774,7 @@ fn core_in_service() -> Arc<provider::Link> {
         std::process::exit(1);
     }
     let args = Args::parse();
-    let web = web_origin(&args.web).unwrap_or_else(|e| fail(e));
+    let web = web_origins(&args.web).unwrap_or_else(|e| fail(e));
     if args.no_token && !(args.bind.is_unspecified() || args.bind.is_loopback() || server::tailnet(args.bind)) {
         fail(format!("--no-token accepts only Tailscale connections; --bind {} is not a Tailscale address", args.bind));
     }
@@ -817,7 +841,7 @@ fn main() {
             return;
         }
     }
-    let web = match web_origin(&args.web) {
+    let web = match web_origins(&args.web) {
         Ok(web) => web,
         Err(e) => {
             eprintln!("{e}");
@@ -985,7 +1009,7 @@ fn main() {
             println!("Tailscale is not up yet; connections are accepted as soon as it is.");
         }
     }
-    if let Some(web) = web.as_ref().filter(|_| !pair_here) {
+    if let Some(web) = web.first().filter(|_| !pair_here) {
         println!("To use it from {web}, pair the browser: run `peek pair`.");
     }
     if !args.view_only {
@@ -1019,6 +1043,18 @@ mod tests {
         assert_eq!(args.provider.as_deref(), Some("screen"));
         assert!(Args::try_parse_from(["peek"]).unwrap().provider_page.is_none());
         assert_eq!(Args::try_parse_from(["peek", "--provider", "files"]).unwrap().provider.as_deref(), Some("files"));
+    }
+
+    #[test]
+    fn hosted_clients_default_to_both_sites_and_can_be_listed_or_refused() {
+        let web = |argv: &[&str]| web_origins(&Args::try_parse_from(argv).unwrap().web);
+        // A build with no channel set is a stable one.
+        assert_eq!(web(&["peek"]).unwrap(), [STABLE_WEB, NEXT_WEB]);
+        assert_eq!(web(&["peek", "--web", "https://a.example/", "--web", "http://localhost:5173"]).unwrap(),
+            ["https://a.example", "http://localhost:5173"]);
+        assert_eq!(web(&["peek", "--web", "https://A.example", "--web", "https://a.example"]).unwrap(), ["https://a.example"]);
+        assert!(web(&["peek", "--web", "https://a.example", "--web", "none"]).unwrap().is_empty());
+        assert!(web(&["peek", "--web", "http://a.example"]).is_err());
     }
 
     #[test]

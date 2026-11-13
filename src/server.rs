@@ -46,9 +46,10 @@ const DEAD_AFTER: Duration = Duration::from_secs(15);
 pub struct Shared {
     /// None: no token, and only Tailscale connections are accepted.
     pub token: Option<String>,
-    /// Origin of the hosted client (e.g. https://peek.peculiarnewbie.com),
-    /// whose pages may connect with a paired token.
-    pub web: Option<String>,
+    /// Origins of the hosted clients (https://peek.peculiarnewbie.com, say),
+    /// whose pages may connect with a paired token. The first is the one
+    /// pairing links go to; empty refuses them all.
+    pub web: Vec<String>,
     /// What Tailscale Serve passes to this peek (`pairing::serve_target`),
     /// to find the HTTPS port it does so on.
     pub serve_target: String,
@@ -257,7 +258,7 @@ fn header_str<'a>(headers: &'a HeaderMap, name: header::HeaderName) -> Option<&'
 
 /// The request comes from a page of the hosted client.
 fn from_web(shared: &Shared, headers: &HeaderMap) -> bool {
-    shared.web.as_deref().is_some_and(|web| header_str(headers, header::ORIGIN) == Some(web))
+    header_str(headers, header::ORIGIN).is_some_and(|origin| shared.web.iter().any(|web| web == origin))
 }
 
 /// CORS headers letting the hosted client, and only it, read a response.
@@ -531,10 +532,7 @@ async fn page(State(shared): State<Arc<Shared>>, name: String, path: String) -> 
         }
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
-    let ancestors = match &shared.web {
-        Some(web) => format!("frame-ancestors 'self' {web}"),
-        None => "frame-ancestors 'self'".into(),
-    };
+    let ancestors = std::iter::once("frame-ancestors 'self'").chain(shared.web.iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
     let mut h = HeaderMap::new();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
@@ -744,7 +742,7 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         let port = pairing::peek_port(&status, &host, &shared.serve_target).unwrap_or(443);
         pairing::serve_host(&host, port)
     });
-    let link = match (&shared.web, &host) {
+    let link = match (shared.web.first(), &host) {
         (Some(web), Some(host)) => Some(pairing::pair_link(web, host, &name, &code)),
         _ => None,
     };
@@ -754,7 +752,7 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         "expires": pairing::CODE_TTL.as_secs(),
         "host": host,
         "name": name,
-        "web": shared.web,
+        "web": shared.web.first(),
         "link": link,
         "own": own,
     })

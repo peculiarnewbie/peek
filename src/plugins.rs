@@ -212,7 +212,7 @@ impl Catalog {
                 Ok(m) => m,
                 Err(e) => { crate::log!("plugins: built-in manifest: {e}"); return None; }
             };
-            manifest.version = env!("CARGO_PKG_VERSION").into();
+            manifest.version = env!("PEEK_VERSION").into();
             let name = manifest.name.clone();
             let env = vec![("PEEK_SETTINGS".into(), Value::Object(settings_of(&manifest, state.settings.get(&name))).to_string()),
                 ("PEEK_DATA_DIR".into(), self.data_dir(&name).to_string_lossy().into_owned())];

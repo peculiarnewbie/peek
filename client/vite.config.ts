@@ -5,12 +5,13 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 
 // Headers for the hosted client on Cloudflare (Workers static assets read
 // `_headers`). Sockets and requests may only go to Tailscale HTTPS names.
+const NEXT = process.env.PEEK_CHANNEL === 'next';
 const HOSTED_HEADERS = `/*
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://*.ts.net wss://*.ts.net; frame-src https://*.ts.net; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   Permissions-Policy: camera=(self), microphone=(), geolocation=()
-/index.html
+${NEXT ? '  X-Robots-Tag: noindex\n' : ''}/index.html
   Cache-Control: no-cache
 /sw.js
   Cache-Control: no-cache
@@ -21,7 +22,7 @@ const HOSTED_HEADERS = `/*
 `;
 
 // Where the hosted site lives, for link previews (they need absolute URLs).
-const SITE = 'https://peek.peculiarnewbie.com';
+const SITE = NEXT ? 'https://next.peek.peculiarnewbie.com' : 'https://peek.peculiarnewbie.com';
 const DESCRIPTION = 'A small, fast remote desktop, tailored for short sessions.';
 const PREVIEW: [string, string, string][] = [
   ['name', 'description', DESCRIPTION],
