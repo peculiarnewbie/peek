@@ -311,7 +311,7 @@ impl Catalog {
         self.save(&state)
     }
 
-    fn set_on(&self, name: &str, on: bool) -> Result<(), String> {
+    pub fn set_on(&self, name: &str, on: bool) -> Result<(), String> {
         if name == "screen" || !self.specs().iter().any(|s| s.name == name) {
             return Err(format!("{name} cannot be turned on or off here"));
         }

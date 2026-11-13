@@ -183,6 +183,8 @@ enum PluginCommand {
     /// Install a plugin: a folder on this machine, an https address of a git
     /// repository, or an npm package
     Add { source: String },
+    /// Update a plugin, keeping its settings and data
+    Update { name: String, source: Option<String> },
     /// Remove a plugin, or a command added with `peek provider add`
     Remove {
         name: String,
@@ -249,6 +251,22 @@ fn plugin_command(args: &Args, action: &PluginCommand) -> Result<(), String> {
         Ok((204, _)) => println!("The running peek has it now."),
         _ => println!("peek reads this when it starts."),
     };
+    let change = |name: &str, action: &dyn Fn() -> Result<(), String>| -> Result<(), String> {
+        let on = catalog.list().iter().find(|(n, ..)| n == name).map(|(_, _, _, on)| *on);
+        if on == Some(true) {
+            catalog.set_on(name, false)?;
+            tell();
+        }
+        let result = action();
+        if on == Some(true) && catalog.list().iter().any(|(n, ..)| n == name) {
+            let restored = catalog.set_on(name, true);
+            tell();
+            restored?;
+        } else {
+            tell();
+        }
+        result
+    };
     match action {
         PluginCommand::List => {
             for (name, kind, runs, on) in catalog.list() {
@@ -271,13 +289,17 @@ A browser {} install, remove and change plugins here (`peek plugin remote-instal
             tell();
             Ok(())
         }
+        PluginCommand::Update { name, source } => {
+            change(name, &|| catalog.update_from(name, source.as_deref(), |line| println!("{line}")).map(|_| ()))?;
+            println!("Updated {name}.");
+            Ok(())
+        }
         PluginCommand::Remove { name, purge } => {
-            catalog.remove(name, *purge)?;
+            change(name, &|| catalog.remove(name, *purge))?;
             if !purge && catalog.has_data(name) {
                 println!("Data kept at {}. Delete it with `peek plugin remove {name} --purge`.", catalog.data_dir(name).display());
             }
             println!("Removed {name}.");
-            tell();
             Ok(())
         }
         PluginCommand::RemoteInstall { on } => {
