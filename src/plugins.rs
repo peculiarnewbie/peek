@@ -331,7 +331,7 @@ impl Catalog {
         let source = source.trim();
         let local = Path::new(source);
         let absolute = if local.is_dir() || (local.is_file() && source.ends_with(".tgz")) {
-            Some(fs::canonicalize(local).map_err(|e| format!("cannot find {source}: {e}"))?.to_string_lossy().into_owned())
+            Some(std::path::absolute(local).map_err(|e| format!("cannot find {source}: {e}"))?.to_string_lossy().into_owned())
         } else { None };
         let source = absolute.as_deref().unwrap_or(source);
         let staging = self.plugins_dir().join(STAGING_DIR).join(crate::pairing::random_hex(8).map_err(|e| e.to_string())?);
@@ -862,7 +862,8 @@ mod tests {
         assert_eq!(catalog.describe(&staged)["installed"], Value::Null);
         assert_eq!(catalog.describe(&staged)["data"], false);
         catalog.install(staged).unwrap();
-        assert_eq!(catalog.state().sources["sample"], fs::canonicalize(&source).unwrap().to_string_lossy());
+        assert_eq!(catalog.state().sources["sample"], std::path::absolute(&source).unwrap().to_string_lossy());
+        assert!(!catalog.state().sources["sample"].starts_with(r"\\?\"));
         fs::create_dir_all(catalog.data_dir("sample")).unwrap();
         fs::write(catalog.data_dir("sample").join("file"), "data").unwrap();
         let staged = catalog.fetch(source.to_str().unwrap()).unwrap();
