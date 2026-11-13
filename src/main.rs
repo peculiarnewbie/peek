@@ -184,7 +184,12 @@ enum PluginCommand {
     /// repository, or an npm package
     Add { source: String },
     /// Remove a plugin, or a command added with `peek provider add`
-    Remove { name: String },
+    Remove {
+        name: String,
+        /// Also delete the plugin's data
+        #[arg(long)]
+        purge: bool,
+    },
     /// List everything beside the screen, and whether it is on
     List,
     /// Whether a paired browser may install, remove and change plugins (it
@@ -249,6 +254,10 @@ fn plugin_command(args: &Args, action: &PluginCommand) -> Result<(), String> {
             for (name, kind, runs, on) in catalog.list() {
                 println!("{name:<16} {:<4} {kind:<11} {runs}", if on { "on" } else { "off" });
             }
+            let kept = catalog.kept_data();
+            if !kept.is_empty() {
+                println!("Kept data: {}. Delete with `peek plugin remove <name> --purge`.", kept.join(", "));
+            }
             println!(
                 "
 A browser {} install, remove and change plugins here (`peek plugin remote-install on|off`).",
@@ -262,8 +271,11 @@ A browser {} install, remove and change plugins here (`peek plugin remote-instal
             tell();
             Ok(())
         }
-        PluginCommand::Remove { name } => {
-            catalog.remove(name)?;
+        PluginCommand::Remove { name, purge } => {
+            catalog.remove(name, *purge)?;
+            if !purge && catalog.has_data(name) {
+                println!("Data kept at {}. Delete it with `peek plugin remove {name} --purge`.", catalog.data_dir(name).display());
+            }
             println!("Removed {name}.");
             tell();
             Ok(())

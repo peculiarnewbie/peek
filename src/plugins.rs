@@ -166,7 +166,7 @@ impl Catalog {
         if dir.is_absolute() { dir } else { std::env::current_dir().unwrap_or_default().join(dir) }
     }
 
-    fn has_data(&self, name: &str) -> bool {
+    pub fn has_data(&self, name: &str) -> bool {
         fs::read_dir(self.data_dir(name)).ok().is_some_and(|mut entries| entries.next().is_some())
     }
 
@@ -278,8 +278,14 @@ impl Catalog {
     }
 
     /// Remove a plugin or an added command; peek's own cannot be.
-    pub fn remove(&self, name: &str) -> Result<(), String> {
-        let spec = self.specs().into_iter().find(|s| s.name == name).ok_or_else(|| format!("nothing here is called {name}"))?;
+    pub fn remove(&self, name: &str, purge: bool) -> Result<(), String> {
+        let spec = self.specs().into_iter().find(|s| s.name == name);
+        let Some(spec) = spec else {
+            if purge && name_ok(name) && self.has_data(name) {
+                return fs::remove_dir_all(self.data_dir(name)).map_err(|e| format!("cannot remove data for {name}: {e}"));
+            }
+            return Err(format!("nothing here is called {name}"));
+        };
         match spec.kind {
             Kind::Own => return Err(format!("{name} is peek's own: it can be turned off, not removed")),
             Kind::Command => {
@@ -293,11 +299,15 @@ impl Catalog {
                 if let Some(dir) = spec.dir {
                     fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
                 }
+                if purge && self.data_dir(name).exists() {
+                    fs::remove_dir_all(self.data_dir(name)).map_err(|e| format!("cannot remove data for {name}: {e}"))?;
+                }
             }
         }
         let mut state = self.state();
         state.off.remove(name);
         state.settings.remove(name);
+        state.sources.remove(name);
         self.save(&state)
     }
 
@@ -559,7 +569,7 @@ impl Plugins {
                     .set_settings(name, ask["values"].as_object().unwrap_or(&Map::new()))
                     .map(|()| self.apply(Some(name))),
             ),
-            "remove" => done(self.stop_then(name, || self.catalog.remove(name))),
+            "remove" => done(self.stop_then(name, || self.catalog.remove(name, ask["purge"].as_bool().unwrap_or(false)))),
             "inspect" => match self.catalog.fetch(ask["source"].as_str().unwrap_or("")) {
                 Ok(staged) => {
                     let mut out = self.catalog.describe(&staged);
@@ -873,6 +883,34 @@ mod tests {
     }
 
     #[test]
+    fn removal_keeps_or_purges_data() {
+        let root = std::env::temp_dir().join(format!("peek-remove-{}", crate::pairing::random_hex(6).unwrap()));
+        let source = root.join("source");
+        fs::create_dir_all(source.join("bin")).unwrap();
+        fs::write(source.join(MANIFEST), r#"{"name":"sample","run":["bin/app"],"settings":{"flag":{"kind":"switch","default":false}}}"#).unwrap();
+        fs::write(source.join("bin").join(if cfg!(windows) { "app.exe" } else { "app" }), "").unwrap();
+        let catalog = Catalog::new(root.join("config"), Vec::new());
+        catalog.install(catalog.fetch(source.to_str().unwrap()).unwrap()).unwrap();
+        catalog.set_settings("sample", &json!({"flag":true}).as_object().unwrap().clone()).unwrap();
+        fs::create_dir_all(catalog.data_dir("sample")).unwrap();
+        fs::write(catalog.data_dir("sample").join("file"), "data").unwrap();
+        catalog.remove("sample", false).unwrap();
+        assert!(catalog.data_dir("sample").join("file").exists());
+        assert!(!catalog.state().sources.contains_key("sample"));
+        assert!(!catalog.state().settings.contains_key("sample"));
+        assert!(catalog.remove("sample", false).is_err());
+        assert_eq!(catalog.kept_data(), vec!["sample"]);
+        catalog.remove("sample", true).unwrap();
+        assert!(catalog.kept_data().is_empty());
+        catalog.install(catalog.fetch(source.to_str().unwrap()).unwrap()).unwrap();
+        fs::create_dir_all(catalog.data_dir("sample")).unwrap();
+        fs::write(catalog.data_dir("sample").join("file"), "data").unwrap();
+        catalog.remove("sample", true).unwrap();
+        assert!(!catalog.data_dir("sample").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn npm_names_that_reach_no_shell() {
         for ok in ["peek-files", "@peek/files", "files@1.2.3", "@a/b@0.1.0-beta.1"] {
             assert!(npm_spec_ok(ok), "{ok}");
@@ -910,7 +948,7 @@ mod tests {
         assert!(catalog.install(catalog.fetch(source.to_str().unwrap()).unwrap()).is_err());
         catalog.set_on("hello", false).unwrap();
         assert!(catalog.list().iter().any(|(n, _, _, on)| n == "hello" && !*on));
-        catalog.remove("hello").unwrap();
+        catalog.remove("hello", false).unwrap();
         assert!(!catalog.list().iter().any(|(n, ..)| n == "hello"));
         let _ = fs::remove_dir_all(&root);
     }
