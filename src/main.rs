@@ -6,6 +6,7 @@
 
 mod engine;
 mod install;
+mod update;
 mod pairing;
 mod platform;
 mod plugins;
@@ -161,6 +162,17 @@ enum Command {
     Install {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
         args: Vec<String>,
+    },
+    /// Update the installed peek from a release channel
+    Update {
+        #[arg(long, value_parser = ["stable", "next"], conflicts_with = "rollback")]
+        channel: Option<String>,
+        #[arg(long, conflicts_with = "rollback")]
+        check: bool,
+        #[arg(long)]
+        no_restart: bool,
+        #[arg(long)]
+        rollback: bool,
     },
     /// Undo `peek install`
     Uninstall,
@@ -759,6 +771,7 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             install::install(&flags)
         }
         Command::Uninstall => install::uninstall(),
+        Command::Update { channel, check, no_restart, rollback } => update::run(channel.as_deref(), *check, *no_restart, *rollback),
         Command::Provider { action } => provider_command(action),
         Command::Plugin { action } => plugin_command(args, action),
     }
