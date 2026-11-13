@@ -342,8 +342,9 @@ async fn pair(
         (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
             .into_response()
     };
-    // Other pages must not even try; requests from outside a browser carry no Origin.
-    if headers.contains_key(header::ORIGIN) && !from_web(&shared, &headers) {
+    // The hosted client, or the client this machine serves itself. Other pages
+    // must not even try; requests from outside a browser carry no Origin.
+    if headers.contains_key(header::ORIGIN) && !from_web(&shared, &headers) && !origin_ok(&headers, shared.token.is_none()) {
         return json(StatusCode::FORBIDDEN, serde_json::json!({ "error": "origin" }));
     }
     let Ok(req) = serde_json::from_slice::<PairRequest>(&body) else {
@@ -747,6 +748,7 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         (Some(web), Some(host)) => Some(pairing::pair_link(web, host, &name, &code)),
         _ => None,
     };
+    let own = host.as_deref().map(|host| pairing::own_link(host, &code));
     serde_json::json!({
         "code": pairing::format_code(&code),
         "expires": pairing::CODE_TTL.as_secs(),
@@ -754,6 +756,7 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         "name": name,
         "web": shared.web,
         "link": link,
+        "own": own,
     })
 }
 

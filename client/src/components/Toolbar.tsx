@@ -7,8 +7,7 @@ import {
 } from '../state';
 import { current, home, HOSTED } from '../hosted';
 import { Icon } from './Icons';
-import { openPage } from './Frame';
-import { frameProviders } from '../views';
+import { appPages, framed, openPage } from './Frame';
 
 /** The pill at the top: a dot until hovered (or tapped), unless pinned or settings are open. */
 export function Toolbar() {
@@ -40,11 +39,12 @@ export function Toolbar() {
           <button id="b-machines" class="tb" tabIndex={-1} title="All machines" onClick={home}>
             <Icon name="back" /><span>{current()?.name}</span>
           </button>
-          {/* Providers with a page of their own (Frame.tsx). */}
-          <For each={frameProviders(current())}>{p =>
-            <button class="tb" tabIndex={-1} title={`${p}: its page on this machine`} onClick={() => openPage(p)}><span>{p}</span></button>
-          }</For>
         </Show>
+        {/* The machine's apps with a page of their own (Frame.tsx); plugins are under Settings. */}
+        <For each={appPages()}>{p =>
+          <button class="tb" tabIndex={-1} title={`${p}: its page on this machine`} aria-pressed={framed() === p}
+            onClick={() => openPage(p)}><span>{p}</span></button>
+        }</For>
         <button id="b-sleep" class="tb" tabIndex={-1} onClick={() => setSleep(!sleeping())}>
           <Show when={sleeping()} fallback={<><Icon name="moon" /><span>Sleep</span></>}>
             <Icon name="play" /><span>Resume</span>

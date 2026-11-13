@@ -10,11 +10,20 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Acce
 import { machine, send } from '../connection';
 import { about, current, home, learn, navigate, pagePath, screenPath, shownPage, HOSTED } from '../hosted';
 import { active, live, setOnPage } from '../state';
-import { frameProviders, refreshOwn } from '../views';
+import { frameProviders, own, refreshOwn } from '../views';
 import { Icon } from './Icons';
 
 /** The provider whose page is open in the panel, if any. */
 export const [framed, setFramed] = createSignal<string | null>(null);
+
+/** Peek's own page for managing plugins: opened from Settings, not the toolbar. */
+export const PLUGINS = 'plugins';
+/** The machine shown now, as its descriptor says. */
+const shown = () => HOSTED ? current() : own();
+/** Pages of the machine's apps (files, say), for the toolbar. */
+export const appPages = () => frameProviders(shown()).filter(p => p !== PLUGINS);
+/** Whether the machine has the plugins page. */
+export const hasPlugins = () => frameProviders(shown()).includes(PLUGINS);
 
 /** Open a provider's page: in place of the screen on the hosted client, in a panel otherwise. */
 export function openPage(name: string) {
@@ -146,7 +155,8 @@ export function ProviderPage() {
           <button class="tb" title="All machines" onClick={home}><Icon name="back" /><span>{current()!.name}</span></button>
           <div id="ppage-tabs" role="tablist">
             <button class="ptab" role="tab" onClick={() => navigate(screenPath(current()!))}><Icon name="monitor" />Screen</button>
-            <For each={frameProviders(current())}>{p =>
+            {/* The plugins page has a tab only while it is open: it is reached from Settings. */}
+            <For each={name() === PLUGINS ? [...appPages(), PLUGINS] : appPages()}>{p =>
               <button class="ptab" role="tab" aria-selected={p === name()} onClick={() => navigate(pagePath(current()!, p))}>{p}</button>
             }</For>
           </div>

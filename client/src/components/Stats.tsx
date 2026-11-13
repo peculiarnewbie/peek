@@ -7,8 +7,7 @@ import { current, HOSTED } from '../hosted';
 import { cfg, live, sleeping, statsMode, statsPinned } from '../state';
 import { first, L, opened, RATE_SECONDS, rate, S, shown } from '../stats';
 import { bytes, duration, ms, perSec, store } from '../util';
-import { dropPages, frameProviders, own, pageProviders, pages, refreshOwn } from '../views';
-import { framed, openPage } from './Frame';
+import { dropPages, own, pageProviders, pages, refreshOwn } from '../views';
 import { Icon } from './Icons';
 import { Figure, Items } from './View';
 
@@ -235,19 +234,6 @@ export function Stats() {
               onPress={item => { if (!item.confirm || confirm(item.confirm)) send({ t: 'to', p: name, m: { t: 'do', do: item.do } }); }} />
           </div>
         )}</For>
-
-        {/* Providers with a page of their own: opened in a frame (Frame.tsx). */}
-        <Show when={!SCREEN_PLUGIN && frameProviders(HOSTED ? current() : own()).length}>
-          <div class="section">
-            <div class="section-title"><span>Pages</span><span class="aside">from this machine's providers</span></div>
-            <div class="vrow">
-              <For each={frameProviders(HOSTED ? current() : own())}>{name =>
-                <button class="btn small alt" tabIndex={-1} aria-pressed={framed() === name}
-                  onClick={() => openPage(name)}>{name}</button>
-              }</For>
-            </div>
-          </div>
-        </Show>
 
         <div class="section">
           <div class="section-title">

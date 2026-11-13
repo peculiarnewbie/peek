@@ -11,6 +11,8 @@ export interface PairOffer {
   name: string;
   web: string | null;
   link: string | null;
+  /** The same code on the client this machine serves itself. */
+  own?: string | null;
   error?: string;
 }
 
@@ -34,13 +36,16 @@ export function PairDevice() {
           const o = offer()!;
           return (
             <Show when={!o.error} fallback={<p class="err">{o.error}</p>}>
-              <Show when={o.link} fallback={
+              <Show when={o.link ?? o.own} fallback={
                 <p class="hint">Tailscale is not running on {o.name}, so other devices cannot reach it through the
                   peek site. Code: <code>{o.code}</code></p>
               }>
-                <div class="qr" innerHTML={renderSVG(o.link!, { border: 2 })} />
-                <p class="hint">Scan it on the other device, or open <code>{o.web}</code> there and add{' '}
-                  <code>{o.host}</code> with code <code>{o.code}</code>.</p>
+                <div class="qr" innerHTML={renderSVG((o.link ?? o.own)!, { border: 2 })} />
+                <Show when={o.link} fallback={<p class="hint">Scan it on the other device, or open <code>{o.own}</code> there.</p>}>
+                  <p class="hint">Scan it on the other device, or open <code>{o.web}</code> there and add{' '}
+                    <code>{o.host}</code> with code <code>{o.code}</code>.</p>
+                  <Show when={o.own}><p class="hint small">Or open {o.name}’s own page: <code>{o.own}</code></p></Show>
+                </Show>
               </Show>
               <p class="hint small">Works once, for {Math.floor(left() / 60)}:{String(left() % 60).padStart(2, '0')}.</p>
             </Show>

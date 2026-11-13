@@ -143,6 +143,11 @@ details[open] summary svg { transform: none; }
 #msg { position: fixed; inset: 0; z-index: 1; display: none; align-items: center; justify-content: center;
   pointer-events: none; }
 #msg.show { display: flex; }
+#pairhere { position: fixed; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .45); }
+#pairhere .card { gap: 10px; }
+#pairhere form { width: 100%; margin-top: 6px; }
+#pairhere .err { margin: 0; }
 #note { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 2; display: none;
   align-items: flex-start; gap: 10px; max-width: min(560px, 90vw); padding: 10px 14px; line-height: 1.45;
   color: var(--ink); pointer-events: none; }

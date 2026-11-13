@@ -160,7 +160,7 @@ export const cleanHost = (text: string) =>
   text.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\.$/, '').toLowerCase();
 
 /** How this browser is listed on the machine (`peek clients`). */
-function deviceLabel() {
+export function deviceLabel() {
   const ua = navigator.userAgent;
   const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Windows/.test(ua) ? 'Windows'
     : /Mac OS/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : 'unknown';

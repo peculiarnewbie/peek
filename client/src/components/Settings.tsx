@@ -1,8 +1,9 @@
 import { SCREEN_PLUGIN } from '../plugin-mode';
 import { For, Show } from 'solid-js';
-import { applyCfg } from '../actions';
+import { applyCfg, showSettings } from '../actions';
 import { focusScreen } from '../screen';
 import { cfg, FPS_STEPS, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
+import { hasPlugins, openPage, PLUGINS } from './Frame';
 import { PairDevice } from './PairDevice';
 
 const PRESETS: [string, Partial<Cfg>][] = [
@@ -76,6 +77,13 @@ export function Settings() {
           </Group>
         </Show>
       }</For>
+      <Show when={!SCREEN_PLUGIN && hasPlugins()}>
+        <Group label="Plugins" value="">
+          <button class="btn wide alt" tabIndex={-1} onClick={() => { showSettings(false); openPage(PLUGINS); }}>
+            Manage plugins
+          </button>
+        </Group>
+      </Show>
       <Show when={!SCREEN_PLUGIN && !viewOnly()}>
         <Group label="Pair a device" value="">
           <PairDevice />

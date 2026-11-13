@@ -5,6 +5,7 @@ import { App } from './App';
 import { connect } from './connection';
 import { pairFromUrl } from './components/Devices';
 import { HOSTED } from './hosted';
+import { codeInUrl, pairFromHash } from './pair-here';
 import './input';
 import './touch';
 import { focusScreen, layout } from './screen';
@@ -32,5 +33,7 @@ setMessage('Connecting…');
 // Opened in the background (a restored tab, a second monitor): start paused.
 if (cfg.autoSleep && !document.hasFocus()) setSleep(true, true);
 // The hosted client connects to whichever machine its page shows (Devices.tsx).
-if (HOSTED) { if (location.pathname === '/pair') pairFromUrl(); } else connect();
+if (HOSTED) { if (location.pathname === '/pair') pairFromUrl(); }
+else if (!SCREEN_PLUGIN && codeInUrl()) pairFromHash();
+else connect();
 focusScreen();

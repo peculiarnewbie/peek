@@ -626,10 +626,10 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
         return Err(e.to_string());
     }
     let (code, name) = (offer["code"].as_str().unwrap_or(""), offer["name"].as_str().unwrap_or("this machine"));
-    let Some(web) = offer["web"].as_str() else {
-        return Err("this peek was started with --web none, so there is no hosted client to pair".into());
-    };
-    let Some(link) = offer["link"].as_str() else {
+    // The hosted client's link first, which can add more machines later; the
+    // machine's own page works without it, and with `--web none`.
+    let (web, own) = (offer["web"].as_str(), offer["own"].as_str());
+    let Some(link) = offer["link"].as_str().or(own) else {
         return Err(format!("peek could not find {name}'s Tailscale name. Is Tailscale up?"));
     };
     println!("Pair a browser with {name}:\n\n  {link}\n");
@@ -642,7 +642,12 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
         println!("{art}\n");
     }
     println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
-    println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
+    if let Some(web) = web.filter(|_| offer["link"].is_string()) {
+        println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
+        if let Some(own) = own {
+            println!("Or open {name}'s own page instead: {own}");
+        }
+    }
     Ok(())
 }
 
