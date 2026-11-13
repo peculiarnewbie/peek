@@ -13,6 +13,13 @@ health, power controls, and files. People can use the suite without knowing
 that its features are plugins. Developers can build independent apps on the
 same foundation, with their own interfaces and protocols.
 
+First-party apps ship inside Peek. Someone with several machines and no
+interest in development should get desktop access, health, power, files, and
+sync without installing Node, git, or npm. Those apps use the same manifest
+and provider protocol as an outside plugin, and are bundled in the executable
+the way vitals and power are today. An app that is turned off starts no
+process.
+
 The larger opportunity: if personal apps become cheap to create, giving them
 a consistent home becomes valuable. Each app should not have to reinvent
 installation, process supervision, remote access, settings, or presentation.
@@ -37,8 +44,8 @@ should be able to use the same public interfaces as the browser.
 
 Use the existing network underneath Peek. Tailscale integration should avoid
 duplicating connectivity and identity machinery where it can supply them.
-Keep direct access and existing pairing workflows working. Exact identity
-integration and peer enrollment still need design.
+Keep direct access and existing pairing workflows working. Peer access starts
+from Tailscale identity (slice 4); what that cannot cover still needs design.
 
 Screen should become a bundled, default-on plugin using the same public
 contracts as other plugins. A single executable can still ship both host
@@ -64,12 +71,12 @@ feature sets or claims that their future scopes cannot overlap Peek.
 
 ## Current baseline
 
-The checked-out main branch is older than the development stack. The
-upcoming 0.3.0 plugin spike was inspected in `D:/git/peek-frames`, including
-working-tree changes. Its package version still reads 0.2.2. Do not confuse
-spike behavior with released guarantees.
+The plugin work is on the branch `feat/plugin-foundation-screen`: the spike,
+and the hardening recorded in [plugin-release.md](plugin-release.md). Its
+package version still reads 0.2.2, and nothing is released. Do not confuse
+its behavior with released guarantees.
 
-The spike already has:
+It already has:
 
 - Process providers with a framed stdin/stdout protocol, restart behavior,
   channel state restoration, descriptors, logs, and management controls.
@@ -96,8 +103,8 @@ Important limits:
   coverage remains incomplete.
 - Channel restoration is not durable app state or guaranteed task delivery.
 
-See the spike's `docs/providers.md` and `docs/frames.md` for its exact contract
-and recorded checks. No spike code is copied or merged by this roadmap.
+See [providers.md](providers.md) and [frames.md](frames.md) for the exact
+contract and recorded checks.
 
 ## Delivery sequence
 
@@ -158,10 +165,22 @@ restarted, and removed predictably, with data kept according to its policy.
 Use the sync app's needs to shape this interface; do not design a universal
 fleet controller first.
 
-- Establish durable, verified peer enrollment and capability discovery for
-  headless callers. A machine list does not itself authorize access.
-- Issue revocable access scoped to the destination provider/capability;
-  transmit authenticated caller context and enforce grants on the receiver.
+Start from Tailscale. Both machines are already on the tailnet, so a person
+should not have to pair them a second time. Ask the local Tailscale client
+who is calling, and take grants from tailnet policy (application
+capabilities), as position 7 of the extensibility discussion (PR 2) proposes.
+Build Peek's own enrollment only for what that cannot cover, and only when a
+real case needs it.
+
+- Verify first what identity reaches Peek on each path. Behind Tailscale
+  Serve the connection arrives from the proxy, so the caller has to come from
+  what Serve passes on; on the direct path, from asking the local client
+  about the caller's address. Neither has been tried.
+- Identify a headless caller by its tailnet node and user, and discover its
+  capabilities from the descriptor. A machine list does not itself authorize
+  access.
+- Scope access to the destination provider/capability; transmit authenticated
+  caller context and enforce grants on the receiver.
 - Define how direct access behaves once narrower grants are configured.
 - Let providers request an authorized connection without receiving every
   machine's unrestricted token. Keep UI tickets separate from service access.
@@ -169,6 +188,10 @@ fleet controller first.
   relevant access and management events with caller identity.
 - Establish a minimal policy for authenticated bulk streams. First reuse
   existing channels; add HTTP endpoints only if an actual workload needs them.
+- Add the narrow page-to-client bridge here, not in slice 6. Sync's page has
+  to offer "pick the other machine", and only the browser knows the person's
+  machines. A page can ask the client which machines there are and ask it to
+  connect two of them. Machine tokens stay outside plugin frames.
 
 The first permission boundary can be whole-provider access. Finer operation
 permissions require explicit operations, not guessing effects from payloads.
@@ -177,7 +200,8 @@ local plugin code requires separate OS isolation, not merely protocol grants.
 
 **Done when:** a provider on A reaches an explicitly authorized provider on B
 with every browser closed; an unauthorized provider is refused, revocation
-works, and a network interruption can be recovered without reenrollment.
+works, and a network interruption can be recovered without reenrollment. A
+page can offer the person's other machines without holding their tokens.
 
 ### 5. Build the self-contained folder-sync app
 
@@ -201,9 +225,17 @@ Suggested progression, subject to a focused sync design:
 Use the app to discover missing host primitives, but keep indexes, conflict
 policy, reconciliation, retries, and transfer scheduling inside the app.
 
-**Done when:** an initial copy completes with the browser closed, interrupted
-copies resume to verified contents, and the two-way milestone survives
-simultaneous edits and offline deletions without silent data loss.
+**Done when:** one-way replication is trustworthy (steps 1 and 2): an initial
+copy completes with the browser closed, and interrupted copies resume to
+verified contents. This is the gate for the slices after it.
+
+### 5b. Two-way sync, on its own clock
+
+Step 3 is a slice of its own and gates nothing after it. For people who only
+want their machines to work, one lost file costs trust in the whole suite. So
+two-way ships when it survives simultaneous edits and offline deletions
+without silent data loss, however long that takes. Until then, one-way
+already covers backing up or mirroring a folder to another machine.
 
 ### 6. Make the suite feel like one product
 
@@ -211,9 +243,8 @@ Use desktop, health/power, files, and sync as the initial suite. Provide clear
 machine/app navigation, useful availability/error states, deep links, and an
 install/manage experience that does not expose internal provider terminology.
 
-Add a fleet-level app entry point and a narrow page-to-host bridge when a
-multi-machine app needs them. Keep machine tokens outside plugin frames.
-Test access from a second device, including a phone. Fleet install/update
+Add a fleet-level app entry point, building on the page-to-client bridge from
+slice 4. Test access from a second device, including a phone. Fleet install/update
 operations can follow real demand and should report partial success honestly.
 
 **Done when:** a person can find a machine, open its desktop, browse a share,
@@ -221,6 +252,8 @@ configure sync, and understand a disconnected machine without knowing the
 implementation architecture.
 
 ### 7. Validate reuse with another workload and a tool surface
+
+This slice does not wait for two-way sync (5b).
 
 A Blender render app is a useful candidate, not a prerequisite for every
 release. Start with submitting a background render and retrieving verified
@@ -249,9 +282,9 @@ logic in the kernel.
 
 ## What to do next
 
-Start with slice 1: assess the uncommitted spike and its branch dependencies,
-turn its open questions into a bounded release checklist, and verify the real
-two-machine installation path. In parallel with design, specify the smallest
+Finish slice 1: its remaining release gates are in
+[plugin-release.md](plugin-release.md), starting with two physical machines
+and the installed service. In parallel with design, specify the smallest
 two-node sync interaction needed for slice 4; do not implement the sync engine
 or Peekies as part of the first plugin release.
 
