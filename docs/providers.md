@@ -1,5 +1,9 @@
 # Providers
 
+For installable packages, compatibility, current verification, and remaining
+release gates, see [plugin-release.md](plugin-release.md). Custom page and
+binary socket support is described in [frames.md](frames.md).
+
 A provider is a program on a machine that adds to what peek offers there,
 beside the screen. peek's own are `vitals` (processor, memory, storage) and
 `power` (sleep, and waking another machine). You can add your own.
