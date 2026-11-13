@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notes</title>
+<style>
+  :root { --bg: #fff; --ink: #1d1d1f; --muted: #6e6e73; --line: #e3e3e6; --accent: #2f6bff; --ok: #1a7f37; --bad: #c62828;
+    --sans: system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+  h2 { font-size: 13px; font-weight: 600; margin: 18px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  h2:first-child { margin-top: 0; }
+  canvas { width: 100%; height: 140px; display: block; border: 1px solid var(--line); border-radius: 8px; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit;
+    background: transparent; color: inherit; }
+  button { padding: 8px 12px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+  button.quiet { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  ul { margin: 8px 0 0; padding-left: 18px; }
+  table { border-collapse: collapse; width: 100%; }
+  td { padding: 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:last-child { text-align: right; font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  #status { color: var(--muted); }
+</style>
+</head>
+<body>
+<h2>Live samples <span id="status">connecting…</span></h2>
+<canvas id="chart"></canvas>
+
+<h2>Notes</h2>
+<form id="form"><input id="note" placeholder="Type a note, press Enter" autocomplete="off"><button>Add</button></form>
+<ul id="notes"></ul>
+
+<h2>What this frame can and cannot do</h2>
+<table id="checks"></table>
+<p><button class="quiet" id="takeover">Try to take over the tab</button>
+   <button class="quiet" id="popup">Try to open a window</button></p>
+
+<script>
+// The provider's name and ticket: /p/<name>/#ticket=…
+const name = location.pathname.split('/')[2];
+const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket') || '';
+
+// ---- the provider, on a socket of the page's own ----
+let ws, samples = new Float32Array(0), history = [];
+function connect() {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/frame/${name}/ws?ticket=${ticket}`;
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => setStatus('live');
+  ws.onclose = e => { setStatus(e.code === 4403 ? 'refused: bad ticket' : 'reconnecting…'); if (e.code !== 4403) setTimeout(connect, 2000); };
+  ws.onmessage = e => {
+    if (e.data instanceof ArrayBuffer) {
+      samples = new Float32Array(e.data);
+      history.push(samples[samples.length - 1]);
+      if (history.length > 300) history.shift();
+      bytesIn += e.data.byteLength;
+      return;
+    }
+    const m = JSON.parse(e.data);
+    if (m.t === 'notes') showNotes(m.notes);
+    if (m.t === 'error') setStatus(m.why);
+  };
+}
+let bytesIn = 0, rate = 0;
+setInterval(() => { rate = bytesIn; bytesIn = 0; }, 1000);
+const setStatus = s => document.getElementById('status').textContent = '· ' + s;
+connect();
+
+// ---- notes: typing, which the stock pieces cannot do ----
+document.getElementById('form').onsubmit = e => {
+  e.preventDefault();
+  const input = document.getElementById('note');
+  if (input.value.trim() && ws.readyState === 1) ws.send(JSON.stringify({ t: 'do', do: { note: input.value } }));
+  input.value = '';
+};
+function showNotes(notes) {
+  const ul = document.getElementById('notes');
+  ul.replaceChildren(...notes.map(n => {
+    const li = document.createElement('li');
+    li.textContent = `${n.text} (${new Date(n.at).toLocaleTimeString()})`;
+    return li;
+  }));
+}
+
+// ---- the chart: drawn here, at the display's rate, from 4 KB/s of samples ----
+const cv = document.getElementById('chart'), g = cv.getContext('2d');
+function draw() {
+  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue('--accent'); g.lineWidth = 2; g.lineJoin = 'round';
+  g.beginPath();
+  history.forEach((v, i) => { const x = w - (history.length - 1 - i) * (w / 300), y = h - v * h; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.stroke();
+  g.fillStyle = css.getPropertyValue('--muted'); g.font = '12px ' + css.getPropertyValue('--sans');
+  g.fillText(`${(rate / 1024).toFixed(1)} KB/s in`, 8, 16);
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ---- the client's colours, if it sends them ----
+addEventListener('message', e => {
+  if (e.source !== parent || e.data?.t !== 'theme') return;
+  const vars = e.data.vars || {}, mine = { '--bg': '--page', '--ink': '--ink', '--muted': '--muted', '--line': '--line',
+    '--accent': '--s1', '--ok': '--good', '--sans': '--sans' };
+  for (const [k, theirs] of Object.entries(mine)) if (vars[theirs]) document.documentElement.style.setProperty(k, String(vars[theirs]));
+});
+
+// ---- the limits ----
+function check(label, attempt) {
+  let result, ok;
+  try { result = attempt(); ok = false; } catch (e) { result = e.name; ok = true; }
+  return [label, ok ? `blocked (${result})` : `ALLOWED: ${String(result).slice(0, 40)}`, ok];
+}
+const rows = [
+  check('Read the client’s storage (its tokens)', () => parent.localStorage.length + ' items'),
+  check('Read the client’s page', () => parent.document.title),
+  check('Read the client’s address', () => top.location.href),
+  ['Use its own storage', (() => { try { localStorage.setItem('x', '1'); return 'works'; } catch (e) { return 'no: ' + e.name; } })(), null],
+  ['Read this machine’s own client’s token', (() => { try { return localStorage.getItem('peek-token') ? 'yes, it is there' : 'none here'; } catch (e) { return e.name; } })(), null],
+  ['WebGPU', 'gpu' in navigator ? 'available' : 'not available', null],
+];
+const table = document.getElementById('checks');
+for (const [label, result, ok] of rows) {
+  const tr = table.insertRow();
+  tr.insertCell().textContent = label;
+  const td = tr.insertCell(); td.textContent = result;
+  if (ok !== null) td.className = ok ? 'ok' : 'bad';
+}
+document.getElementById('takeover').onclick = () => {
+  const b = document.getElementById('takeover');
+  try { top.location.href = 'https://example.com/'; b.textContent = 'Tried: still here means blocked'; }
+  catch (e) { b.textContent = 'Blocked (' + e.name + ')'; }
+};
+document.getElementById('popup').onclick = () => { const w = window.open('https://example.com/'); document.getElementById('popup').textContent = w ? 'A window opened' : 'Blocked: no window'; };
+</script>
+</body>
+</html>

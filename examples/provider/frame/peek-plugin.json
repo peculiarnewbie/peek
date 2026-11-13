@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "provider_protocol": 1,
+  "name": "notes",
+  "description": "An example page: live samples, typed notes, and what a frame may do.",
+  "run": [
+    "node",
+    "provider.mjs"
+  ],
+  "needs": [
+    "node"
+  ]
+}
