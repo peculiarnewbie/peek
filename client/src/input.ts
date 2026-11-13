@@ -2,7 +2,7 @@
 import { release, setSleep, showSettings } from './actions';
 import { hooks, send } from './connection';
 import { cv, focusScreen } from './screen';
-import { active, autoSlept, cfg, clipboardOn, isTouch, settingsOpen, sleeping, viewOnly } from './state';
+import { active, autoSlept, cfg, clipboardOn, isTouch, onPage, settingsOpen, sleeping, viewOnly } from './state';
 import { clamp01 } from './util';
 import { current, HOSTED } from './hosted';
 
@@ -137,7 +137,7 @@ const META = new Set(['MetaLeft', 'MetaRight']);
 /** A key handled here (wake, close settings); its release stays here too. */
 let swallowKey: string | null = null;
 function key(e: KeyboardEvent, down: boolean) {
-  if (!e.code || e.code === 'Unidentified' || ownField(e) || (HOSTED && !current())) return;
+  if (!e.code || e.code === 'Unidentified' || ownField(e) || (HOSTED && !current()) || onPage()) return;
   if (!down && e.code === swallowKey) { swallowKey = null; e.preventDefault(); return; }
   if (down && settingsOpen() && e.code === 'Escape') {
     e.preventDefault(); swallowKey = e.code; showSettings(false); return;
@@ -170,6 +170,8 @@ addEventListener('keyup', e => key(e, false), true);
 release.all = () => { held = 0; swallowV = false; send({ t: 'rel' }); };
 addEventListener('blur', () => {
   release.all();
+  // Into a provider's page (Frame.tsx): still this window, so no pause.
+  if (document.activeElement instanceof HTMLIFrameElement) return;
   if (cfg.autoSleep && !sleeping()) setSleep(true, true);
 });
 // Only an automatic pause ends on its own; one the user chose stays.

@@ -26,7 +26,8 @@
 //! - From it: `TEXT` and `BINARY` for the client, `STATE` (how to open this
 //!   channel again as it is now, which the core keeps and does not read),
 //!   `LOG` (a line for the core's log), and `ABOUT` (what the provider says
-//!   of itself, as a JSON object, for `/.well-known/peek`).
+//!   of itself, as a JSON object, for `/.well-known/peek`), and `OFFER` (a
+//!   file the client on that channel may download, once: see `Link::offer`).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -40,11 +41,34 @@ use crate::engine::Out;
 use crate::screen::{self, Sink};
 
 /// How a provider's process is started.
+#[derive(Clone)]
 pub enum Start {
     /// `peek --provider <name>`, with these flags.
     Own(Vec<String>),
-    /// Another program: the command, then its arguments.
-    Program(Vec<String>),
+    /// Another program.
+    Program(Program),
+}
+
+/// A program to start: the command, then its arguments; where it starts,
+/// and what it is told in its environment beside what peek has.
+#[derive(Clone, Default)]
+pub struct Program {
+    pub words: Vec<String>,
+    pub dir: Option<std::path::PathBuf>,
+    pub env: Vec<(String, String)>,
+}
+
+/// How many of a provider's log lines are kept, for the plugins page.
+const KEEP_LOG: usize = 40;
+
+/// Whether a provider runs, and what it said last.
+#[derive(Default)]
+struct Status {
+    running: bool,
+    starts: u32,
+    /// How it last ended, or why it could not start.
+    ended: Option<String>,
+    log: std::collections::VecDeque<String>,
 }
 
 const OPEN: u8 = 1;
@@ -54,6 +78,9 @@ const BINARY: u8 = 4;
 const STATE: u8 = 5;
 const LOG: u8 = 6;
 const ABOUT: u8 = 7;
+const OFFER: u8 = 8;
+/// How long an offered file waits to be downloaded.
+const OFFER_FOR: Duration = Duration::from_secs(60);
 /// More than a provider has to say of itself.
 const MAX_ABOUT: usize = 4096;
 const HEADER: usize = 13;
@@ -116,12 +143,20 @@ pub struct Link {
     channels: Mutex<HashMap<u64, Channel>>,
     /// What the provider last said of itself.
     about: Mutex<Option<serde_json::Map<String, serde_json::Value>>>,
+    /// Files offered for download, by link: the file, its name, until when.
+    offers: Mutex<HashMap<String, (std::path::PathBuf, String, Instant)>>,
+    status: Mutex<Status>,
+    /// The provider's process while it runs, so that `stop` can end it.
+    child: Mutex<Option<std::process::Child>>,
+    /// Stopped for good: not started again.
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl Link {
     /// A link with no provider yet. Channels opened on it wait for one.
     pub fn new(name: &str) -> Arc<Link> {
-        Arc::new(Link { name: name.into(), to: Mutex::new((0, None)), channels: Mutex::default(), about: Mutex::default() })
+        Arc::new(Link { name: name.into(), to: Mutex::new((0, None)), channels: Mutex::default(), about: Mutex::default(), offers: Mutex::default(),
+            status: Mutex::default(), child: Mutex::default(), stopped: Default::default() })
     }
 
     /// What the provider says of itself, for `/.well-known/peek`: empty
@@ -141,22 +176,91 @@ impl Link {
             let mut wait = RESTART_FIRST;
             loop {
                 let since = Instant::now();
-                match keep.start_child(&start, view_only) {
-                    Ok(mut child) => match child.wait() {
-                        Ok(status) => crate::log!("{name}: the provider exited ({status})"),
-                        Err(e) => crate::log!("{name}: lost the provider ({e})"),
-                    },
-                    Err(e) => crate::log!("{name}: cannot start the provider ({e})"),
+                let ended = match keep.start_child(&start, view_only) {
+                    Ok(child) => {
+                        keep.note(|s| { s.running = true; s.starts += 1; });
+                        *keep.child.lock().unwrap() = Some(child);
+                        // Stopped while it was starting.
+                        if keep.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                            if let Some(c) = keep.child.lock().unwrap().as_mut() {
+                                let _ = c.kill();
+                            }
+                        }
+                        let ended = keep.wait_child();
+                        keep.note(|s| s.running = false);
+                        ended
+                    }
+                    Err(e) => format!("cannot start: {e}"),
+                };
+                if keep.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                    keep.note(|s| s.ended = Some("stopped".into()));
+                    break;
                 }
+                crate::log!("{name}: the provider {ended}");
+                keep.note(|s| { s.ended = Some(ended.clone()); s.log.push_back(ended); });
                 // Quickly after a long run; ever more slowly while it keeps failing.
                 wait = if since.elapsed() > RESTART_MAX { RESTART_FIRST } else { (wait * 2).min(RESTART_MAX) };
                 std::thread::sleep(wait);
+                if keep.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
             }
         });
         if let Err(e) = started {
             crate::log!("{}: cannot start the provider ({e})", link.name);
         }
         link
+    }
+
+    /// Wait for the running process to end, without holding it from `stop`.
+    fn wait_child(&self) -> String {
+        loop {
+            {
+                let mut child = self.child.lock().unwrap();
+                let Some(c) = child.as_mut() else { return "was stopped".into() };
+                match c.try_wait() {
+                    Ok(Some(status)) => {
+                        *child = None;
+                        return format!("exited ({status})");
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        *child = None;
+                        return format!("was lost ({e})");
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    fn note(&self, change: impl FnOnce(&mut Status)) {
+        let mut status = self.status.lock().unwrap();
+        change(&mut status);
+        while status.log.len() > KEEP_LOG {
+            status.log.pop_front();
+        }
+    }
+
+    /// End the provider for good: its process, and the restarts.
+    pub fn stop(&self) {
+        self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.to.lock().unwrap().1 = None;
+        // End page sockets too. Otherwise a restarted plugin leaves its pages
+        // attached to this stopped link instead of reconnecting to the new one.
+        self.channels.lock().unwrap().clear();
+        self.note(|s| { s.running = false; s.ended = Some("stopped".into()); });
+        if let Some(mut child) = self.child.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// Whether it runs, how often it started, how it last ended, and its
+    /// last log lines.
+    pub fn status(&self) -> serde_json::Value {
+        let s = self.status.lock().unwrap();
+        serde_json::json!({ "running": s.running, "starts": s.starts, "ended": s.ended, "log": s.log })
     }
 
     fn start_child(self: &Arc<Self>, start: &Start, view_only: bool) -> io::Result<std::process::Child> {
@@ -167,10 +271,13 @@ impl Link {
                 command.args(["--provider", &self.name]).args(flags);
                 command
             }
-            Start::Program(words) => {
-                let (program, args) = words.split_first().ok_or_else(|| io::Error::other("no command"))?;
-                let mut command = Command::new(program);
-                command.args(args);
+            Start::Program(program) => {
+                let (first, args) = program.words.split_first().ok_or_else(|| io::Error::other("no command"))?;
+                let mut command = Command::new(first);
+                command.args(args).envs(program.env.iter().map(|(k, v)| (k, v)));
+                if let Some(dir) = &program.dir {
+                    command.current_dir(dir);
+                }
                 command
             }
         };
@@ -247,7 +354,18 @@ impl Link {
                     c.open = payload;
                 }
             }
-            LOG => crate::log!("{}", String::from_utf8_lossy(&payload)),
+            LOG => {
+                let line = String::from_utf8_lossy(&payload).into_owned();
+                crate::log!("{line}");
+                self.note(|s| s.log.push_back(line));
+            }
+            OFFER => {
+                let answer = self.offer(&payload);
+                let sink = self.channels.lock().unwrap().get(&channel).map(|c| c.sink.clone());
+                if let Some(sink) = sink {
+                    sink(Out::Text(answer.to_string()));
+                }
+            }
             ABOUT if payload.len() <= MAX_ABOUT => {
                 if let Ok(serde_json::Value::Object(about)) = serde_json::from_slice(&payload) {
                     *self.about.lock().unwrap() = Some(about);
@@ -255,6 +373,39 @@ impl Link {
             }
             _ => {}
         }
+    }
+
+    /// A file the provider offers the client on a channel: `{"path": …,
+    /// "name": …, "ref": …}`. The client gets a link that downloads it once,
+    /// within a minute, as `{"t":"file","ref":…,"url":…}` on that channel.
+    /// Which files a provider may offer is its own business: it runs as
+    /// peek's user, and could send the bytes itself.
+    fn offer(&self, payload: &[u8]) -> serde_json::Value {
+        let ask: serde_json::Value = serde_json::from_slice(payload).unwrap_or_default();
+        let at = ask["ref"].clone();
+        let Some(path) = ask["path"].as_str().map(std::path::PathBuf::from) else {
+            return serde_json::json!({ "t": "file", "ref": at, "error": "no path" });
+        };
+        let Some(meta) = std::fs::metadata(&path).ok().filter(|m| m.is_file()) else {
+            return serde_json::json!({ "t": "file", "ref": at, "error": "not a file" });
+        };
+        let name = ask["name"].as_str().map(str::to_string).or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()));
+        let name = name.unwrap_or_else(|| "download".into());
+        let Ok(id) = crate::pairing::random_hex(24) else {
+            return serde_json::json!({ "t": "file", "ref": at, "error": "no link" });
+        };
+        let now = Instant::now();
+        let mut offers = self.offers.lock().unwrap();
+        offers.retain(|_, (_, _, until)| *until > now);
+        offers.insert(id.clone(), (path, name.clone(), now + OFFER_FOR));
+        let url = format!("/api/frame/{}/file/{id}", self.name);
+        serde_json::json!({ "t": "file", "ref": at, "url": url, "name": name, "size": meta.len() })
+    }
+
+    /// The file behind a download link, once.
+    pub fn take_offer(&self, id: &str) -> Option<(std::path::PathBuf, String)> {
+        let (path, name, until) = self.offers.lock().unwrap().remove(id)?;
+        (until > Instant::now()).then_some((path, name))
     }
 
     fn send(pipe: &mut Pipe, kind: u8, channel: u64, payload: &[u8]) {
@@ -282,6 +433,11 @@ impl Link {
         Self::send(&mut self.to.lock().unwrap(), TEXT, channel, text.as_bytes());
     }
 
+    /// The same, for binary: only a provider's own page sends any.
+    pub fn binary(&self, channel: u64, bytes: &[u8]) {
+        Self::send(&mut self.to.lock().unwrap(), BINARY, channel, bytes);
+    }
+
     pub fn close(&self, channel: u64) {
         let mut pipe = self.to.lock().unwrap();
         self.channels.lock().unwrap().remove(&channel);
@@ -291,21 +447,18 @@ impl Link {
     /// One message on a channel of its own, for a request: the provider's
     /// first answer, or None if it gives none in time.
     pub async fn ask(&self, channel: u64, text: &str) -> Option<String> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        self.open_to(channel, &HashMap::new(), tx);
+        // Closing also on cancellation matters when an HTTP client goes away.
+        struct Request<'a>(&'a Link, u64);
+        impl Drop for Request<'_> {
+            fn drop(&mut self) { self.0.close(self.1); }
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        self.open(channel, &HashMap::new(), Arc::new(move |out| {
+            if let Out::Text(text) = out { let _ = tx.try_send(text); }
+        }));
+        let _request = Request(self, channel);
         self.text(channel, text);
-        let answer = tokio::time::timeout(ANSWER_WITHIN, async {
-            loop {
-                match rx.recv().await {
-                    Some(Out::Text(text)) => return Some(text),
-                    Some(Out::Binary(_)) => continue,
-                    None => return None,
-                }
-            }
-        })
-        .await;
-        self.close(channel);
-        answer.ok().flatten()
+        tokio::time::timeout(ANSWER_WITHIN, rx.recv()).await.ok().flatten()
     }
 }
 
@@ -400,7 +553,12 @@ pub fn run_screen(shared: Arc<screen::Shared>, input: File, core: Arc<ToCore>) {
     while let Ok((kind, channel, payload)) = read_frame(&mut input) {
         match kind {
             OPEN => {
-                let query: HashMap<String, String> = serde_json::from_slice(&payload).unwrap_or_default();
+                let mut query: HashMap<String, String> = serde_json::from_slice(&payload).unwrap_or_default();
+                // A page has not sent its visibility/settings yet. Don't start
+                // capture until it explicitly subscribes, especially in a hidden tab.
+                if query.get("from").is_some_and(|v| v == "page") && !query.contains_key("vis") {
+                    query.insert("vis".into(), "0".into());
+                }
                 let to = core.clone();
                 let sink: Sink = Arc::new(move |out| match out {
                     Out::Text(text) => to.send(TEXT, channel, text.as_bytes()),
@@ -439,6 +597,23 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc::unbounded_channel;
+
+    #[tokio::test]
+    async fn cancelled_requests_close_their_provider_channels() {
+        let link = Link::new("sample");
+        assert!(tokio::time::timeout(Duration::from_millis(10), link.ask(9, "{}")).await.is_err());
+        assert!(link.channels.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stopping_a_provider_closes_page_channels() {
+        let link = Link::new("sample");
+        let (tx, mut rx) = unbounded_channel();
+        link.open_to(1, &HashMap::new(), tx);
+        link.stop();
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)));
+        assert_eq!(link.status()["running"], false);
+    }
 
     #[test]
     fn frames_round_trip() {

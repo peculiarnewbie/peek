@@ -1,3 +1,4 @@
+import { SCREEN_PLUGIN } from '../plugin-mode';
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
 import { setStats, toggleStatsPin } from '../actions';
 import { cv, focusScreen } from '../screen';
@@ -6,13 +7,13 @@ import { current, HOSTED } from '../hosted';
 import { cfg, live, sleeping, statsMode, statsPinned } from '../state';
 import { first, L, opened, RATE_SECONDS, rate, S, shown } from '../stats';
 import { bytes, duration, ms, perSec, store } from '../util';
-import { dropPages, pageProviders, pages, type ProviderAbout } from '../views';
+import { dropPages, frameProviders, own, pageProviders, pages, refreshOwn } from '../views';
+import { framed, openPage } from './Frame';
 import { Icon } from './Icons';
 import { Figure, Items } from './View';
 
-/** Served by a host: that host's providers, which it says once. */
-const [own, setOwn] = createSignal<{ providers?: ProviderAbout[] } | null>(null);
-if (!HOSTED) fetch('/.well-known/peek').then(r => r.json()).then(setOwn, () => {});
+/** Served by a host: read its descriptor; Frame refreshes it after changes. */
+if (!HOSTED && !SCREEN_PLUGIN) void refreshOwn();
 
 /** Title bar height: the part of the panel always kept inside the window. */
 const HEAD = 40;
@@ -189,7 +190,7 @@ export function Stats() {
   // While the panel shows on a live connection, watch what the machine's
   // providers have for it: each sends its view now, and again as it changes.
   const watched = createMemo(
-    () => live() && statsMode() !== 'off' ? pageProviders(HOSTED ? current() : own()) : [],
+    () => !SCREEN_PLUGIN && live() && statsMode() !== 'off' ? pageProviders(HOSTED ? current() : own()) : [],
     [], { equals: (a, b) => a.join() === b.join() });
   createEffect(() => {
     const names = watched();
@@ -234,6 +235,19 @@ export function Stats() {
               onPress={item => { if (!item.confirm || confirm(item.confirm)) send({ t: 'to', p: name, m: { t: 'do', do: item.do } }); }} />
           </div>
         )}</For>
+
+        {/* Providers with a page of their own: opened in a frame (Frame.tsx). */}
+        <Show when={!SCREEN_PLUGIN && frameProviders(HOSTED ? current() : own()).length}>
+          <div class="section">
+            <div class="section-title"><span>Pages</span><span class="aside">from this machine's providers</span></div>
+            <div class="vrow">
+              <For each={frameProviders(HOSTED ? current() : own())}>{name =>
+                <button class="btn small alt" tabIndex={-1} aria-pressed={framed() === name}
+                  onClick={() => openPage(name)}>{name}</button>
+              }</For>
+            </div>
+          </div>
+        </Show>
 
         <div class="section">
           <div class="section-title">

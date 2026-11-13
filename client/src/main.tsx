@@ -1,3 +1,4 @@
+import { SCREEN_PLUGIN } from './plugin-mode';
 import { render } from 'solid-js/web';
 import { setSleep } from './actions';
 import { App } from './App';
@@ -24,7 +25,7 @@ document.addEventListener('pointerdown', e => {
 document.addEventListener('fullscreenchange', () => setFullscreen(!!document.fullscreenElement));
 
 // Installable as an app (only over HTTPS, where service workers are allowed).
-if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if (!SCREEN_PLUGIN && 'serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
 layout();
 setMessage('Connecting…');

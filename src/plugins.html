@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plugins</title>
+<style>
+  :root {
+    --bg: #0d0d0d; --surface: #161615; --raised: #262624; --hover: #1f1f1d; --ink: #f0efec; --ink-2: #c3c2b7;
+    --muted: #898781; --line: rgba(255,255,255,.08); --line-2: rgba(255,255,255,.14); --accent: #3987e5;
+    --good: #2fb344; --warn: #fab219; --bad: #f08a6b;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 13px/1.45 var(--sans); -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  button:disabled { cursor: default; opacity: .45; }
+  code { font: 12px var(--mono); color: var(--ink-2); }
+  svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 28px 20px 64px; }
+  header { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 22px; }
+  header .t { flex: 1; min-width: 0; }
+  h1 { font-size: 20px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+  .sub { color: var(--muted); margin-top: 2px; }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 8px;
+    background: var(--raised); color: var(--ink); font-weight: 500; white-space: nowrap; }
+  .btn:not(:disabled):hover { background: #30302e; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:not(:disabled):hover { background: #4b93ea; }
+  .btn.small { height: 28px; padding: 0 10px; font-size: 12.5px; }
+  .btn.ghost { background: none; color: var(--ink-2); }
+  .btn.ghost:not(:disabled):hover { background: var(--hover); color: var(--ink); }
+  .btn.danger { color: var(--bad); }
+
+  .banner { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; margin-bottom: 18px; border-radius: 10px;
+    background: rgba(250,178,25,.07); border: 1px solid rgba(250,178,25,.22); color: var(--ink-2); }
+  .banner svg { color: var(--warn); margin-top: 1px; }
+
+  h2 { font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 26px 0 8px 2px; }
+  .group { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .empty { padding: 22px 18px; color: var(--muted); text-align: center; }
+  .empty b { display: block; color: var(--ink-2); font-weight: 500; margin-bottom: 2px; }
+
+  .row + .row { border-top: 1px solid var(--line); }
+  .row.open { background: #1a1a19; }
+  .row.open .main:hover { background: none; }
+  details.log summary { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12.5px; cursor: pointer; list-style: none; }
+  details.log summary::-webkit-details-marker { display: none; }
+  details.log summary:hover { color: var(--ink-2); }
+  details.log summary svg { width: 14px; height: 14px; transition: transform .15s; }
+  details.log[open] summary svg { transform: rotate(90deg); }
+  details.log pre { margin-top: 8px; }
+  .problem { display: flex; gap: 8px; align-items: flex-start; color: var(--bad); }
+  .problem svg { margin-top: 1px; }
+  .main { display: flex; align-items: center; gap: 12px; padding: 12px 14px; min-height: 60px; cursor: pointer; }
+  .main:hover { background: var(--hover); }
+  .row.fixed .main { cursor: default; }
+  .row.fixed .main:hover { background: none; }
+  .avatar { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; flex: none;
+    font-weight: 650; font-size: 14px; color: #fff; text-transform: uppercase; }
+  .what { flex: 1; min-width: 0; }
+  .name { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; }
+  .tag { font-size: 11px; font-weight: 500; color: var(--muted); border: 1px solid var(--line-2); border-radius: 999px; padding: 0 7px; line-height: 17px; }
+  .desc { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .state { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .state i { width: 7px; height: 7px; border-radius: 50%; background: #5a5955; }
+  .state.on i { background: var(--good); box-shadow: 0 0 0 3px rgba(47,179,68,.15); }
+  .state.on { color: var(--ink-2); }
+  .state.bad i { background: var(--bad); box-shadow: 0 0 0 3px rgba(240,138,107,.15); }
+  .state.bad { color: var(--bad); }
+  .chev { color: var(--muted); transition: transform .15s; }
+  .row.open .chev { transform: rotate(90deg); }
+
+  .switch { position: relative; width: 34px; height: 20px; border-radius: 999px; background: #3a3a37; flex: none; transition: background .15s; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #d8d7d2; transition: left .15s; }
+  .switch[aria-checked=true] { background: var(--accent); }
+  .switch[aria-checked=true]::after { left: 16px; background: #fff; }
+
+  .more { padding: 2px 14px 16px 58px; display: grid; gap: 14px; }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; min-width: 0; color: var(--ink-2); overflow-wrap: anywhere; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; border-radius: 6px; padding: 1px 7px; background: var(--raised); color: var(--ink-2); }
+  .chip.missing { background: rgba(240,138,107,.12); color: var(--bad); }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .actions .grow { flex: 1; }
+  .confirm { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-2); }
+
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg); }
+  /* A setting sits in the list like any other line: its label lines up with the text in the box. */
+  .facts dt.at-input { padding-top: 6px; }
+  .facts dd + dt.at-input { margin-top: 4px; }
+  .field { display: grid; gap: 6px; }
+  .field > input[type=checkbox] { justify-self: start; margin: 3px 0 0; accent-color: var(--accent); }
+  .field small { color: var(--muted); font-size: 12px; }
+  .save { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 2px; }
+  input[type=text], textarea { width: 100%; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.03);
+    color: var(--ink); font: inherit; outline: none; transition: border-color .15s, background .15s; }
+  input[type=text]:hover, textarea:hover { border-color: var(--line-2); }
+  input[type=text]:focus, textarea:focus { border-color: var(--accent); background: rgba(255,255,255,.05); box-shadow: 0 0 0 3px rgba(57,135,229,.18); }
+  textarea { font: 12px/1.6 var(--mono); resize: none; display: block; }
+  .dialog input[type=text] { padding: 8px 10px; border-color: var(--line-2); }
+  .err { color: var(--bad); font-size: 12.5px; }
+  pre { margin: 0; padding: 10px 12px; max-height: 200px; overflow: auto; border-radius: 8px; background: #0a0a0a; border: 1px solid var(--line);
+    font: 11.5px/1.55 var(--mono); color: var(--ink-2); white-space: pre-wrap; }
+
+  /* The add dialog. */
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: start center; padding: 9vh 16px 16px; z-index: 10; }
+  .dialog { width: min(560px, 100%); background: var(--surface); border: 1px solid var(--line-2); border-radius: 14px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.5); overflow: hidden; }
+  .dialog .head { display: flex; align-items: center; padding: 16px 18px 4px; }
+  .dialog .head h2 { all: unset; flex: 1; font-size: 15px; font-weight: 650; }
+  .dialog .body { padding: 10px 18px 18px; display: grid; gap: 14px; }
+  .dialog .foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); background: #131312; }
+  .hint { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+  .hint button { color: var(--ink-2); border-bottom: 1px dashed var(--line-2); }
+  .hint button:hover { color: var(--ink); }
+  .inline { display: flex; gap: 8px; }
+  .inline input { flex: 1; min-width: 0; }
+  .who { display: flex; gap: 12px; align-items: center; }
+  .who b { font-size: 14px; }
+  .who .desc { white-space: normal; }
+  .caution { display: flex; gap: 10px; padding: 10px 12px; border-radius: 10px; background: rgba(250,178,25,.07);
+    border: 1px solid rgba(250,178,25,.22); color: var(--ink-2); }
+  .caution svg { color: var(--warn); margin-top: 1px; }
+  .caution b { color: var(--ink); font-weight: 600; }
+
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translate(-50%, 8px); opacity: 0; transition: .2s; pointer-events: none;
+    background: #262624; border: 1px solid var(--line-2); border-radius: 10px; padding: 8px 14px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .spin { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 20px 14px 48px; }
+    .main { gap: 10px; padding: 12px; }
+    .state span { display: none; }
+    .more { padding-left: 12px; }
+    .facts { grid-template-columns: 1fr; gap: 2px; }
+    .facts dd { margin-bottom: 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="t"><h1>Plugins</h1><div class="sub" id="sub">What this machine runs beside its screen.</div></div>
+    <button class="btn primary" id="add" hidden><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add plugin</button>
+  </header>
+  <div id="banner"></div>
+  <div id="groups"></div>
+</div>
+<div class="toast" id="toast"></div>
+<div id="modal"></div>
+
+<script>
+const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket') || '';
+const $ = id => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith('on')) e[k] = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (v === true) e.setAttribute(k, '');
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  e.append(...kids.flat(Infinity).filter(k => k != null && k !== false));
+  return e;
+};
+const icon = d => el('span', { html: `<svg class="i" viewBox="0 0 24 24">${d}</svg>` }).firstChild;
+const ICON = {
+  chev: '<path d="m9 6 6 6-6 6"/>',
+  warn: '<path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
+  check: '<path d="m5 12 5 5L20 7"/>', x: '<path d="M18 6 6 18M6 6l12 12"/>',
+};
+const HUES = [212, 152, 28, 268, 340, 190, 48, 100];
+const hue = name => HUES[[...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % HUES.length];
+const avatar = name => el('div', { class: 'avatar', style: `background: hsl(${hue(name)} 45% 38%)` }, name[0] || '?');
+
+// ---- the machine ----
+let ws, nextRef = 1, data = null, busy = null;
+const waiting = new Map();
+function connect() {
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/frame/plugins/ws?ticket=${ticket}`);
+  ws.onopen = () => refresh();
+  ws.onclose = e => {
+    // Never replay a management action after losing its answer.
+    for (const done of waiting.values()) done({ t: 'error', why: 'Connection lost. Check the current state before retrying.' });
+    waiting.clear();
+    if (e.code === 4403 && parent !== window) parent.postMessage({ t: 'renew-ticket' }, '*');
+    else setTimeout(connect, 2000);
+  };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'list') { data = m; draw(); return; }
+    const done = waiting.get(m.ref); waiting.delete(m.ref); done?.(m);
+  };
+}
+const refresh = () => ws?.readyState === 1 && ws.send(JSON.stringify({ t: 'list' }));
+function ask(m) {
+  if (ws?.readyState !== 1) return Promise.resolve({ t: 'error', why: 'Not connected to the machine.' });
+  const ref = nextRef++;
+  ws.send(JSON.stringify({ ...m, ref }));
+  return new Promise(r => waiting.set(ref, r));
+}
+/** Do something; list again; tell the client the providers may have changed. */
+async function act(m, done) {
+  busy = m.name ?? m.t; draw();
+  const r = await ask(m);
+  busy = null;
+  if (r.t !== 'error') { if (done) toast(done); parent.postMessage({ t: 'changed' }, '*'); }
+  refresh();
+  return r;
+}
+setInterval(() => { if (!busy) refresh(); }, 3000);
+
+let toastTimer;
+function toast(text) {
+  const t = $('toast'); t.textContent = text; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+// ---- the list ----
+const open = new Set(), openLogs = new Set(), confirming = new Set();
+/** Settings being edited, by plugin: what is typed, and what went wrong. */
+const drafts = new Map();
+const rowErrors = new Map();
+/** Each row as last built, and what it showed then. */
+const rows = new Map();
+let groupsBuilt = false;
+
+function draw() {
+  if (!data) return;
+  const canAct = !data.view_only, canChange = canAct && data.remote_install;
+  $('sub').textContent = `What ${data.machine || 'this machine'} runs beside its screen.`;
+  $('add').hidden = !canChange;
+  $('banner').replaceChildren(...(data.view_only
+    ? [banner('This machine is view-only.', 'Plugins can be looked at here, not changed.')]
+    : !data.remote_install
+    ? [banner('Installing from a browser is turned off on this machine.', ['Plugins can still be turned on and off. On the machine, ', el('code', {}, 'peek plugin remote-install on'), ' turns it on.'])]
+    : []));
+  // Not under the typing; and a row is built again only when what it shows
+  // changed, so a button is not swapped out from under a click.
+  if ([...drafts.values()].some(d => d.focused)) return;
+  const shared = JSON.stringify([busy, canAct, canChange]);
+  const rowOf = it => {
+    const key = JSON.stringify([it, shared, open.has(it.name), openLogs.has(it.name), confirming.has(it.name),
+      rowErrors.get(it.name) ?? null, drafts.get(it.name) ?? null]);
+    const old = rows.get(it.name);
+    if (old && old.key === key) return old.node;
+    const node = row(it, canAct, canChange);
+    rows.set(it.name, { key, node });
+    return node;
+  };
+  const added = data.items.filter(i => i.kind !== "peek's own");
+  const own = data.items.filter(i => i.kind === "peek's own");
+  if (!groupsBuilt) {
+    $('groups').replaceChildren(el('h2', {}, 'Built in'), el('div', { class: 'group', id: 'own' }),
+      el('h2', {}, 'Installed'), el('div', { class: 'group', id: 'added' }));
+    groupsBuilt = true;
+  }
+  sync($('added'), added.length ? added.map(rowOf) : [emptyNote(canChange)]);
+  sync($('own'), own.map(rowOf));
+  for (const name of rows.keys()) if (!data.items.some(i => i.name === name)) rows.delete(name);
+}
+
+/** Put these nodes in the box, moving only what is out of place. */
+function sync(box, nodes) {
+  nodes.forEach((n, i) => { if (box.children[i] !== n) box.insertBefore(n, box.children[i] ?? null); });
+  while (box.children.length > nodes.length) box.lastChild.remove();
+}
+
+let empty = null;
+function emptyNote(canChange) {
+  const text = canChange ? 'Add a plugin from a folder on this machine, a git repository, or npm.' : 'Plugins installed on this machine show here.';
+  if (!empty || empty.dataset.text !== text) {
+    empty = el('div', { class: 'empty', 'data-text': text }, el('b', {}, 'Nothing installed yet'), text);
+  }
+  return empty;
+}
+
+function banner(title, rest) {
+  return el('div', { class: 'banner' }, icon(ICON.warn), el('div', {}, el('b', {}, title), ' ', rest));
+}
+
+function stateOf(it) {
+  const s = it.status;
+  if (it.fixed) return ['on', 'Always on'];
+  if (!it.on) return ['', 'Off'];
+  if (s?.running) return ['on', 'Running'];
+  if (s?.ended && s.ended !== 'stopped') return ['bad', 'Stopped'];
+  return ['', 'Starting…'];
+}
+
+function row(it, canAct, canChange) {
+  const isOpen = open.has(it.name) && !it.fixed;
+  const [cls, label] = stateOf(it);
+  const toggle = e => { e.stopPropagation(); act({ t: 'on', name: it.name, on: !it.on }, `${it.name} turned ${it.on ? 'off' : 'on'}`); };
+  const main = el('div', { class: 'main', onclick: () => { if (it.fixed) return; isOpen ? open.delete(it.name) : open.add(it.name); draw(); } },
+    avatar(it.name),
+    el('div', { class: 'what' },
+      el('div', { class: 'name' }, it.name, it.kind === 'a command' ? el('span', { class: 'tag' }, 'command') : null),
+      el('div', { class: 'desc' }, it.description || it.runs)),
+    el('span', { class: 'state ' + cls, title: it.status?.ended && cls === 'bad' ? `It ${it.status.ended}` : '' }, el('i'), el('span', {}, label)),
+    it.fixed ? null : el('button', { class: 'switch', role: 'switch', 'aria-checked': String(!!it.on), 'aria-label': `${it.name} on`,
+      disabled: !canAct || busy === it.name, onclick: toggle }),
+    it.fixed ? null : el('span', { class: 'chev' }, icon(ICON.chev)));
+  const r = el('div', { class: 'row' + (isOpen ? ' open' : '') + (it.fixed ? ' fixed' : '') }, main);
+  if (isOpen) r.append(details(it, canAct, canChange));
+  return r;
+}
+
+function details(it, canAct, canChange) {
+  const s = it.status || {};
+  const facts = [
+    ['Runs', el('code', {}, it.runs)],
+    it.needs?.length ? ['Needs', el('div', { class: 'chips' }, it.needs.map(n => {
+      const missing = it.missing?.includes(n);
+      return el('span', { class: 'chip' + (missing ? ' missing' : '') }, icon(missing ? ICON.x : ICON.check), n, missing ? ' — not found' : '');
+    }))] : null,
+    it.on && !it.fixed && s.starts > 1 ? ['Started', `${s.starts} times since peek started`] : null,
+  ].filter(Boolean);
+  const parts = [];
+  // Why it is not running, first.
+  if (it.on && !s.running && s.ended && s.ended !== 'stopped') {
+    const missing = it.missing?.length ? ` It needs ${it.missing.join(', ')}, which this machine doesn't have.` : '';
+    parts.push(el('div', { class: 'problem' }, icon(ICON.warn), el('div', {}, `It ${s.ended}.${missing}`)));
+  }
+  // Its settings are more lines of the same list, not a form of their own.
+  if (it.settings && Object.keys(it.settings).length) facts.push(...settingRows(it, canChange));
+  parts.push(el('dl', { class: 'facts' }, facts.flatMap(([k, v, cls]) => [el('dt', { class: cls || '' }, k), el('dd', {}, v)])));
+  if (s.log?.length) {
+    const log = el('details', { class: 'log', open: openLogs.has(it.name) },
+      el('summary', {}, icon(ICON.chev), `Recent log · ${s.log.length} line${s.log.length === 1 ? '' : 's'}`), el('pre', {}, s.log.join('\n')));
+    log.ontoggle = () => { log.open ? openLogs.add(it.name) : openLogs.delete(it.name); };
+    parts.push(log);
+  }
+  const actions = [];
+  if (it.on && !it.fixed) actions.push(el('button', { class: 'btn small', disabled: !canAct || !!busy,
+    onclick: () => act({ t: 'restart', name: it.name }, `Restarted ${it.name}`) }, 'Restart'));
+  actions.push(el('span', { class: 'grow' }));
+  if (it.removable) {
+    actions.push(confirming.has(it.name)
+      ? el('span', { class: 'confirm' }, `Remove ${it.name}${it.kind === 'a plugin' ? ' and delete its folder' : ''}?`,
+          el('button', { class: 'btn small danger', onclick: async () => {
+            confirming.delete(it.name); open.delete(it.name);
+            const r = await act({ t: 'remove', name: it.name }, `Removed ${it.name}`);
+            if (r.t === 'error') { rowErrors.set(it.name, r.why); open.add(it.name); draw(); }
+          } }, 'Remove'),
+          el('button', { class: 'btn small ghost', onclick: () => { confirming.delete(it.name); draw(); } }, 'Keep'))
+      : el('button', { class: 'btn small ghost danger', disabled: !canChange, title: canChange ? '' : 'Turned off on this machine',
+          onclick: () => { confirming.add(it.name); draw(); } }, 'Remove'));
+  }
+  parts.push(el('div', { class: 'actions' }, actions));
+  if (rowErrors.has(it.name)) parts.push(el('div', { class: 'err' }, rowErrors.get(it.name)));
+  return el('div', { class: 'more' }, parts);
+}
+
+/** A [label, value, class] line for each setting, and one for saving when something changed. */
+function settingRows(it, canChange) {
+  // A copy is kept only once something is typed; until then the form shows
+  // the settings as the machine has them.
+  let draft = drafts.get(it.name);
+  const shown = draft?.values ?? it.values ?? {};
+  const begin = () => {
+    if (!draft) { draft = { values: structuredClone(it.values ?? {}), error: '', dirty: false, focused: false }; drafts.set(it.name, draft); }
+    return draft;
+  };
+  const fields = Object.entries(it.settings).map(([key, about]) => {
+    const v = shown[key];
+    const track = (input, read) => {
+      input.disabled = !canChange;
+      input.onfocus = () => { if (draft) draft.focused = true; };
+      input.onblur = () => { if (draft) draft.focused = false; };
+      input.oninput = () => { const d = begin(); d.values[key] = read(); d.dirty = true; d.focused = true; bar.hidden = false; };
+      return input;
+    };
+    const label = about.label || key;
+    if (about.kind === 'folders') {
+      const t = track(el('textarea', { placeholder: 'D:\\Shared', 'aria-label': label }), () => t.value.split('\n').map(l => l.trim()).filter(Boolean));
+      t.value = (v ?? []).join('\n');
+      // As tall as what it holds, plus a line to add one.
+      const fit = () => { t.rows = Math.max(2, t.value.split('\n').length + 1); };
+      t.addEventListener('input', fit); fit();
+      return [label, el('div', { class: 'field' }, t, el('small', {}, 'One folder per line, as it is on this machine.')), 'at-input'];
+    }
+    if (about.kind === 'switch') {
+      const c = track(el('input', { type: 'checkbox', 'aria-label': label }), () => c.checked);
+      c.checked = !!v;
+      return [label, c];
+    }
+    const i = track(el('input', { type: 'text', 'aria-label': label }), () => i.value);
+    i.value = v ?? '';
+    return [label, el('div', { class: 'field' }, i), 'at-input'];
+  });
+  const dirty = !!draft?.dirty;
+  const save = el('button', { class: 'btn small primary', disabled: !canChange, onclick: async () => {
+    if (!draft) return;
+    save.disabled = true;
+    draft.focused = false;
+    const r = await act({ t: 'settings', name: it.name, values: draft.values }, `Saved; ${it.name} restarted`);
+    if (r.t === 'error') { draft.error = r.why; save.disabled = false; draw(); }
+    else { drafts.delete(it.name); draw(); }
+  } }, 'Save and restart');
+  const reset = el('button', { class: 'btn small ghost', onclick: () => { drafts.delete(it.name); draw(); } }, 'Undo');
+  // Only there once something has been changed.
+  const bar = el('div', { class: 'save', hidden: !dirty }, save, reset,
+    draft?.error ? el('span', { class: 'err' }, draft.error) : null);
+  const last = fields[fields.length - 1];
+  last[1] = el('div', { class: 'field' }, last[1], bar);
+  return fields;
+}
+
+// ---- adding ----
+const EXAMPLES = [['a folder', 'D:\\plugins\\files'], ['git', 'https://github.com/you/peek-plugin'], ['npm', 'peek-plugin-files']];
+function openAdd() {
+  let review = null, error = '', fetching = false, installing = false;
+  const input = el('input', { type: 'text', placeholder: 'A folder, a git address, or an npm package', autocomplete: 'off', spellcheck: 'false' });
+  const close = () => $('modal').replaceChildren();
+  async function look() {
+    const source = input.value.trim();
+    if (!source || fetching) return;
+    fetching = true; review = null; error = ''; render();
+    const r = await ask({ t: 'inspect', source });
+    fetching = false;
+    if (r.t === 'inspected') review = r; else error = r.why;
+    render();
+  }
+  async function install() {
+    installing = true; render();
+    const r = await act({ t: 'install', id: review.id }, `Installed ${review.name}`);
+    installing = false;
+    if (r.t === 'error') { error = r.why; render(); return; }
+    close(); open.add(r.name);
+  }
+  function render() {
+    const body = [
+      el('div', { class: 'inline' }, input,
+        el('button', { class: 'btn', disabled: fetching, onclick: look }, fetching ? el('span', { class: 'spin' }) : null, fetching ? 'Fetching' : 'Look at it')),
+      el('div', { class: 'hint' }, 'For example', EXAMPLES.map(([k, v], n) => [n ? '·' : null,
+        el('button', { title: v, onclick: () => { input.value = v; input.focus(); } }, k)])),
+    ];
+    if (error) body.push(el('div', { class: 'err' }, error));
+    if (review) {
+      const r = review;
+      body.push(el('div', { class: 'card' },
+        el('div', { class: 'who' }, avatar(r.name), el('div', {}, el('b', {}, r.name), el('div', { class: 'desc' }, r.description || 'No description'))),
+        el('dl', { class: 'facts', style: 'margin:12px 0 0' },
+          el('dt', {}, 'Runs'), el('dd', {}, el('code', {}, r.runs)),
+          r.needs.length ? [el('dt', {}, 'Needs'), el('dd', {}, el('div', { class: 'chips' }, r.needs.map(n => {
+            const missing = r.missing.includes(n);
+            return el('span', { class: 'chip' + (missing ? ' missing' : '') }, icon(missing ? ICON.x : ICON.check), n, missing ? ' — not found here' : '');
+          })))] : null,
+          r.dependencies ? [el('dt', {}, 'Brings'), el('dd', {}, 'npm dependencies, installed without running their scripts')] : null,
+          el('dt', {}, 'From'), el('dd', {}, el('code', {}, r.from)))));
+      body.push(r.taken
+        ? el('div', { class: 'err' }, `Something called ${r.name} is installed already. Remove it first.`)
+        : el('div', { class: 'caution' }, icon(ICON.warn), el('div', {}, el('b', {}, 'It runs with full rights. '),
+            "It runs as peek's user on this machine and can do anything that user can. Peek can't limit what it does: install only what you trust.")));
+    }
+    $('modal').replaceChildren(el('div', { class: 'scrim', onclick: e => { if (e.target === e.currentTarget && !installing) close(); } },
+      el('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Add a plugin' },
+        el('div', { class: 'head' }, el('h2', {}, 'Add a plugin'),
+          el('button', { class: 'btn small ghost', 'aria-label': 'Close', onclick: close }, icon(ICON.x))),
+        el('div', { class: 'body' }, body),
+        el('div', { class: 'foot' },
+          el('button', { class: 'btn ghost', onclick: close, disabled: installing }, 'Cancel'),
+          el('button', { class: 'btn primary', disabled: !review || review.taken || review.missing.length > 0 || installing, onclick: install },
+            installing ? el('span', { class: 'spin' }) : null, review ? `Install ${review.name}` : 'Install')))));
+  }
+  input.onkeydown = e => { if (e.key === 'Enter') look(); if (e.key === 'Escape') close(); };
+  render();
+  input.focus();
+}
+$('add').onclick = openAdd;
+
+// The client's colours, if it sends them.
+addEventListener('message', e => {
+  if (e.source !== parent || e.data?.t !== 'theme') return;
+  const vars = e.data.vars || {}, mine = { '--bg': '--page', '--ink': '--ink', '--ink-2': '--ink-2', '--muted': '--muted', '--accent': '--s1', '--sans': '--sans' };
+  for (const [k, theirs] of Object.entries(mine)) if (vars[theirs]) document.documentElement.style.setProperty(k, String(vars[theirs]));
+});
+connect();
+</script>
+</body>
+</html>

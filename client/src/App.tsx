@@ -1,8 +1,10 @@
+import { SCREEN_PLUGIN } from './plugin-mode';
 import { createEffect } from 'solid-js';
 import { BlockedNote, Message, SleepCard } from './components/Overlays';
 import { IconSprite } from './components/Icons';
 import { Keyboard } from './components/Keyboard';
 import { Devices } from './components/Devices';
+import { Frame, ProviderPage } from './components/Frame';
 import { HOSTED } from './hosted';
 import { Settings } from './components/Settings';
 import { Stats } from './components/Stats';
@@ -23,6 +25,7 @@ export function App() {
       <SleepCard />
       <Message />
       <Stats />
+      <Show when={!SCREEN_PLUGIN}><Frame /><ProviderPage /></Show>
       <Toolbar />
       <Settings />
       <Show when={HOSTED}><Devices /></Show>

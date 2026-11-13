@@ -63,7 +63,7 @@ pub struct Pairing {
     failures: Mutex<VecDeque<Instant>>,
 }
 
-fn random_hex(bytes: usize) -> std::io::Result<String> {
+pub fn random_hex(bytes: usize) -> std::io::Result<String> {
     let mut buf = vec![0u8; bytes];
     getrandom::fill(&mut buf).map_err(std::io::Error::other)?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())

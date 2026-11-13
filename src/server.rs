@@ -2,7 +2,7 @@
 //! sockets and requests, and passes what clients say to the screen (in this
 //! process, or in a provider's) and to the other providers.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -54,13 +54,15 @@ pub struct Shared {
     pub serve_target: String,
     pub pairing: Pairing,
     pub screen: Screen,
-    /// Every other provider, by name: vitals, power, and whatever
-    /// `providers.json` names. The server passes requests and socket
-    /// messages on to them, and knows nothing of what they mean.
-    pub providers: BTreeMap<String, Arc<Link>>,
+    /// Every other provider, by name: vitals, power, added commands and
+    /// plugins, as they are turned on and off. The server passes requests
+    /// and socket messages on to them, and knows nothing of what they mean.
+    pub plugins: Arc<crate::plugins::Plugins>,
     /// The host ignores what clients do: nothing that acts is passed on.
     pub view_only: bool,
     pub next_id: AtomicU64,
+    /// Tickets for providers' own pages: ticket → (provider, until when).
+    pub tickets: std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
 }
 
 /// Where the engine, input and the clipboard are.
@@ -84,10 +86,16 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/.well-known/peek", get(about).options(preflight))
         .route("/api/pair", post(pair).options(preflight))
         .route("/api/provider/{name}", post(provider).options(preflight))
+        .route("/api/frame/{name}", post(frame_ticket).options(preflight))
+        .route("/api/frame/{name}/ws", get(frame_ws))
+        .route("/api/frame/{name}/file/{id}", get(frame_file))
+        .route("/p/{name}/", get(page_index))
+        .route("/p/{name}/{*path}", get(page_file))
         .route("/api/pair-code", post(local_pair_code))
         .route("/api/clients", get(local_clients))
         .route("/api/clients/revoke", post(local_revoke))
         .route("/api/logs", get(local_logs))
+        .route("/api/plugins/reload", post(local_plugins_reload))
         .layer(middleware::from_fn_with_state(shared.clone(), ip_guard))
         .with_state(shared);
     // Input and small screen updates must not sit in Nagle's buffer.
@@ -281,11 +289,17 @@ async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Respons
     // Each provider's name, with whatever it says of itself (where it has
     // something to show, for one).
     let mut providers = vec![serde_json::json!({ "name": "screen" })];
-    for (name, link) in &shared.providers {
+    for (name, link) in shared.plugins.running() {
         let mut about = link.about();
+        // Where its page is stays here; the client hears only that there is one.
+        if about.remove("page").is_some() {
+            about.insert("frame".into(), true.into());
+        }
         about.insert("name".into(), name.as_str().into());
         providers.push(about.into());
     }
+    // The plugins page, which peek serves itself.
+    providers.push(serde_json::json!({ "name": "plugins", "frame": true }));
     let body = serde_json::json!({
         "id": shared.pairing.host_id,
         "name": pairing::machine_name(),
@@ -399,7 +413,7 @@ async fn provider(
     if !token_ok(&shared, &given, web) {
         return error(StatusCode::FORBIDDEN, "token");
     }
-    let Some(link) = shared.providers.get(&name) else {
+    let Some(link) = shared.plugins.get(&name) else {
         return error(StatusCode::NOT_FOUND, "no such provider");
     };
     let req = serde_json::Value::Object(req);
@@ -411,6 +425,307 @@ async fn provider(
         Some(answer) => reply(StatusCode::OK, answer),
         None => error(StatusCode::SERVICE_UNAVAILABLE, "the provider did not answer"),
     }
+}
+
+// ---- providers' own pages ----
+//
+// A provider may have a page of its own: a folder it names in what it says
+// of itself (`"page": "C:\\…"`). Peek serves it here at /p/<name>/, so it
+// runs as this machine's origin, never the hosted client's: a frame there
+// cannot reach the hosted client's tokens. What the page learns of this
+// machine, its provider (running here, as peek's user) had already.
+//
+// The page talks to its provider on a socket of its own, with a ticket the
+// client that shows it asked for: good for that provider only, and never
+// the token itself.
+
+/// How long a ticket lasts.
+const TICKET_FOR: Duration = Duration::from_secs(12 * 60 * 60);
+/// The plugins page: peek's own, served from peek itself.
+const PLUGINS: &str = "plugins";
+const PLUGINS_PAGE: &str = include_str!("plugins.html");
+
+fn page_dir(shared: &Shared, name: &str) -> Option<std::path::PathBuf> {
+    let about = shared.plugins.get(name)?.about();
+    about.get("page")?.as_str().map(std::path::PathBuf::from)
+}
+
+fn ticket_ok(shared: &Shared, ticket: &str, name: &str) -> bool {
+    let now = std::time::Instant::now();
+    let mut tickets = shared.tickets.lock().unwrap();
+    tickets.retain(|_, (_, until)| *until > now);
+    tickets.iter().any(|(t, (p, _))| p == name && token_matches(ticket, t))
+}
+
+/// A ticket for a provider's page: asked for with a token, as a request to
+/// the provider is.
+async fn frame_ticket(
+    State(shared): State<Arc<Shared>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cors = cors(&shared, &headers);
+    let reply = |status: StatusCode, body: serde_json::Value| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
+            .into_response()
+    };
+    let web = from_web(&shared, &headers);
+    if headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
+        return reply(StatusCode::FORBIDDEN, serde_json::json!({ "error": "origin" }));
+    }
+    let given = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["token"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    if !token_ok(&shared, &given, web) {
+        return reply(StatusCode::FORBIDDEN, serde_json::json!({ "error": "token" }));
+    }
+    if name != PLUGINS && page_dir(&shared, &name).is_none() {
+        return reply(StatusCode::NOT_FOUND, serde_json::json!({ "error": "no page" }));
+    }
+    let Ok(ticket) = pairing::random_hex(24) else {
+        return reply(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({ "error": "random" }));
+    };
+    let now = std::time::Instant::now();
+    let mut tickets = shared.tickets.lock().unwrap();
+    tickets.retain(|_, (_, until)| *until > now);
+    tickets.insert(ticket.clone(), (name.clone(), now + TICKET_FOR));
+    reply(StatusCode::OK, serde_json::json!({ "ticket": ticket, "path": format!("/p/{name}/") }))
+}
+
+async fn page_index(state: State<Arc<Shared>>, Path(name): Path<String>) -> Response {
+    page(state, name, String::new()).await
+}
+
+async fn page_file(state: State<Arc<Shared>>, Path((name, path)): Path<(String, String)>) -> Response {
+    page(state, name, path).await
+}
+
+/// A file of a provider's page. Only the hosted client, and this machine's
+/// own pages, may frame it.
+async fn page(State(shared): State<Arc<Shared>>, name: String, path: String) -> Response {
+    let mime = content_type(&path);
+    let body = if name == PLUGINS {
+        if !(path.is_empty() || path == "index.html") {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        PLUGINS_PAGE.as_bytes().to_vec()
+    } else {
+        let Some(dir) = page_dir(&shared, &name) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let Ok(Ok(body)) = tokio::task::spawn_blocking(move || {
+            let file = page_path(&dir, &path).ok_or_else(|| std::io::Error::other("invalid page path"))?;
+            let root = std::fs::canonicalize(&dir)?;
+            let file = std::fs::canonicalize(file)?;
+            if !file.starts_with(root) {
+                return Err(std::io::Error::other("page path leaves its folder"));
+            }
+            std::fs::read(file)
+        }).await else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        body
+    };
+    let ancestors = match &shared.web {
+        Some(web) => format!("frame-ancestors 'self' {web}"),
+        None => "frame-ancestors 'self'".into(),
+    };
+    let mut h = HeaderMap::new();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if let Ok(v) = HeaderValue::from_str(&ancestors) {
+        h.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    (h, body).into_response()
+}
+
+/// The file a page's path names, inside its folder and nowhere else.
+fn page_path(dir: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
+    let path = if path.is_empty() || path.ends_with('/') { format!("{path}index.html") } else { path.to_string() };
+    let mut file = dir.to_path_buf();
+    for part in path.split('/') {
+        let plain = !part.is_empty()
+            && !part.starts_with('.')
+            && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !plain {
+            return None;
+        }
+        file.push(part);
+    }
+    Some(file)
+}
+
+fn content_type(path: &str) -> &'static str {
+    let ext = path.rsplit_once('.').map_or("html", |(_, e)| e);
+    match ext.to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json",
+        "wasm" => "application/wasm",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
+/// A file a provider offered (`Link::offer`), streamed once as a download:
+/// the browser's own download manager takes it from there, however big.
+async fn frame_file(State(shared): State<Arc<Shared>>, Path((name, id)): Path<(String, String)>) -> Response {
+    let Some((path, file_name)) = shared.plugins.get(&name).and_then(|link| link.take_offer(&id)) else {
+        return (StatusCode::NOT_FOUND, "This link is used or expired.").into_response();
+    };
+    let opened = tokio::task::spawn_blocking(move || {
+        let file = std::fs::File::open(&path)?;
+        let len = file.metadata()?.len();
+        Ok::<_, std::io::Error>((file, len))
+    })
+    .await;
+    let Ok(Ok((mut file, len))) = opened else {
+        return (StatusCode::NOT_FOUND, "The file cannot be read.").into_response();
+    };
+    crate::log!("{name}: sending {file_name} ({len} bytes)");
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(8);
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut buf = vec![0u8; 256 << 10];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.blocking_send(Ok(Bytes::copy_from_slice(&buf[..n]))).is_err() {
+                        break; // the browser went away
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|chunk| (chunk, rx)) });
+    let mut h = HeaderMap::new();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if let Ok(v) = HeaderValue::from_str(&attachment(&file_name)) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    (h, axum::body::Body::from_stream(stream)).into_response()
+}
+
+/// `Content-Disposition` for a download named `name`: a plain fallback, and
+/// the name itself in UTF-8.
+fn attachment(name: &str) -> String {
+    let plain: String =
+        name.chars().map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' { c } else { '_' }).collect();
+    let mut encoded = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{encoded}")
+}
+
+/// A page's socket to its provider: text and binary both ways, as they
+/// are. Only the page itself may open it (its Origin is this host), with a
+/// ticket for that provider.
+async fn frame_ws(
+    State(shared): State<Arc<Shared>>,
+    Path(name): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let ticket = query.get("ticket").map_or("", String::as_str);
+    if !origin_ok(&headers, shared.token.is_none()) || !ticket_ok(&shared, ticket, &name) {
+        return upgrade.on_upgrade(|mut socket| async move {
+            let _ = socket
+                .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_TOKEN, reason: "bad ticket".into() })))
+                .await;
+        });
+    }
+    if name == PLUGINS {
+        return upgrade.on_upgrade(move |socket| plugins_client(socket, shared));
+    }
+    let Some(link) = shared.plugins.get(&name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    upgrade.on_upgrade(move |socket| frame_client(socket, shared, link))
+}
+
+/// The plugins page's socket: each request answered in turn, here.
+async fn plugins_client(mut socket: WebSocket, shared: Arc<Shared>) {
+    while let Ok(Some(Ok(msg))) = tokio::time::timeout(DEAD_AFTER, socket.next()).await {
+        match msg {
+            Message::Text(text) => {
+                let Ok(ask) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+                let plugins = shared.plugins.clone();
+                // Installing fetches and copies: off the async threads.
+                let answer = tokio::task::spawn_blocking(move || plugins.answer(&ask)).await.unwrap_or_default();
+                if socket.send(Message::Text(answer.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
+        }
+    }
+}
+
+async fn frame_client(mut socket: WebSocket, shared: Arc<Shared>, link: Arc<Link>) {
+    let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+    // Never let an unwatched or slow page accumulate an unlimited stream.
+    // On overflow close the channel; silently dropping frames would lose ACKs.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Out>(8);
+    let overflow = Arc::new(tokio::sync::Notify::new());
+    let full = overflow.clone();
+    let how = HashMap::from([("from".to_string(), "page".to_string())]);
+    link.open(id, &how, Arc::new(move |out| {
+        if tx.try_send(out).is_err() { full.notify_one(); }
+    }));
+    let mut ping = tokio::time::interval(PING_EVERY);
+    let mut last_read = tokio::time::Instant::now();
+    loop {
+        let msg = tokio::select! {
+            _ = overflow.notified() => Message::Close(Some(CloseFrame { code: 1013, reason: "slow page; reconnect".into() })),
+            _ = tokio::time::sleep_until(last_read + DEAD_AFTER) => break,
+            out = rx.recv() => match out {
+                Some(Out::Text(text)) => Message::Text(text.into()),
+                Some(Out::Binary(bytes)) => Message::Binary(bytes.into()),
+                None => Message::Close(Some(CloseFrame { code: 1012, reason: "provider restarted".into() })),
+            },
+            incoming = socket.next() => {
+                last_read = tokio::time::Instant::now();
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        let acting = serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|m| acts(&m));
+                        if shared.view_only && acting {
+                            Message::Text(serde_json::json!({"t":"error", "why":VIEW_ONLY}).to_string().into())
+                        } else { link.text(id, &text); continue; }
+                    }
+                    Some(Ok(Message::Binary(bytes))) if !shared.view_only => { link.binary(id, &bytes); continue; }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    _ => continue,
+                }
+            },
+            _ = ping.tick() => Message::Ping(Default::default()),
+        };
+        let closing = matches!(msg, Message::Close(_));
+        if !matches!(tokio::time::timeout(DEAD_AFTER, socket.send(msg)).await, Ok(Ok(()))) || closing { break; }
+    }
+    link.close(id);
 }
 
 /// A new pairing code, with the link that uses it.
@@ -476,6 +791,16 @@ async fn local_logs(
     let file = crate::LOG_PATH.get().map(|p| p.display().to_string());
     let body = serde_json::json!({ "last": last, "lines": lines, "file": file });
     ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
+}
+
+/// After `peek plugin add` or `remove`: start and stop providers to match.
+async fn local_plugins_reload(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Response {
+    if !local_ok(&shared, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let plugins = shared.plugins.clone();
+    let _ = tokio::task::spawn_blocking(move || plugins.reconcile()).await;
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn local_revoke(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
@@ -616,14 +941,14 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
         };
         match serde_json::from_str::<CoreMsg>(&text) {
             Ok(CoreMsg::Open { p }) => {
-                if let Some(link) = shared.providers.get(&p)
+                if let Some(link) = shared.plugins.get(&p)
                     && opened.insert(p.clone())
                 {
                     link.open(id, &HashMap::new(), from_provider(&p, reply.clone()));
                 }
             }
             Ok(CoreMsg::To { p, m }) => {
-                if let (Some(link), true) = (shared.providers.get(&p), opened.contains(&p)) {
+                if let (Some(link), true) = (shared.plugins.get(&p), opened.contains(&p)) {
                     if shared.view_only && acts(&m) {
                         let refused = serde_json::json!({ "t": "error", "why": VIEW_ONLY });
                         from_provider(&p, reply.clone())(Out::Text(refused.to_string()));
@@ -633,7 +958,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                 }
             }
             Ok(CoreMsg::Close { p }) => {
-                if let (Some(link), true) = (shared.providers.get(&p), opened.remove(&p)) {
+                if let (Some(link), true) = (shared.plugins.get(&p), opened.remove(&p)) {
                     link.close(id);
                 }
             }
@@ -665,7 +990,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
         (Screen::Here(_), None) => {}
     }
     for p in opened {
-        if let Some(link) = shared.providers.get(&p) {
+        if let Some(link) = shared.plugins.get(&p) {
             link.close(id);
         }
     }
@@ -699,6 +1024,26 @@ mod tests {
         for text in [r#"{"t":"open","p":"jobs"}"#, r#"{"t":"to","p":"jobs","m":{"t":"view"}}"#, r#"{"t":"close","p":"jobs"}"#] {
             assert!(serde_json::from_str::<CoreMsg>(text).is_ok(), "{text}");
         }
+    }
+
+    #[test]
+    fn a_page_serves_only_files_inside_its_folder() {
+        let dir = std::path::Path::new("pages");
+        assert_eq!(page_path(dir, ""), Some(dir.join("index.html")));
+        assert_eq!(page_path(dir, "app/main.js"), Some(dir.join("app").join("main.js")));
+        assert_eq!(page_path(dir, "app/"), Some(dir.join("app").join("index.html")));
+        for bad in ["../secret", "a/../../b", ".hidden", "a//b", "C:/x", "a\\b", "%2e%2e/x"] {
+            assert_eq!(page_path(dir, bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_download_keeps_its_name() {
+        assert_eq!(attachment("report.pdf"), "attachment; filename=\"report.pdf\"; filename*=UTF-8''report.pdf");
+        assert_eq!(
+            attachment("a \"b\" é.txt"),
+            "attachment; filename=\"a _b_ _.txt\"; filename*=UTF-8''a%20%22b%22%20%C3%A9.txt"
+        );
     }
 
     #[test]

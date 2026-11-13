@@ -63,11 +63,13 @@ pub fn start(view_only: bool, clipboard: bool, verbose: bool, fps: u32) -> Arc<S
     shared
 }
 
-/// What a client says to the screen. (`ping` and `paircode` are answered by
-/// the server itself and never get here.)
+/// What a client says to the screen. The built-in server handles `ping`;
+/// provider-owned pages send their timing probe here. Pairing stays in the host.
 #[derive(Deserialize)]
 #[serde(tag = "t")]
 enum ClientMsg {
+    #[serde(rename = "ping")]
+    Ping { n: u32 },
     #[serde(rename = "ack")]
     Ack { s: u32 },
     #[serde(rename = "vis")]
@@ -197,6 +199,11 @@ impl Session {
         let id = self.id;
         let inject = !shared.view_only;
         match msg {
+            ClientMsg::Ping { n } => {
+                if let Some(sink) = shared.peers.lock().unwrap().get(&self.id) {
+                    sink(Out::Text(serde_json::json!({"t":"pong","n":n}).to_string()));
+                }
+            }
             ClientMsg::Ack { s } => {
                 let _ = shared.engine.send(Cmd::Ack { id, seq: s });
             }
@@ -437,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_takes_every_message_but_the_servers() {
+    fn the_screen_accepts_input_and_a_page_timing_probe() {
         let screen = |text: &str| serde_json::from_str::<ClientMsg>(text).is_ok();
         for ours in [
             r#"{"t":"ack","s":7}"#,
@@ -453,7 +460,7 @@ mod tests {
         ] {
             assert!(screen(ours), "{ours}");
         }
-        assert!(!screen(r#"{"t":"ping","n":3}"#));
+        assert!(screen(r#"{"t":"ping","n":3}"#));
         assert!(!screen(r#"{"t":"paircode"}"#));
     }
 }
