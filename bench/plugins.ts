@@ -1,7 +1,7 @@
 // End-to-end plugin checks against two isolated host processes. No installed
 // service, user configuration, desktop input, or public registry is changed.
 // cargo build --release
-// cargo build --release --manifest-path examples/provider/files/Cargo.toml
+// cargo build --release --manifest-path apps/files/Cargo.toml
 // bun bench/plugins.ts
 import { strict as assert } from 'node:assert';
 import { mkdtemp, mkdir, readFile, writeFile, cp, copyFile, rm } from 'node:fs/promises';
@@ -137,40 +137,62 @@ try {
   await until(async () => reopened.messages.find(m => m.t === 'notes'), 'replacement provider');
   console.log('PASS: page text/binary, provider-scoped tickets, restart closes stale sockets, and reconnect');
 
+  const initial = await manager.answer({ t: 'list' }, 'list');
+  const builtin = initial.items.find((item: any) => item.name === 'files');
+  assert.equal(builtin.kind, "peek's own");
+  assert.equal(builtin.on, false);
+  assert.equal((await a.ticket('files')).status, 404);
+  assert.equal((await fetch(`${a.base}/p/files/`)).status, 404);
+  const shared = join(temp, 'shared'); await mkdir(shared);
+  await writeFile(join(shared, 'R\u00e9sum\u00e9.txt'), 'download integrity');
+  assert.equal((await manager.answer({ t: 'settings', name: 'files', values: { folders: [shared] } }, 'ok')).t, 'ok');
+  assert.equal((await manager.answer({ t: 'on', name: 'files', on: true }, 'ok')).t, 'ok');
+  await a.ready('files');
+  const builtinPage = await a.page('files');
+  const builtinRoots = await builtinPage.answer({ t: 'roots' }, 'roots');
+  assert.equal(builtinRoots.roots.length, 1);
+  const builtinListing = await builtinPage.answer({ t: 'list', root: builtinRoots.roots[0].id, path: '' }, 'list');
+  assert.ok(builtinListing.entries.some((entry: any) => entry.name === 'R\u00e9sum\u00e9.txt'));
+  assert.equal((await manager.answer({ t: 'on', name: 'files', on: false }, 'ok')).t, 'ok');
+  assert.equal((await a.ticket('files')).status, 404);
+  assert.equal((await fetch(`${a.base}/p/files/`)).status, 404);
+  console.log('PASS: built-in files starts, shares a folder, and stops');
+
   const filesSource = join(temp, 'files-source');
-  await cp(join(root, 'examples/provider/files/page'), join(filesSource, 'page'), { recursive: true });
-  await copyFile(join(root, 'examples/provider/files/peek-plugin.json'), join(filesSource, 'peek-plugin.json'));
+  await cp(join(root, 'apps/files/page'), join(filesSource, 'page'), { recursive: true });
+  await copyFile(join(root, 'apps/files/peek-plugin.json'), join(filesSource, 'peek-plugin.json'));
   await mkdir(join(filesSource, 'bin'));
   const filesExe = process.platform === 'win32' ? 'peek-files.exe' : 'peek-files';
-  await copyFile(join(root, 'examples/provider/files/target/release', filesExe), join(filesSource, 'bin', filesExe));
+  await copyFile(join(root, 'apps/files/target/release', filesExe), join(filesSource, 'bin', filesExe));
   const filesManifest = JSON.parse(await readFile(join(filesSource, 'peek-plugin.json'), 'utf8'));
+  filesManifest.name = 'explorer';
   filesManifest.version = '1';
   await writeFile(join(filesSource, 'peek-plugin.json'), JSON.stringify(filesManifest));
   const inspected = await manager.answer({ t: 'inspect', source: filesSource }, 'inspected');
-  assert.equal((await manager.answer({ t: 'install', id: inspected.id }, 'ok')).name, 'files');
-  const shared = join(temp, 'shared'); await mkdir(shared);
-  await writeFile(join(shared, 'Résumé.txt'), 'download integrity');
-  assert.equal((await manager.answer({ t: 'settings', name: 'files', values: { folders: [shared] } }, 'ok')).t, 'ok');
-  const dataFile = join(a.config, 'plugin-data', 'files', 'kept');
+  assert.equal((await manager.answer({ t: 'install', id: inspected.id }, 'ok')).name, 'explorer');
+  assert.equal((await manager.answer({ t: 'settings', name: 'explorer', values: { folders: [shared] } }, 'ok')).t, 'ok');
+  const dataFile = join(a.config, 'plugin-data', 'explorer', 'kept');
   await writeFile(dataFile, 'persistent data');
   filesManifest.version = '2';
   await writeFile(join(filesSource, 'peek-plugin.json'), JSON.stringify(filesManifest));
   const replacement = await manager.answer({ t: 'inspect', source: filesSource }, 'inspected');
-  assert.equal((await manager.answer({ t: 'update', id: replacement.id }, 'ok')).name, 'files');
+  assert.equal((await manager.answer({ t: 'update', id: replacement.id }, 'ok')).name, 'explorer');
   assert.equal(await readFile(dataFile, 'utf8'), 'persistent data');
-  await a.ready('files');
-  const files = await a.page('files');
+  await a.ready('explorer');
+  const files = await a.page('explorer');
   const roots = await files.answer({ t: 'roots' }, 'roots');
   assert.equal(roots.roots.length, 1);
   const folder = roots.roots[0].id;
   const listing = await files.answer({ t: 'list', root: folder, path: '' }, 'list');
-  assert.ok(listing.entries.some((f: any) => f.name === 'Résumé.txt'));
+  assert.ok(listing.entries.some((f: any) => f.name === 'R\u00e9sum\u00e9.txt'));
   assert.equal((await files.answer({ t: 'get', root: folder, path: '../outside.txt' }, 'error')).t, 'error');
-  const offered = await files.answer({ t: 'get', root: folder, path: 'Résumé.txt', ref: 1 }, 'file');
+  const offered = await files.answer({ t: 'get', root: folder, path: 'R\u00e9sum\u00e9.txt', ref: 1 }, 'file');
   const download = await fetch(a.base + offered.url);
   assert.ok(download.headers.get('content-disposition')?.includes('filename*=UTF-8'));
   assert.equal(await download.text(), 'download integrity');
   assert.equal((await fetch(a.base + offered.url)).status, 404);
+  assert.equal((await manager.answer({ t: 'remove', name: 'explorer' }, 'ok')).t, 'ok');
+  assert.equal((await a.ticket('explorer')).status, 404);
   console.log('PASS: native file plugin installs over management socket, saves settings, lists and downloads verified files');
 
   // A page path must remain inside its root after following directory links.
