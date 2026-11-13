@@ -220,11 +220,11 @@ enum ProviderCommand {
 /// What peek has beside the screen: its own providers, then the commands
 /// and plugins added here. Each is a process of its own, started now and
 /// again if it ends, and stopped when it is turned off.
-fn own_providers(args: &Args) -> Vec<(&'static str, &'static str, provider::Start)> {
+fn own_providers(args: &Args) -> Vec<(&'static str, provider::Start)> {
     use provider::Start;
     vec![
-        ("vitals", "Processor, memory and storage.", Start::Own(Vec::new())),
-        ("power", "Sleep, and waking other machines on the network.", Start::Own(power_flags(args))),
+        (include_str!("apps/vitals.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
+        (include_str!("apps/power.json"), Start::Own { flags: power_flags(args), env: Vec::new() }),
     ]
 }
 

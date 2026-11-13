@@ -44,7 +44,7 @@ use crate::screen::{self, Sink};
 #[derive(Clone)]
 pub enum Start {
     /// `peek --provider <name>`, with these flags.
-    Own(Vec<String>),
+    Own { flags: Vec<String>, env: Vec<(String, String)> },
     /// Another program.
     Program(Program),
 }
@@ -266,9 +266,9 @@ impl Link {
     fn start_child(self: &Arc<Self>, start: &Start, view_only: bool) -> io::Result<std::process::Child> {
         use std::process::{Command, Stdio};
         let mut command = match start {
-            Start::Own(flags) => {
+            Start::Own { flags, env } => {
                 let mut command = Command::new(std::env::current_exe()?);
-                command.args(["--provider", &self.name]).args(flags);
+                command.args(["--provider", &self.name]).args(flags).envs(env.iter().map(|(k, v)| (k, v)));
                 command
             }
             Start::Program(program) => {

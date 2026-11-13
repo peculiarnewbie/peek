@@ -75,6 +75,8 @@ pub struct Manifest {
     /// They reach it as JSON in `PEEK_SETTINGS`.
     #[serde(default)]
     pub settings: Map<String, Value>,
+    #[serde(default = "yes")]
+    pub on_by_default: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,6 +87,8 @@ struct State {
     /// Turned off: not started.
     #[serde(default)]
     off: BTreeSet<String>,
+    #[serde(default)]
+    on: BTreeSet<String>,
     /// Each plugin's settings, as last saved.
     #[serde(default)]
     settings: BTreeMap<String, Map<String, Value>>,
@@ -100,7 +104,7 @@ fn yes() -> bool {
 
 impl Default for State {
     fn default() -> Self {
-        State { remote_install: true, off: BTreeSet::new(), settings: BTreeMap::new(), sources: BTreeMap::new() }
+        State { remote_install: true, off: BTreeSet::new(), on: BTreeSet::new(), settings: BTreeMap::new(), sources: BTreeMap::new() }
     }
 }
 
@@ -147,13 +151,13 @@ struct Staged {
 /// commands as well as by a running peek.
 pub struct Catalog {
     dir: PathBuf,
-    own: Vec<(&'static str, &'static str, Start)>,
+    own: Vec<(&'static str, Start)>,
 }
 
 impl Catalog {
     /// `dir`: peek's config folder. `own`: peek's own providers, with what
     /// each is and how it starts.
-    pub fn new(dir: PathBuf, own: Vec<(&'static str, &'static str, Start)>) -> Catalog {
+    pub fn new(dir: PathBuf, own: Vec<(&'static str, Start)>) -> Catalog {
         Catalog { dir, own }
     }
 
@@ -203,19 +207,19 @@ impl Catalog {
     /// Everything there is, on or off.
     fn specs(&self) -> Vec<Spec> {
         let state = self.state();
-        let mut all: Vec<Spec> = self
-            .own
-            .iter()
-            .map(|(name, description, start)| Spec {
-                name: name.to_string(),
-                kind: Kind::Own,
-                start: start.clone(),
-                description: description.to_string(),
-                runs: format!("peek --provider {name}"),
-                manifest: None,
-                dir: None,
-            })
-            .collect();
+        let mut all: Vec<Spec> = self.own.iter().filter_map(|(text, start)| {
+            let mut manifest = match parse_manifest(text, true) {
+                Ok(m) => m,
+                Err(e) => { crate::log!("plugins: built-in manifest: {e}"); return None; }
+            };
+            manifest.version = env!("CARGO_PKG_VERSION").into();
+            let name = manifest.name.clone();
+            let env = vec![("PEEK_SETTINGS".into(), Value::Object(settings_of(&manifest, state.settings.get(&name))).to_string()),
+                ("PEEK_DATA_DIR".into(), self.data_dir(&name).to_string_lossy().into_owned())];
+            let start = match start { Start::Own { flags, .. } => Start::Own { flags: flags.clone(), env }, _ => start.clone() };
+            Some(Spec { name, kind: Kind::Own, start, description: manifest.description.clone(),
+                runs: manifest.run.join(" "), manifest: Some(manifest), dir: None })
+        }).collect();
         for (name, words) in read_commands(&self.dir) {
             if !name_ok(&name) || words.is_empty() || all.iter().any(|s| s.name == name) {
                 crate::log!("{PROVIDERS_FILE}: skipped {name:?}, which is no name for a provider, is taken, or has no command");
@@ -287,7 +291,7 @@ impl Catalog {
             return Err(format!("nothing here is called {name}"));
         };
         match spec.kind {
-            Kind::Own => return Err(format!("{name} is peek's own: it can be turned off, not removed")),
+            Kind::Own => return Err(format!("{name} is part of peek: it can be turned off, and it updates with peek")),
             Kind::Command => {
                 let mut all = read_commands(&self.dir);
                 all.remove(name);
@@ -316,7 +320,7 @@ impl Catalog {
             return Err(format!("{name} cannot be turned on or off here"));
         }
         let mut state = self.state();
-        if on { state.off.remove(name) } else { state.off.insert(name.into()) };
+        if on { state.off.remove(name); state.on.insert(name.into()); } else { state.on.remove(name); state.off.insert(name.into()); }
         self.save(&state)
     }
 
@@ -427,6 +431,7 @@ impl Catalog {
             fs::rename(&staged.root, &dest).map_err(|e| format!("cannot move it into {}: {e}", dest.display()))?;
             let mut state = self.state();
             state.off.remove(&name);
+            state.on.remove(&name);
             state.sources.insert(name.clone(), staged.from.clone());
             self.save(&state)
         })();
@@ -489,6 +494,9 @@ impl Catalog {
     }
 
     pub fn update_from(&self, name: &str, source: Option<&str>, say: impl Fn(&str)) -> Result<String, String> {
+        if self.specs().iter().any(|s| s.name == name && s.kind == Kind::Own) {
+            return Err(format!("{name} is part of peek: it can be turned off, and it updates with peek"));
+        }
         let source = source.map(str::to_owned).or_else(|| self.state().sources.get(name).cloned())
             .ok_or_else(|| format!("give a source for {name}"))?;
         let staged = self.fetch(&source)?;
@@ -521,8 +529,8 @@ impl Catalog {
     }
 
     pub fn list(&self) -> Vec<(String, &'static str, String, bool)> {
-        let off = self.state().off;
-        self.specs().into_iter().map(|s| (s.name.clone(), s.kind.word(), s.runs, !off.contains(&s.name))).collect()
+        let state = self.state();
+        self.specs().into_iter().map(|s| { let on = is_on(&state, &s); (s.name, s.kind.word(), s.runs, on) }).collect()
     }
 
     pub fn clear_staging(&self) {
@@ -567,8 +575,8 @@ impl Plugins {
     /// `again`: stop and start this one whatever it is doing.
     fn apply(&self, again: Option<&str>) {
         let _one = self.changing.lock().unwrap();
-        let off = self.catalog.state().off;
-        let wanted: Vec<Spec> = self.catalog.specs().into_iter().filter(|s| !off.contains(&s.name)).collect();
+        let state = self.catalog.state();
+        let wanted: Vec<Spec> = self.catalog.specs().into_iter().filter(|s| is_on(&state, s)).collect();
         let mut running = self.running.write().unwrap();
         let gone: Vec<String> = running
             .keys()
@@ -583,7 +591,7 @@ impl Plugins {
         }
         for spec in wanted {
             if !running.contains_key(&spec.name) {
-                if spec.kind == Kind::Plugin {
+                if spec.manifest.is_some() {
                     let dir = self.catalog.data_dir(&spec.name);
                     if let Err(e) = fs::create_dir_all(&dir) {
                         crate::log!("plugins: cannot make {}: {e}", dir.display());
@@ -703,7 +711,7 @@ impl Plugins {
                 "kind": s.kind.word(),
                 "description": s.description,
                 "runs": s.runs,
-                "on": !state.off.contains(&s.name),
+                "on": is_on(&state, &s),
                 "removable": s.kind != Kind::Own,
                 "status": link.as_ref().map(|l| l.status()),
                 "page": link.as_ref().is_some_and(|l| l.about().contains_key("page")),
@@ -735,20 +743,30 @@ impl Plugins {
 
 fn read_manifest(dir: &Path) -> Result<Manifest, String> {
     let text = fs::read_to_string(dir.join(MANIFEST)).map_err(|_| format!("there is no {MANIFEST} in it"))?;
-    let manifest: Manifest = serde_json::from_str(&text).map_err(|e| format!("{MANIFEST} cannot be read: {e}"))?;
+    parse_manifest(&text, false)
+}
+
+fn parse_manifest(text: &str, own: bool) -> Result<Manifest, String> {
+    let manifest: Manifest = serde_json::from_str(text).map_err(|e| format!("{MANIFEST} cannot be read: {e}"))?;
     if manifest.version.chars().count() > 64 {
         return Err(format!("{MANIFEST} version is longer than 64 characters"));
     }
     if manifest.manifest_version != contract_version() || manifest.provider_protocol != contract_version() {
         return Err(format!("unsupported plugin contract: manifest {}, provider {}; this host supports version 1", manifest.manifest_version, manifest.provider_protocol));
     }
-    if !name_ok(&manifest.name) || manifest.run.first().is_none_or(|p| p.trim().is_empty()) {
+    if !(name_ok(&manifest.name) || own && OWN.contains(&manifest.name.as_str())) || manifest.run.first().is_none_or(|p| p.trim().is_empty()) {
         return Err(format!("{MANIFEST} needs a valid name and a nonempty run command"));
     }
     for (key, about) in &manifest.settings {
         check_setting(key, about, &about["default"])?;
     }
     Ok(manifest)
+}
+
+fn is_on(state: &State, spec: &Spec) -> bool {
+    if state.off.contains(&spec.name) { false }
+    else if state.on.contains(&spec.name) { true }
+    else { spec.manifest.as_ref().is_none_or(|m| m.on_by_default) }
 }
 
 /// A plugin's settings as saved, or as its defaults.
@@ -885,6 +903,32 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn built_in_manifests_and_state() {
+        for text in [include_str!("apps/vitals.json"), include_str!("apps/power.json")] {
+            assert!(parse_manifest(text, true).unwrap().on_by_default);
+        }
+        const APP: &str = r#"{"name":"sample","run":["peek"],"on_by_default":false,"settings":{"share":{"kind":"text","default":"hello","label":"Share"}}}"#;
+        let root = std::env::temp_dir().join(format!("peek-own-{}", crate::pairing::random_hex(6).unwrap()));
+        let own = || vec![(APP, Start::Own { flags: vec![], env: vec![] })];
+        let catalog = Catalog::new(root.clone(), own());
+        let spec = catalog.specs().pop().unwrap();
+        if let Start::Own { env, .. } = &spec.start {
+            assert!(env.iter().any(|(k,v)| k == "PEEK_SETTINGS" && v.contains("hello")));
+            assert!(env.iter().any(|(k,v)| k == "PEEK_DATA_DIR" && v.contains("sample")));
+        } else { panic!("wrong start"); }
+        assert!(!catalog.list()[0].3);
+        assert!(catalog.remove("sample", false).unwrap_err().contains("part of peek"));
+        assert!(catalog.update_from("sample", None, |_| {}).unwrap_err().contains("part of peek"));
+        let plugins = Plugins::start(catalog, false);
+        assert!(plugins.get("sample").is_none());
+        plugins.catalog.set_on("sample", true).unwrap();
+        assert!(Catalog::new(root.clone(), own()).list()[0].3);
+        plugins.catalog.set_on("sample", false).unwrap();
+        assert!(!Catalog::new(root.clone(), own()).list()[0].3);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn manifest_contract_is_checked_before_installation() {
