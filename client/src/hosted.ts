@@ -52,6 +52,18 @@ export const screenPath = (m: Machine) => SCREEN + slug(m);
 if (HOSTED && /^\/[^/]+$/.test(location.pathname) && location.pathname !== '/pair') {
   history.replaceState(null, '', SCREEN + location.pathname.slice(1) + location.search + location.hash);
 }
+// The favorite machine: what the app icon's "Favorite" shortcut (long-press
+// the icon) opens, at `/?favorite`. Without one, the shortcut opens the list.
+const [favorite, setFavoriteRaw] = createSignal(store.get('favorite'));
+export { favorite };
+export function setFavorite(id: string | null) {
+  setFavoriteRaw(id);
+  if (id) store.set('favorite', id); else localStorage.removeItem('peek-favorite');
+}
+if (HOSTED && new URLSearchParams(location.search).has('favorite')) {
+  const m = machines().find(m => m.id === favorite());
+  history.replaceState(null, '', m ? screenPath(m) : '/');
+}
 const [path, setPath] = createSignal(location.pathname);
 addEventListener('popstate', () => setPath(location.pathname));
 export function navigate(to: string, replace = false) {
@@ -78,6 +90,7 @@ export const home = () => navigate('/');
 
 export function forget(id: string) {
   setMachines(machines().filter(m => m.id !== id));
+  if (favorite() === id) setFavorite(null);
 }
 
 export function updateMachine(id: string, patch: Partial<Machine>) {
