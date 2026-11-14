@@ -54,7 +54,40 @@
 <p class="lead">What changed in each version of peek. To update a machine, run
 <code>npm update -g @peculiarnewbie/peek</code> there, then <code>peek install</code> again with the same flags.</p>
 
-<h2 id="0.2.2"><a href="#0.2.2">0.2.2</a><span class="date">12 November 2026</span><span class="latest">Latest</span></h2>
+<h2 id="0.3.0"><a href="#0.3.0">0.3.0</a><span class="date">15 November 2026</span><span class="latest">Latest</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>More than the screen.</strong> Three apps come with peek:
+    <ul>
+      <li><strong>Vitals:</strong> processor, memory and storage, as a line on each machine's card and as figures in
+        the stats panel.</li>
+      <li><strong>Power</strong> (Windows): Sleep on a machine's card, and Wake while it is asleep, sent by another
+        paired machine on the same network. The first sleep is a test: the machine is woken 15 seconds later, and
+        the card says what to check if it was not.</li>
+      <li><strong>Files:</strong> browse folders you choose and download from them. Off by default; turn it on under
+        Settings → Manage plugins.</li>
+    </ul>
+    An app with a page of its own gets a button in the toolbar.</li>
+  <li><strong>Plugins:</strong> Settings → Manage plugins installs a plugin from a folder, a <code>.tgz</code>, a git
+    address or npm, and starts, stops, updates and removes it without restarting peek. A plugin runs with peek's
+    rights (SYSTEM under the Windows service), so install only ones you trust.
+    <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/plugin-release.md">How to write one</a>.</li>
+  <li><strong>Windows service: connections stay open through a sign-out</strong> and a switch of user. The picture
+    stops for a few seconds and comes back on the login screen, with nothing to reconnect. After updating, run
+    <code>peek install --service</code> again.</li>
+  <li><strong>Pair from a machine's own page:</strong> <code>peek pair</code> and Settings → Pair a device also give
+    a link to the page the machine serves itself, which asks for the code when it has no token. This works with
+    <code>--web none</code> too.</li>
+  <li><strong>A favorite machine:</strong> star a machine's card, and the installed app's Favorite shortcut opens
+    it directly.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+  <li>The installed app opens in a window of its own instead of full screen, so Android's system bars stay. The
+    toolbar's full-screen button still hides them.</li>
+</ul>
+
+<h2 id="0.2.2"><a href="#0.2.2">0.2.2</a><span class="date">12 November 2026</span></h2>
 <h3>New</h3>
 <ul>
   <li><strong>Share Tailscale Serve with another app:</strong> <code>peek pair --serve-port 8443</code> (or

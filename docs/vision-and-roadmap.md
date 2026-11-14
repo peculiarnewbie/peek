@@ -71,12 +71,10 @@ feature sets or claims that their future scopes cannot overlap Peek.
 
 ## Current baseline
 
-The plugin work is on main, merged from `feat/plugin-foundation-screen`
-(PR #20): the spike, and the hardening recorded in
-[plugin-release.md](plugin-release.md). Its package version still reads
-0.2.2, and nothing is released. Do not confuse its behavior with released
-guarantees. It is the fallback for 0.3.0: if the experiments after it fail,
-this state is released as 0.3.0, once its release gates are met.
+The plugin work is released as 0.3.0 (15 November 2026), merged from
+`feat/plugin-foundation-screen` (PR #20): the spike, and the hardening
+recorded in [plugin-release.md](plugin-release.md). The sync and
+peer-access experiments after it are parked and are not in 0.3.0.
 
 Files is built in, uses the same manifest, and is off by default.
 

@@ -6,10 +6,8 @@ merged to main.
 This branch includes a copy of the uncommitted `spike-frames` implementation
 and hardening on top. The original `D:/git/peek-frames` checkout is untouched.
 
-**This is the fallback for 0.3.0.** The package version still reads 0.2.2 and
-nothing is published. The experiments after this merge (a sync spike, peer
-access, sync) may change what 0.3.0 contains. If they all fail, this state is
-released as 0.3.0, once the release gates below are met.
+**Released as 0.3.0** on 15 November 2026, as this state of main. The sync
+and peer-access experiments that followed it are parked and are not in it.
 
 ## What is implemented
 
