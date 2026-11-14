@@ -1,8 +1,8 @@
-# Provider pages in frames (spike)
+# Provider pages in frames
 
-A provider can have a page of its own, written with anything a browser runs. The machine serves the page, and the client shows it in a frame. This is a spike: none of it is promised yet.
+A provider can have a page of its own, written with anything a browser runs. The machine serves the page, and the client shows it in a frame. Released in 0.3.0, as contract version 1.
 
-This records the original experiment. The follow-up hardening and current
+This started as a spike, and records it. The follow-up hardening and current
 release gates are in [plugin-release.md](plugin-release.md), including
 contract versioning, bounded sockets, linked-path checks, CLI/package tests,
 and automatic frame-ticket recovery after a host restart.
