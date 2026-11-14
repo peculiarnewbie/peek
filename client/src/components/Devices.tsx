@@ -4,8 +4,8 @@ import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show
 import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
-  about, BLOCKED_HELP, cleanHost, current, forget, learn, localAccess, machines, navigate, openMachine, pair,
-  parseLink, probeAll, reach, screenPath, type Machine,
+  about, BLOCKED_HELP, cleanHost, current, favorite, forget, learn, localAccess, machines, navigate, openMachine,
+  pair, parseLink, probeAll, reach, screenPath, setFavorite, type Machine,
 } from '../hosted';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
@@ -89,6 +89,12 @@ function Card(props: { m: Machine }) {
           {STATUS[state()]}</span>
       </a>
       <CardViews m={props.m} />
+      <button class="dfav tb icon" classList={{ on: favorite() === props.m.id }} tabIndex={-1}
+        title={favorite() === props.m.id ? 'Favorite: the app icon’s shortcut opens it (tap to unset)'
+          : 'Make favorite: long-press the app icon to open it'}
+        onClick={() => setFavorite(favorite() === props.m.id ? null : props.m.id)}>
+        <Icon name="star" />
+      </button>
       <button class="dforget tb icon" tabIndex={-1} title={`Forget ${props.m.name}`}
         onClick={() => { if (confirm(`Forget ${props.m.name}? Pairing it again needs a new code.`)) forget(props.m.id); }}>
         <Icon name="x" />

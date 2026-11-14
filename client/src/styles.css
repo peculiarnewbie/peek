@@ -245,7 +245,7 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 .dicon svg.i { width: 20px; height: 20px; }
 .dcard.down .dicon { color: var(--muted); }
 .dname { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding-right: 24px; }
+  padding-right: 56px; }
 .dhost { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dstate { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
 .dforget { position: absolute; top: 8px; right: 8px; opacity: 0; }
@@ -261,6 +261,10 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 @keyframes dpulse { from { opacity: .25; } }
 .btn.small { height: 28px; padding: 0 12px; font-size: 13px; }
 .dcard:hover .dforget, .dforget:focus-visible, body.touch .dforget { opacity: 1; }
+.dfav { position: absolute; top: 8px; right: 40px; opacity: 0; }
+.dcard:hover .dfav, .dfav:focus-visible, body.touch .dfav, .dfav.on { opacity: 1; }
+.dfav.on { color: #e8b84a; }
+.dfav.on svg.i { fill: currentColor; }
 .dadd { margin-top: 18px; padding: 14px 16px 16px; }
 .dadd form { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .dadd form > .field { flex: 3 1 260px; min-width: 0; }

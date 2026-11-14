@@ -438,7 +438,7 @@ https://your.domain`.
 
 A machine can offer more than its screen, through providers: programs peek
 starts beside itself. A provider can describe a view using the client's stock
-controls, or offer its own page served by the machine in a frame. Two come
+controls, or offer its own page served by the machine in a frame. Three come
 with peek:
 
 - **Vitals.** Processor, memory and storage: one line on each machine's
@@ -450,6 +450,9 @@ with peek:
   first sleep is a test: the machine sleeps and is woken 15 seconds later.
   If no packet wakes it, it wakes itself after two minutes, where its
   power settings allow wake timers, and the card says what to check.
+- **Files.** Browse the folders you choose, and download from them. Off
+  by default: turn it on and pick the folders under Settings → Manage
+  plugins.
 
 You can add your own: `peek provider add <name> -- <command>`, then restart
 peek. It runs as the same user as peek. [docs/providers.md](docs/providers.md)
@@ -457,9 +460,12 @@ has what a provider and a client say to each other, and
 `examples/provider/hello.mjs` is one in a single file. The parts of that
 which let a provider know of your other machines are provisional.
 
-The upcoming plugin foundation also packages providers with a
-`peek-plugin.json`, settings, pages, and live management. See
-[the implementation and release checklist](docs/plugin-release.md) and
+A plugin packages a provider with a `peek-plugin.json`, settings and an
+optional page. Settings → Manage plugins installs one from a folder, a
+`.tgz`, an HTTPS git address or npm, and starts, stops, updates and removes
+it without restarting peek. A plugin is a program that runs with peek's
+rights (SYSTEM under the Windows service), so install only ones you trust.
+See [the plugin contract](docs/plugin-release.md) and
 [the page protocol](docs/frames.md). The default screen stays built in;
 [screen as a plugin](experiments/screen-plugin/README.md) is an opt-in
 viability experiment.
@@ -534,7 +540,8 @@ With `--no-token`:
 - On a plain-HTTP page, text copied on the host reaches the local clipboard
   only right after a key press or click in the client, which a copy on the
   remote normally is.
-- No audio, no file transfer, no phone keyboard.
+- No audio, no sending files to the host (Files only downloads from it), no
+  phone keyboard.
 - Full-screen motion (video, games) uses a lot of bandwidth. This is built
   for desktop work.
 
