@@ -11,7 +11,7 @@ fn main() {
     // nightly says which one it is (scripts/nightly.mjs sets both).
     println!("cargo:rerun-if-env-changed=PEEK_CHANNEL");
     println!("cargo:rerun-if-env-changed=PEEK_BUILD");
-    let channel = std::env::var("PEEK_CHANNEL").unwrap_or_else(|_| "stable".into());
+    let channel = std::env::var("PEEK_CHANNEL").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "stable".into());
     let version = std::env::var("CARGO_PKG_VERSION").unwrap();
     let version = match std::env::var("PEEK_BUILD") {
         Ok(build) if !build.is_empty() => format!("{version}-{build}"),

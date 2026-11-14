@@ -1,8 +1,12 @@
 import { SCREEN_PLUGIN } from '../plugin-mode';
-import { For, Show } from 'solid-js';
+import { createSignal, For, Show } from 'solid-js';
 import { applyCfg, showSettings } from '../actions';
 import { focusScreen } from '../screen';
 import { cfg, FPS_STEPS, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
+import { machine } from '../connection';
+import { current, HOSTED, learn, type About } from '../hosted';
+import { upgrade, updating } from '../update';
+import { own, setOwn } from '../views';
 import { hasPlugins, openPage, PLUGINS } from './Frame';
 import { PairDevice } from './PairDevice';
 
@@ -50,6 +54,35 @@ function Segmented<T>(props: { options: [T, string][]; selected: (v: T) => boole
   );
 }
 
+/** The peek this machine runs, and an update to a newer one. */
+function Version() {
+  const about = () => HOSTED ? current() : own();
+  const base = () => machine()?.base ?? '';
+  const [error, setError] = createSignal('');
+  const go = () => {
+    const m = machine();
+    if (!m) return;
+    setError('');
+    upgrade(m.base, m.token, a => {
+      const shown = current();
+      if (HOSTED && shown) learn(shown, a as unknown as About);
+      else setOwn(a as ReturnType<typeof own>);
+    }).catch(e => setError(`Not updated: ${e?.message ?? e}`));
+  };
+  return (
+    <Show when={about()?.version}>
+      <Group label="peek" value={about()!.version!}>
+        <Show when={updating[base()] || (about()?.update && !viewOnly())}>
+          <button class="btn wide alt" tabIndex={-1} disabled={!!updating[base()]} onClick={go}>
+            {updating[base()] ?? `Update to ${about()!.update}`}
+          </button>
+        </Show>
+        <Show when={error()}><p class="vtext wrong" style={{ 'margin-top': '8px' }}>{error()}</p></Show>
+      </Group>
+    </Show>
+  );
+}
+
 function Group(props: { label: string; value: string; children: any }) {
   return (
     <div class="group">
@@ -83,6 +116,9 @@ export function Settings() {
             Manage plugins
           </button>
         </Group>
+      </Show>
+      <Show when={!SCREEN_PLUGIN}>
+        <Version />
       </Show>
       <Show when={!SCREEN_PLUGIN && !viewOnly()}>
         <Group label="Pair a device" value="">

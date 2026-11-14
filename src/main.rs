@@ -163,16 +163,25 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
         args: Vec<String>,
     },
-    /// Update the installed peek from a release channel
+    /// Update the installed peek from a release channel. A running peek
+    /// updates itself and restarts; with none running, the file is replaced
     Update {
         #[arg(long, value_parser = ["stable", "next"], conflicts_with = "rollback")]
         channel: Option<String>,
+        /// Only say what is installed and what the channel has
         #[arg(long, conflicts_with = "rollback")]
         check: bool,
+        /// Replace the installed file without asking the running peek to
+        /// update and restart (it takes effect when peek next starts)
         #[arg(long)]
         no_restart: bool,
+        /// Go back to the version the last update replaced
         #[arg(long)]
         rollback: bool,
+        /// Restart the Windows service: run by the service itself to start
+        /// again on a new version
+        #[arg(long, hide = true)]
+        restart_service: bool,
     },
     /// Undo `peek install`
     Uninstall,
@@ -695,6 +704,44 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// `peek update`: the running peek updates itself and restarts, which also
+/// needs no administrator terminal for the service. With none running (or
+/// `--no-restart`), the installed file is replaced here.
+fn update_command(args: &Args, channel: Option<&str>, check: bool, no_restart: bool, rollback: bool, restart_service: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    if restart_service {
+        return update::restart_service();
+    }
+    #[cfg(not(windows))]
+    let _ = restart_service;
+    if check {
+        return update::check(channel);
+    }
+    // PEEK_UPDATE_TARGET names a test's install: never the running peek's.
+    if no_restart || std::env::var_os("PEEK_UPDATE_TARGET").is_some() || !host_running(args) {
+        return update::run_here(channel, rollback);
+    }
+    println!("asking the running peek to {}", if rollback { "go back to its previous version" } else { "update itself" });
+    let body = serde_json::json!({ "channel": channel, "rollback": rollback }).to_string();
+    let (status, reply) = local_request(args, "POST", "/api/update", &body)?;
+    let reply: serde_json::Value = serde_json::from_str(&reply).unwrap_or_default();
+    match (status, reply["t"].as_str()) {
+        (200, Some("current")) => println!("peek {} is already the latest", reply["version"].as_str().unwrap_or("?")),
+        (200, Some("updated")) => println!(
+            "updated from {} to {}; peek is restarting on it. peek update --rollback goes back",
+            reply["from"].as_str().unwrap_or("?"),
+            reply["to"].as_str().unwrap_or("?")
+        ),
+        // A peek from before it could update itself.
+        (404, _) => {
+            println!("the running peek cannot update itself; replacing the installed file instead");
+            return update::run_here(channel, rollback);
+        }
+        _ => return Err(reply["why"].as_str().map_or_else(|| format!("the running peek answered {status}"), str::to_owned)),
+    }
+    Ok(())
+}
+
 fn run_command(args: &Args, command: &Command) -> Result<(), String> {
     match command {
         Command::Pair { .. } => unreachable!("main runs `peek pair` itself"),
@@ -779,7 +826,9 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             install::install(&flags)
         }
         Command::Uninstall => install::uninstall(),
-        Command::Update { channel, check, no_restart, rollback } => update::run(channel.as_deref(), *check, *no_restart, *rollback),
+        Command::Update { channel, check, no_restart, rollback, restart_service } => {
+            update_command(args, channel.as_deref(), *check, *no_restart, *rollback, *restart_service)
+        }
         Command::Provider { action } => provider_command(action),
         Command::Plugin { action } => plugin_command(args, action),
     }
@@ -828,6 +877,8 @@ fn core_in_service() -> Arc<provider::Link> {
         .block_on(tokio::net::TcpListener::bind(addr))
         .unwrap_or_else(|e| fail(format!("cannot listen on {addr}: {e}")));
     log!("service: listening on {addr}");
+    update::started(true);
+    update::watch();
     std::thread::Builder::new()
         .name("core".into())
         .spawn(move || {
@@ -945,6 +996,9 @@ fn main() {
         return;
     }
 
+    // Started by a peek that updated itself: wait for it to exit, so its
+    // port, screen and plugins are free before this one takes them.
+    update::wait_for_predecessor();
     platform::init();
     #[cfg(windows)]
     platform::keep_device(args.keep_gpu);
@@ -1047,6 +1101,8 @@ fn main() {
         println!("To start peek at logon instead, run `peek install`.");
     }
 
+    update::started(false);
+    update::watch();
     if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
         log!("cannot listen on {addr}: {e}");
         std::process::exit(1);

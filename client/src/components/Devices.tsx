@@ -5,10 +5,11 @@ import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
   about, BLOCKED_HELP, cleanHost, current, favorite, forget, learn, localAccess, machines, navigate, openMachine,
-  pair, parseLink, probeAll, reach, screenPath, setFavorite, type Machine,
+  pair, parseLink, probeAll, reach, screenPath, setFavorite, type About, type Machine,
 } from '../hosted';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
+import { upgrade, updating } from '../update';
 import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { canScan, QrScan } from './QrScan';
@@ -89,6 +90,7 @@ function Card(props: { m: Machine }) {
           {STATUS[state()]}</span>
       </a>
       <CardViews m={props.m} />
+      <Show when={state() === 'up'}><CardUpdate m={props.m} /></Show>
       <button class="dfav tb icon" classList={{ on: favorite() === props.m.id }} tabIndex={-1}
         title={favorite() === props.m.id ? 'Favorite: the app icon’s shortcut opens it (tap to unset)'
           : 'Make favorite: long-press the app icon to open it'}
@@ -100,6 +102,31 @@ function Card(props: { m: Machine }) {
         <Icon name="x" />
       </button>
     </div>
+  );
+}
+
+/** A newer peek the machine can update itself to, and the update under way. */
+function CardUpdate(props: { m: Machine }) {
+  const base = () => `https://${props.m.host}`;
+  const [error, setError] = createSignal('');
+  const busy = () => updating[base()];
+  const go = () => {
+    setError('');
+    upgrade(base(), props.m.token, a => learn(props.m, a as unknown as About)).catch(e => setError(`Not updated: ${e?.message ?? e}`));
+  };
+  return (
+    <Show when={busy() || props.m.update || error()}>
+      <div class="dviews">
+        <div class="vrow">
+          <p class="vtext" style={{ flex: 1 }} classList={{ busy: !!busy(), wrong: !busy() && !!error() }}>
+            {busy() ?? (error() || `peek ${props.m.update} is available`)}
+          </p>
+          <Show when={!busy() && props.m.update}>
+            <button class="btn small" tabIndex={-1} onClick={go}>Update</button>
+          </Show>
+        </div>
+      </div>
+    </Show>
   );
 }
 

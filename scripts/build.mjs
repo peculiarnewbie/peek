@@ -5,6 +5,7 @@
 //   rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 //   pip install ziglang && cargo install cargo-zigbuild --locked
 import { execFileSync, execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,4 +78,36 @@ export function buildAll({ skip = false, env = {} } = {}) {
     if (!fs.existsSync(t.bin)) fail(`missing ${t.bin}; build it, or drop --skip-build`);
   }
   return targets;
+}
+
+/** Writes what `peek update` downloads into `out`: each binary as
+ *  peek-<platform>[.exe], SHA256SUMS ("<sha256>  <asset>" each) and
+ *  version.json (`about`, which must have `version`). Returns their paths. */
+export function writeRelease(built, out, about) {
+  fs.rmSync(out, { recursive: true, force: true });
+  fs.mkdirSync(out, { recursive: true });
+  const assets = [];
+  const sums = [];
+  for (const t of built) {
+    const name = `peek-${t.key}${t.exe.endsWith('.exe') ? '.exe' : ''}`;
+    const file = path.join(out, name);
+    fs.copyFileSync(t.bin, file);
+    sums.push(`${createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${name}`);
+    assets.push(file);
+  }
+  fs.writeFileSync(path.join(out, 'SHA256SUMS'), `${sums.join('
+')}
+`);
+  fs.writeFileSync(path.join(out, 'version.json'), `${JSON.stringify(about, null, 2)}
+`);
+  return [...assets, path.join(out, 'SHA256SUMS'), path.join(out, 'version.json')];
+}
+
+/** Checks that this platform's binary says `full` as its version: `peek
+ *  update` compares what it downloads with version.json. */
+export function checkVersion(built, full) {
+  const own = built.find((t) => t.key === `${process.platform}-${process.arch}`);
+  if (!own) return;
+  const said = execFileSync(own.bin, ['--version'], { encoding: 'utf8' }).trim();
+  if (said !== `peek ${full}`) fail(`${own.bin} says "${said}", not peek ${full}`);
 }

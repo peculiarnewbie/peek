@@ -16,11 +16,9 @@
 //   peek-win32-x64.exe, peek-linux-x64, peek-linux-arm64
 //   SHA256SUMS     "<sha256>  <asset>" per binary
 //   version.json   {"version", "commit", "date", "channel"}
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
 import path from 'node:path';
-import { buildAll, commit, dirty, fail as stop, root, run, version } from './build.mjs';
+import { buildAll, checkVersion, commit, dirty, fail as stop, root, run, version, writeRelease } from './build.mjs';
 
 const args = process.argv.slice(2);
 const flags = new Set(args);
@@ -46,28 +44,9 @@ const env = { PEEK_CHANNEL: 'next', PEEK_BUILD: build };
 const targets = buildAll({ skip: skipBuild, env });
 
 const out = path.join(root, 'dist', 'nightly');
-fs.rmSync(out, { recursive: true, force: true });
-fs.mkdirSync(out, { recursive: true });
-const assets = [];
-const sums = [];
-for (const t of targets) {
-  const name = `peek-${t.key}${t.exe.endsWith('.exe') ? '.exe' : ''}`;
-  const file = path.join(out, name);
-  fs.copyFileSync(t.bin, file);
-  sums.push(`${createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${name}`);
-  assets.push(file);
-}
-fs.writeFileSync(path.join(out, 'SHA256SUMS'), `${sums.join('\n')}\n`);
-fs.writeFileSync(path.join(out, 'version.json'),
-  `${JSON.stringify({ version: full, commit, date, channel: 'next' }, null, 2)}\n`);
-assets.push(path.join(out, 'SHA256SUMS'), path.join(out, 'version.json'));
-
+const assets = writeRelease(targets, out, { version: full, commit, date, channel: 'next' });
 // The binaries must say which nightly they are, or `peek update` cannot tell.
-const own = targets.find((t) => t.key === `${process.platform}-${process.arch}`);
-if (own) {
-  const said = execFileSync(own.bin, ['--version'], { encoding: 'utf8' }).trim();
-  if (!said.endsWith(full)) fail(`${own.bin} says "${said}", not ${full}: was it built with PEEK_BUILD set?`);
-}
+checkVersion(targets, full);
 
 if (dryRun) {
   console.log(`\nBuilt ${full} into ${path.relative(root, out)}. Nothing was uploaded.`);

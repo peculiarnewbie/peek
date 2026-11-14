@@ -87,6 +87,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/.well-known/peek", get(about).options(preflight))
         .route("/api/pair", post(pair).options(preflight))
         .route("/api/provider/{name}", post(provider).options(preflight))
+        .route("/api/update", post(update).options(preflight))
         .route("/api/frame/{name}", post(frame_ticket).options(preflight))
         .route("/api/frame/{name}/ws", get(frame_ws))
         .route("/api/frame/{name}/file/{id}", get(frame_file))
@@ -307,6 +308,10 @@ async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Respons
         "name": pairing::machine_name(),
         "protocol": PROTOCOL.parse::<u32>().unwrap_or(0),
         "providers": providers,
+        "version": env!("PEEK_VERSION"),
+        // A newer version it can update itself to, when there is one: a
+        // view-only host takes no such request.
+        "update": if shared.view_only { None } else { crate::update::available() },
     });
     (cors(&shared, &headers), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
         .into_response()
@@ -427,6 +432,64 @@ async fn provider(
     match link.ask(id, &req.to_string()).await {
         Some(answer) => reply(StatusCode::OK, answer),
         None => error(StatusCode::SERVICE_UNAVAILABLE, "the provider did not answer"),
+    }
+}
+
+/// Update this peek to the newest build on its channel, and restart on it.
+/// Whoever may use the machine may ask (the hosted client, with a paired
+/// token): it installs only what was published, checked against its
+/// SHA256SUMS. `peek update` on this machine may also pick the channel, or
+/// go back to the version before.
+async fn update(
+    State(shared): State<Arc<Shared>>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cors = cors(&shared, &headers);
+    let reply = |status: StatusCode, body: serde_json::Value| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
+            .into_response()
+    };
+    let error = |status: StatusCode, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }));
+    let local = local_ok(&shared, &headers);
+    let web = from_web(&shared, &headers);
+    if !local && headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
+        return error(StatusCode::FORBIDDEN, "origin");
+    }
+    let Ok(serde_json::Value::Object(req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return error(StatusCode::BAD_REQUEST, "request");
+    };
+    if !local && !token_ok(&shared, req.get("token").and_then(|t| t.as_str()).unwrap_or_default(), web) {
+        return error(StatusCode::FORBIDDEN, "token");
+    }
+    if shared.view_only && !local {
+        return error(StatusCode::FORBIDDEN, VIEW_ONLY);
+    }
+    // Only from this machine: another channel, or the version before.
+    let channel = req.get("channel").and_then(|c| c.as_str()).filter(|_| local).map(str::to_owned);
+    if channel.as_deref().is_some_and(|c| !matches!(c, "stable" | "next")) {
+        return error(StatusCode::BAD_REQUEST, "no such channel");
+    }
+    let back = local && req.get("rollback").and_then(|r| r.as_bool()) == Some(true);
+    let who = if local { "peek update on this machine".to_string() } else { client_ip(&peer, &headers) };
+    crate::log!("update: asked by {who}");
+    let done = tokio::task::spawn_blocking(move || {
+        if back { crate::update::rollback_self() } else { crate::update::update_self(channel.as_deref()) }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match done {
+        Ok(crate::update::Outcome::Current(version)) => reply(StatusCode::OK, serde_json::json!({ "t": "current", "version": version })),
+        Ok(crate::update::Outcome::Changed { from, to }) => {
+            crate::log!("update: {from} to {to}; restarting");
+            crate::update::restart_soon();
+            reply(StatusCode::OK, serde_json::json!({ "t": "updated", "from": from, "to": to }))
+        }
+        Err(why) => {
+            crate::log!("update: {why}");
+            error(StatusCode::CONFLICT, &why)
+        }
     }
 }
 
