@@ -34,7 +34,7 @@ const DATA_DIR: &str = "plugin-data";
 const STAGING_DIR: &str = ".staging";
 const MANIFEST: &str = "peek-plugin.json";
 /// Names that are peek's own, which nothing added may take.
-pub const OWN: [&str; 5] = ["screen", "vitals", "power", "plugins", "files"];
+pub const OWN: [&str; 6] = ["screen", "vitals", "power", "plugins", "files", "processes"];
 /// How long a plugin fetched to be looked at waits to be installed.
 const STAGED_FOR: Duration = Duration::from_secs(10 * 60);
 

@@ -159,6 +159,30 @@ try {
   assert.equal((await fetch(`${a.base}/p/files/`)).status, 404);
   console.log('PASS: built-in files starts, shares a folder, and stops');
 
+  assert.equal(initial.items.find((item: any) => item.name === 'processes').on, false);
+  assert.equal((await a.ticket('processes')).status, 404);
+  assert.equal((await manager.answer({ t: 'on', name: 'processes', on: true }, 'ok')).t, 'ok');
+  await a.ready('processes');
+  const victim = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 60000)'], { stdout: 'ignore', stderr: 'ignore' });
+  const procPage = await a.page('processes');
+  procPage.send({ t: 'watch' });
+  const firstTick = await until(async () => procPage.messages.find(m => m.t === 'tick' && m.full), 'first processes tick');
+  assert.ok(firstTick.cores >= 1 && firstTick.mem[1] > 0 && firstTick.ending === true);
+  const victimRow = firstTick.add.find((p: any[]) => p[0] === victim.pid);
+  assert.ok(victimRow, 'the spawned process is listed');
+  await until(async () => procPage.messages.find(m => m.t === 'tick' && m.cpu != null), 'processor figures');
+  const end = (start: string, ref: number) => ({ t: 'do', do: { t: 'end', pid: victim.pid, start, force: false, ref } });
+  assert.equal((await procPage.answer(end('1', 1), 'error')).why, 'it has already ended');
+  assert.equal((await procPage.answer(end(victimRow[1], 2), 'ended')).pid, victim.pid);
+  await victim.exited;
+  await until(async () => procPage.messages.find(m => m.t === 'tick' && m.gone.includes(victim.pid)), 'ended process gone');
+  const procCard = await fetch(`${a.base}/api/provider/processes`, { method: 'POST', headers: { 'content-type': 'application/json', Origin: a.base }, body: JSON.stringify({ token: a.token, t: 'view', place: 'card' }) });
+  assert.ok(Array.isArray((await procCard.json() as any).view.items));
+  procPage.close();
+  assert.equal((await manager.answer({ t: 'on', name: 'processes', on: false }, 'ok')).t, 'ok');
+  assert.equal((await a.ticket('processes')).status, 404);
+  console.log('PASS: built-in processes lists, ends only the process it was shown, answers its card, and stops');
+
   const filesSource = join(temp, 'files-source');
   await cp(join(root, 'apps/files/page'), join(filesSource, 'page'), { recursive: true });
   await copyFile(join(root, 'apps/files/peek-plugin.json'), join(filesSource, 'peek-plugin.json'));

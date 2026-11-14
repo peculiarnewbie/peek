@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Processes</title>
+<style>
+  :root { --bg: #0d0d0d; --surface: #1a1a19; --raised: #2c2c2a; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --line: rgba(255,255,255,.10); --accent: #3987e5; --bad: #f08a6b; --sans: system-ui, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--ink); font: 13px/1.4 var(--sans); display: flex; flex-direction: column; }
+  .top { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .gauge { min-width: 0; }
+  .gauge .lbl { display: flex; justify-content: space-between; align-items: baseline; color: var(--muted); font-size: 12px; }
+  .gauge b { color: var(--ink); font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .gauge small { color: var(--muted); font-size: 11px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; margin: 6px 0 4px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .bar i.high { background: var(--bad); }
+  canvas { display: block; width: 100%; height: 28px; margin-top: 4px; }
+  .tools { display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .tools input[type=search] { width: 220px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: inherit; font: inherit; }
+  .tools label { display: flex; align-items: center; gap: 6px; color: var(--ink-2); cursor: pointer; user-select: none; }
+  .list { flex: 1; overflow: auto; min-height: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; z-index: 1; background: var(--bg); text-align: left; font-weight: 500; color: var(--muted); padding: 7px 12px;
+    border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; white-space: nowrap; }
+  th[aria-sort] { color: var(--ink); }
+  th[aria-sort=descending]::after { content: ' ↓'; } th[aria-sort=ascending]::after { content: ' ↑'; }
+  th.num, td.num { text-align: right; }
+  td { padding: 5px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  td.name { color: var(--ink); max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  td.pid, td.user { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  td.cpu { background: linear-gradient(to left, color-mix(in srgb, var(--accent) 28%, transparent) var(--w, 0%), transparent var(--w, 0%)); }
+  tr.sys td.name { color: var(--muted); }
+  tr { cursor: default; }
+  tr:hover td { background-color: rgba(255,255,255,.03); }
+  tr[aria-selected=true] td { background-color: var(--raised); }
+  .n { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; background: var(--raised); color: var(--muted); font-size: 11px; }
+  td.act { width: 1%; padding: 2px 8px; }
+  td.act button { opacity: 0; }
+  tr:hover td.act button, tr[aria-selected=true] td.act button { opacity: 1; }
+  button { border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+  button:hover { background: var(--raised); }
+  button.bad { border-color: color-mix(in srgb, var(--bad) 60%, transparent); color: var(--bad); }
+  body.nouser .user, body.noend .act { display: none; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  .ask { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
+  .ask[hidden] { display: none; }
+  .ask p { margin: 0; flex: 1; min-width: 200px; }
+  .ask p small { display: block; color: var(--muted); }
+  .ask .why { color: var(--bad); }
+  footer { padding: 6px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; display: flex; gap: 12px; }
+  footer .bad { color: var(--bad); }
+  footer .keys { margin-left: auto; }
+  @media (max-width: 560px) { .top { grid-template-columns: 1fr; gap: 8px; } .pid, .user, footer .keys { display: none; } .tools input[type=search] { width: 140px; } }
+</style>
+</head>
+<body class="nouser">
+<header class="top">
+  <div class="gauge">
+    <div class="lbl"><span>Processor</span><b id="cpuv">–</b></div>
+    <div class="bar"><i id="cpub"></i></div>
+    <canvas id="spark" height="28"></canvas>
+    <small id="cores"></small>
+  </div>
+  <div class="gauge">
+    <div class="lbl"><span>Memory</span><b id="memv">–</b></div>
+    <div class="bar"><i id="memb"></i></div>
+    <small id="memt"></small>
+  </div>
+</header>
+<div class="tools">
+  <input type="search" id="filter" placeholder="Filter" autocomplete="off" spellcheck="false">
+  <label><input type="checkbox" id="group"> Group by name</label>
+  <label><input type="checkbox" id="nosys"> Hide the system's</label>
+</div>
+<div class="list"><table><thead><tr>
+  <th data-k="name">Name</th><th data-k="pid" class="num pid">PID</th><th data-k="user" class="user">User</th>
+  <th data-k="cpu" class="num">CPU</th><th data-k="mem" class="num">Memory</th><th class="act"></th>
+</tr></thead><tbody id="rows"></tbody></table><div id="empty" class="empty">Reading…</div></div>
+<div id="ask" class="ask" hidden></div>
+<footer><span id="count"></span><span id="status"></span><span class="keys">↑ ↓ select · Del end · / filter · G group</span></footer>
+<script>
+const name = location.pathname.split('/')[2];
+const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket') || '';
+const $ = id => document.getElementById(id);
+// Every process, by pid, as the provider said: see the `tick` in src/lib.rs.
+const procs = new Map();
+const info = { cores: 1, force: false, ending: false, any: false };
+const machine = { cpu: null, mem: [0, 0] };
+const history = [];
+const ui = { sort: 'cpu', desc: true, filter: '', group: false, nosys: false, sel: null };
+const rows = new Map();
+let ws, order = [], nextRef = 1, pending = null;
+
+function connect() {
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/frame/${name}/ws?ticket=${ticket}`);
+  ws.onopen = () => { status(''); watch(); };
+  ws.onclose = e => { status(e.code === 4403 ? 'Refused: open it again from peek.' : 'Reconnecting…', true); if (e.code !== 4403) setTimeout(connect, 2000); };
+  ws.onmessage = e => receive(JSON.parse(e.data));
+}
+const send = m => ws?.readyState === 1 && ws.send(JSON.stringify(m));
+// Read only while someone looks.
+const watch = () => send({ t: document.hidden ? 'pause' : 'watch' });
+document.addEventListener('visibilitychange', watch);
+// Peek closes a page's socket that says nothing for 15 seconds.
+setInterval(() => send({ t: 'alive' }), 5000);
+function status(text, bad) { const s = $('status'); s.textContent = text; s.className = bad ? 'bad' : ''; }
+
+function receive(m) {
+  if (m.t === 'tick') {
+    if (m.full) {
+      procs.clear();
+      for (const k of ['cores', 'force', 'ending', 'any']) if (k in m) info[k] = m[k];
+      document.body.classList.toggle('noend', !info.ending);
+    }
+    for (const [pid, start, ppid, name, user, cmd, sys, cpu, mem] of m.add) procs.set(pid, { pid, start, ppid, name, user, cmd, sys, cpu, mem });
+    for (const [pid, cpu, mem] of m.set) { const p = procs.get(pid); if (p) { p.cpu = cpu; p.mem = mem; } }
+    for (const pid of m.gone) procs.delete(pid);
+    machine.cpu = m.cpu; machine.mem = m.mem;
+    if (m.cpu != null) { history.push(m.cpu); if (history.length > 90) history.shift(); }
+    draw();
+  } else if (m.t === 'ended') {
+    if (pending?.ref === m.ref) { status(`Ended ${pending.name}`); closeAsk(); }
+  } else if (m.t === 'error') {
+    if (pending && (m.ref == null || pending.ref === m.ref)) showAsk(pending.p, m.why);
+    else status(m.why, true);
+  }
+}
+
+// What the table shows: processes, or groups of them by name.
+function list() {
+  const f = ui.filter.toLowerCase();
+  let items = [...procs.values()].filter(p => (!ui.nosys || !p.sys) &&
+    (!f || p.name.toLowerCase().includes(f) || String(p.pid) === f || p.user.toLowerCase() === f || p.cmd.toLowerCase().includes(f)));
+  if (ui.group) {
+    const groups = new Map();
+    for (const p of items) {
+      const g = groups.get(p.name) ?? { key: 'g:' + p.name, name: p.name, n: 0, cpu: null, mem: 0, sys: true, user: p.user, pid: p.pid, cmd: '' };
+      g.n++; g.mem += p.mem; g.sys &&= p.sys; g.pid = Math.min(g.pid, p.pid);
+      if (p.cpu != null) g.cpu = (g.cpu ?? 0) + p.cpu;
+      if (g.user !== p.user) g.user = '…';
+      groups.set(p.name, g);
+    }
+    items = [...groups.values()];
+  } else items = items.map(p => Object.assign(p, { key: p.pid, n: 1 }));
+  const k = ui.sort, dir = ui.desc ? -1 : 1;
+  return items.sort((a, b) => {
+    const x = a[k] ?? -1, y = b[k] ?? -1;
+    const c = typeof x === 'string' ? x.localeCompare(y, undefined, { numeric: true, sensitivity: 'base' }) : x - y;
+    // Equal processor use, as most are, and before there are figures at all: the larger first.
+    return c * dir || (k === 'cpu' ? b.mem - a.mem : 0) || a.pid - b.pid;
+  });
+}
+
+function row(item) {
+  let r = rows.get(item.key);
+  if (!r) {
+    const tr = document.createElement('tr');
+    const td = cls => { const c = document.createElement('td'); c.className = cls; tr.append(c); return c; };
+    r = { tr, name: td('name'), pid: td('num pid'), user: td('user'), cpu: td('num cpu'), mem: td('num mem'), act: td('act'), last: {} };
+    tr.onclick = () => select(item.key);
+    tr.ondblclick = () => { if (r.item.n > 1 || ui.group) { ui.group = false; $('group').checked = false; ui.filter = r.item.name; $('filter').value = r.item.name; draw(); } };
+    rows.set(item.key, r);
+  }
+  r.item = item;
+  const set = (cell, key, text) => { if (r.last[key] !== text) { r[cell].textContent = text; r.last[key] = text; } };
+  if (r.last.name !== item.name || r.last.n !== item.n) {
+    r.name.textContent = item.name;
+    if (item.n > 1) { const b = document.createElement('span'); b.className = 'n'; b.textContent = item.n; r.name.append(b); }
+    r.last.name = item.name; r.last.n = item.n;
+  }
+  r.name.title = item.cmd || item.name;
+  set('pid', 'pid', item.n > 1 ? '' : String(item.pid));
+  set('user', 'user', item.user || '');
+  set('cpu', 'cpu', item.cpu == null ? '–' : (item.cpu / 10).toFixed(1));
+  set('mem', 'mem', size(item.mem));
+  r.cpu.style.setProperty('--w', `${Math.min(100, (item.cpu ?? 0) / 10)}%`);
+  r.tr.classList.toggle('sys', !!item.sys);
+  r.tr.setAttribute('aria-selected', String(item.key === ui.sel));
+  const endable = item.n === 1 && !ui.group;
+  if (r.last.endable !== endable) {
+    r.act.replaceChildren();
+    if (endable) { const b = document.createElement('button'); b.textContent = 'End'; b.onclick = e => { e.stopPropagation(); select(item.key); askEnd(); }; r.act.append(b); }
+    r.last.endable = endable;
+  }
+  return r.tr;
+}
+
+function draw() {
+  const items = list();
+  order = items.map(i => i.key);
+  const seen = new Set(order);
+  for (const key of rows.keys()) if (!seen.has(key)) rows.delete(key);
+  $('rows').replaceChildren(...items.map(row));
+  document.body.classList.toggle('nouser', ![...procs.values()].some(p => p.user));
+  $('empty').hidden = items.length > 0;
+  $('empty').textContent = procs.size ? 'Nothing matches.' : 'Reading…';
+  $('count').textContent = `${procs.size} processes${ui.group ? `, ${items.length} names` : ''}`;
+  document.querySelectorAll('th[data-k]').forEach(th => th.dataset.k === ui.sort ? th.setAttribute('aria-sort', ui.desc ? 'descending' : 'ascending') : th.removeAttribute('aria-sort'));
+  drawMachine();
+}
+
+function drawMachine() {
+  const c = machine.cpu, [used, total] = machine.mem;
+  $('cpuv').textContent = c == null ? '–' : `${Math.round(c / 10)} %`;
+  $('cpub').style.width = `${(c ?? 0) / 10}%`; $('cpub').classList.toggle('high', c >= 900);
+  $('cores').textContent = `of ${info.cores} ${info.cores === 1 ? 'core' : 'cores'}; a process's CPU is its share of all of them`;
+  const f = total ? used / total : 0;
+  $('memv').textContent = total ? `${Math.round(f * 100)} %` : '–';
+  $('memb').style.width = `${f * 100}%`; $('memb').classList.toggle('high', f >= .9);
+  $('memt').textContent = total ? `${size(used)} of ${size(total)}` : '';
+  spark();
+}
+
+function spark() {
+  const cv = $('spark'), dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  if (history.length < 2) return;
+  const step = w / 89, x0 = w - (history.length - 1) * step, y = v => h - 1 - (v / 1000) * (h - 2);
+  g.beginPath(); history.forEach((v, i) => i ? g.lineTo(x0 + i * step, y(v)) : g.moveTo(x0, y(v)));
+  const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#3987e5';
+  g.strokeStyle = accent; g.lineWidth = 1.5; g.stroke();
+  g.lineTo(w, h); g.lineTo(x0, h); g.closePath(); g.globalAlpha = .15; g.fillStyle = accent; g.fill(); g.globalAlpha = 1;
+}
+
+function select(key) {
+  ui.sel = key;
+  for (const [k, r] of rows) r.tr.setAttribute('aria-selected', String(k === key));
+  rows.get(key)?.tr.scrollIntoView({ block: 'nearest' });
+}
+
+// Frames have no dialogs: asking is a bar under the table.
+function askEnd() {
+  const p = typeof ui.sel === 'number' && procs.get(ui.sel);
+  if (!p || !info.ending || ui.group) return;
+  showAsk(p);
+}
+function showAsk(p, why) {
+  const box = $('ask'); box.hidden = false; box.replaceChildren();
+  const text = document.createElement('p');
+  text.textContent = `End ${p.name} (${p.pid})?`;
+  const small = document.createElement('small');
+  small.textContent = why ?? (info.force ? 'End asks it to quit; Force stops it at once, unsaved work and all.' : 'It stops at once: anything unsaved in it is lost.');
+  if (why) small.className = 'why';
+  text.append(small);
+  const button = (label, cls, go) => { const b = document.createElement('button'); b.textContent = label; if (cls) b.className = cls; b.onclick = go; return b; };
+  const end = force => { pending = { ref: nextRef++, name: p.name, p }; send({ t: 'do', do: { t: 'end', pid: p.pid, start: p.start, force, ref: pending.ref } }); };
+  box.append(text, button('End', 'bad', () => end(false)));
+  if (info.force) box.append(button('Force', 'bad', () => end(true)));
+  box.append(button('Cancel', '', closeAsk));
+  box.querySelector('button').focus();
+}
+function closeAsk() { $('ask').hidden = true; pending = null; }
+
+function size(n) {
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${i ? n.toFixed(n < 10 ? 1 : 0) : n} ${u[i]}`;
+}
+
+$('filter').oninput = e => { ui.filter = e.target.value; draw(); };
+$('group').onchange = e => { ui.group = e.target.checked; draw(); };
+$('nosys').onchange = e => { ui.nosys = e.target.checked; draw(); };
+document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
+  const k = th.dataset.k;
+  ui.desc = ui.sort === k ? !ui.desc : (k === 'cpu' || k === 'mem'); ui.sort = k; draw();
+});
+addEventListener('keydown', e => {
+  const typing = document.activeElement?.tagName === 'INPUT' && document.activeElement.type === 'search';
+  if (e.key === 'Escape') { if (!$('ask').hidden) closeAsk(); else if (typing) { $('filter').value = ''; ui.filter = ''; $('filter').blur(); draw(); } return; }
+  if (typing) { if (e.key === 'ArrowDown' || e.key === 'Enter') $('filter').blur(); else return; }
+  if (e.key === '/') { e.preventDefault(); $('filter').focus(); }
+  else if (e.key === 'g' || e.key === 'G') { $('group').click(); }
+  else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const i = order.indexOf(ui.sel), n = e.key === 'ArrowDown' ? Math.min(order.length - 1, i + 1) : Math.max(0, i - 1);
+    if (order.length) select(order[i < 0 ? 0 : n]);
+  } else if (e.key === 'Delete' || e.key === 'Backspace') askEnd();
+});
+// The client's colours, if it sends them.
+addEventListener('message', e => {
+  if (e.source !== parent || e.data?.t !== 'theme') return;
+  const vars = e.data.vars || {}, mine = { '--bg': '--page', '--surface': '--surface', '--raised': '--raised', '--ink': '--ink',
+    '--ink-2': '--ink-2', '--muted': '--muted', '--line': '--line', '--accent': '--s1', '--sans': '--sans' };
+  for (const [k, theirs] of Object.entries(mine)) if (vars[theirs]) document.documentElement.style.setProperty(k, String(vars[theirs]));
+  spark();
+});
+addEventListener('resize', spark);
+connect();
+</script>
+</body>
+</html>
