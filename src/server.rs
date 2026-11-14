@@ -450,7 +450,7 @@ const PLUGINS_PAGE: &str = include_str!("plugins.html");
 enum Page { Builtin(&'static str), Folder(std::path::PathBuf) }
 
 fn provider_page(name: &str, link: Option<&crate::provider::Link>) -> Option<Page> {
-    const PAGES: &[(&str, &str)] = &[("plugins", PLUGINS_PAGE), ("files", peek_files::PAGE)];
+    const PAGES: &[(&str, &str)] = &[("plugins", PLUGINS_PAGE), ("files", peek_files::PAGE), ("processes", peek_processes::PAGE)];
     if name == PLUGINS { return Some(Page::Builtin(PLUGINS_PAGE)); }
     let link = link?;
     if let Some((_, page)) = PAGES.iter().find(|(n, _)| *n == name) { return Some(Page::Builtin(page)); }

@@ -226,6 +226,7 @@ fn own_providers(args: &Args) -> Vec<(&'static str, provider::Start)> {
         (include_str!("apps/vitals.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
         (include_str!("apps/power.json"), Start::Own { flags: power_flags(args), env: Vec::new() }),
         (include_str!("apps/files.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
+        (include_str!("apps/processes.json"), Start::Own { flags: Vec::new(), env: Vec::new() }),
     ]
 }
 
@@ -852,11 +853,12 @@ fn main() {
     // A provider for a core, which listens, keeps the settings and logs for
     // both.
     if let Some(kind) = &args.provider {
-        if !matches!(kind.as_str(), "screen" | "vitals" | "power" | "files") {
+        if !matches!(kind.as_str(), "screen" | "vitals" | "power" | "files" | "processes") {
             eprintln!("no provider is called {kind}");
             std::process::exit(2);
         }
         if kind == "files" { peek_files::run(None); return; }
+        if kind == "processes" { peek_processes::run(None); return; }
         let (from_core, core) = provider::connect();
         let _ = LOG_TO_CORE.set(core.clone());
         if let Some(page) = &args.provider_page {

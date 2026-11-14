@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "provider_protocol": 1,
+  "name": "processes",
+  "description": "What is running, live, and ending what should not be.",
+  "run": [
+    "peek"
+  ],
+  "settings": {
+    "end_any": {
+      "label": "Allow ending the system's and other users' processes",
+      "kind": "switch",
+      "default": false
+    }
+  },
+  "on_by_default": false
+}
