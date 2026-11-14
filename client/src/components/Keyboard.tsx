@@ -85,8 +85,11 @@ function Key(props: { def: KeyDef; fn: boolean; toggleFn: () => void }) {
     else if (d.kind === 'mod') { clearTimeout(lockTimer); if (!locked && e.type === 'pointerup') tapModifier(d.code); }
     else if (e.type !== 'pointerup') return;
     else if (d.kind === 'fn') props.toggleFn();
-    else if (d.kind === 'text') setDock('text');
   };
+  // ✎ switches on its click, not on pointerup: the text bar's Send button
+  // takes its place under the finger, and the tap's click would land on Send,
+  // pressing Enter on the host.
+  const click = () => { if (d.kind === 'text') setDock('text'); };
   const label = () => (shifted() && d.shift) || d.label;
   return d.kind === 'gap'
     ? <div class="key gap" style={{ 'flex-grow': d.w }} />
@@ -97,7 +100,7 @@ function Key(props: { def: KeyDef; fn: boolean; toggleFn: () => void }) {
           locked: d.kind === 'mod' && mods[d.code] === 'locked',
           on: d.kind === 'fn' && props.fn,
         }}
-        onPointerDown={press} onPointerUp={release} onPointerCancel={release} onPointerLeave={release}
+        onPointerDown={press} onPointerUp={release} onPointerCancel={release} onPointerLeave={release} onClick={click}
         onContextMenu={e => e.preventDefault()}>{label()}</button>;
 }
 
