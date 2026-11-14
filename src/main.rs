@@ -6,6 +6,7 @@
 
 mod engine;
 mod install;
+mod update;
 mod pairing;
 mod platform;
 mod plugins;
@@ -71,17 +72,18 @@ macro_rules! log {
 }
 
 #[derive(Parser)]
-#[command(version, about = "Instant-connect remote desktop host for LAN and Tailscale.")]
+#[command(version = env!("PEEK_VERSION"), about = "Instant-connect remote desktop host for LAN and Tailscale.")]
 struct Args {
     /// Address to listen on
     #[arg(long, default_value = "0.0.0.0", global = true)]
     bind: IpAddr,
     #[arg(long, default_value_t = 9182, global = true)]
     port: u16,
-    /// Origin of the hosted client, whose pages may connect with a paired
-    /// token ("none" to refuse them)
-    #[arg(long, value_name = "ORIGIN", default_value = "https://peek.peculiarnewbie.com")]
-    web: String,
+    /// Origin of a hosted client, whose pages may connect with a paired
+    /// token. Give it more than once for several; the first is the one
+    /// `peek pair` links to ("none" to refuse them all)
+    #[arg(long, value_name = "ORIGIN", default_values_t = default_web())]
+    web: Vec<String>,
     /// Maximum frames per second
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
     fps: u32,
@@ -160,6 +162,26 @@ enum Command {
     Install {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
         args: Vec<String>,
+    },
+    /// Update the installed peek from a release channel. A running peek
+    /// updates itself and restarts; with none running, the file is replaced
+    Update {
+        #[arg(long, value_parser = ["stable", "next"], conflicts_with = "rollback")]
+        channel: Option<String>,
+        /// Only say what is installed and what the channel has
+        #[arg(long, conflicts_with = "rollback")]
+        check: bool,
+        /// Replace the installed file without asking the running peek to
+        /// update and restart (it takes effect when peek next starts)
+        #[arg(long)]
+        no_restart: bool,
+        /// Go back to the version the last update replaced
+        #[arg(long)]
+        rollback: bool,
+        /// Restart the Windows service: run by the service itself to start
+        /// again on a new version
+        #[arg(long, hide = true)]
+        restart_service: bool,
     },
     /// Undo `peek install`
     Uninstall,
@@ -430,6 +452,39 @@ fn detach() -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// The hosted client's sites: released builds, and nightlies (scripts/nightly.mjs).
+const STABLE_WEB: &str = "https://peek.peculiarnewbie.com";
+const NEXT_WEB: &str = "https://next.peek.peculiarnewbie.com";
+/// The client's dev server, tunnelled out while someone works on it
+/// (scripts/dev-tunnel.mjs). Only nightlies trust it.
+const DEV_WEB: &str = "https://dev.peek.peculiarnewbie.com";
+
+fn default_web() -> Vec<String> {
+    web_for(env!("PEEK_CHANNEL"))
+}
+
+/// Both sites, this build's channel first: either works with any host, and
+/// `peek pair` links to the one that matches it. Nightlies also take the dev
+/// server, so a client change can be tried on every machine before it ships.
+fn web_for(channel: &str) -> Vec<String> {
+    let order: &[&str] = if channel == "next" { &[NEXT_WEB, STABLE_WEB, DEV_WEB] } else { &[STABLE_WEB, NEXT_WEB] };
+    order.iter().map(|s| s.to_string()).collect()
+}
+
+/// The hosted clients' origins from `--web`, in order, or none at all if
+/// any of them is "none".
+fn web_origins(args: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for arg in args {
+        match web_origin(arg)? {
+            None => return Ok(Vec::new()),
+            Some(origin) if !out.contains(&origin) => out.push(origin),
+            Some(_) => {}
+        }
+    }
+    Ok(out)
+}
+
 /// The hosted client's origin from `--web`, or `None` for "none".
 fn web_origin(arg: &str) -> Result<Option<String>, String> {
     let arg = arg.trim().trim_end_matches('/');
@@ -603,9 +658,7 @@ fn pair(args: &Args, serve_port: Option<u16>) -> Result<bool, String> {
         }
     }
     if !host_running(args) {
-        if web_origin(&args.web)?.is_none() {
-            return Err("with --web none there is no hosted client to pair".into());
-        }
+        web_origins(&args.web)?;
         #[cfg(windows)]
         if args.detach || args.service {
             return Err("`peek pair` shows its code in this terminal, so it cannot start peek with --detach or --service. \
@@ -647,6 +700,44 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
         if let Some(own) = own {
             println!("Or open {name}'s own page instead: {own}");
         }
+    }
+    Ok(())
+}
+
+/// `peek update`: the running peek updates itself and restarts, which also
+/// needs no administrator terminal for the service. With none running (or
+/// `--no-restart`), the installed file is replaced here.
+fn update_command(args: &Args, channel: Option<&str>, check: bool, no_restart: bool, rollback: bool, restart_service: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    if restart_service {
+        return update::restart_service();
+    }
+    #[cfg(not(windows))]
+    let _ = restart_service;
+    if check {
+        return update::check(channel);
+    }
+    // PEEK_UPDATE_TARGET names a test's install: never the running peek's.
+    if no_restart || std::env::var_os("PEEK_UPDATE_TARGET").is_some() || !host_running(args) {
+        return update::run_here(channel, rollback);
+    }
+    println!("asking the running peek to {}", if rollback { "go back to its previous version" } else { "update itself" });
+    let body = serde_json::json!({ "channel": channel, "rollback": rollback }).to_string();
+    let (status, reply) = local_request(args, "POST", "/api/update", &body)?;
+    let reply: serde_json::Value = serde_json::from_str(&reply).unwrap_or_default();
+    match (status, reply["t"].as_str()) {
+        (200, Some("current")) => println!("peek {} is already the latest", reply["version"].as_str().unwrap_or("?")),
+        (200, Some("updated")) => println!(
+            "updated from {} to {}; peek is restarting on it. peek update --rollback goes back",
+            reply["from"].as_str().unwrap_or("?"),
+            reply["to"].as_str().unwrap_or("?")
+        ),
+        // A peek from before it could update itself.
+        (404, _) => {
+            println!("the running peek cannot update itself; replacing the installed file instead");
+            return update::run_here(channel, rollback);
+        }
+        _ => return Err(reply["why"].as_str().map_or_else(|| format!("the running peek answered {status}"), str::to_owned)),
     }
     Ok(())
 }
@@ -735,6 +826,9 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             install::install(&flags)
         }
         Command::Uninstall => install::uninstall(),
+        Command::Update { channel, check, no_restart, rollback, restart_service } => {
+            update_command(args, channel.as_deref(), *check, *no_restart, *rollback, *restart_service)
+        }
         Command::Provider { action } => provider_command(action),
         Command::Plugin { action } => plugin_command(args, action),
     }
@@ -750,7 +844,7 @@ fn core_in_service() -> Arc<provider::Link> {
         std::process::exit(1);
     }
     let args = Args::parse();
-    let web = web_origin(&args.web).unwrap_or_else(|e| fail(e));
+    let web = web_origins(&args.web).unwrap_or_else(|e| fail(e));
     if args.no_token && !(args.bind.is_unspecified() || args.bind.is_loopback() || server::tailnet(args.bind)) {
         fail(format!("--no-token accepts only Tailscale connections; --bind {} is not a Tailscale address", args.bind));
     }
@@ -783,6 +877,8 @@ fn core_in_service() -> Arc<provider::Link> {
         .block_on(tokio::net::TcpListener::bind(addr))
         .unwrap_or_else(|e| fail(format!("cannot listen on {addr}: {e}")));
     log!("service: listening on {addr}");
+    update::started(true);
+    update::watch();
     std::thread::Builder::new()
         .name("core".into())
         .spawn(move || {
@@ -817,7 +913,7 @@ fn main() {
             return;
         }
     }
-    let web = match web_origin(&args.web) {
+    let web = match web_origins(&args.web) {
         Ok(web) => web,
         Err(e) => {
             eprintln!("{e}");
@@ -900,6 +996,9 @@ fn main() {
         return;
     }
 
+    // Started by a peek that updated itself: wait for it to exit, so its
+    // port, screen and plugins are free before this one takes them.
+    update::wait_for_predecessor();
     platform::init();
     #[cfg(windows)]
     platform::keep_device(args.keep_gpu);
@@ -985,7 +1084,7 @@ fn main() {
             println!("Tailscale is not up yet; connections are accepted as soon as it is.");
         }
     }
-    if let Some(web) = web.as_ref().filter(|_| !pair_here) {
+    if let Some(web) = web.first().filter(|_| !pair_here) {
         println!("To use it from {web}, pair the browser: run `peek pair`.");
     }
     if !args.view_only {
@@ -1002,6 +1101,8 @@ fn main() {
         println!("To start peek at logon instead, run `peek install`.");
     }
 
+    update::started(false);
+    update::watch();
     if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
         log!("cannot listen on {addr}: {e}");
         std::process::exit(1);
@@ -1019,6 +1120,20 @@ mod tests {
         assert_eq!(args.provider.as_deref(), Some("screen"));
         assert!(Args::try_parse_from(["peek"]).unwrap().provider_page.is_none());
         assert_eq!(Args::try_parse_from(["peek", "--provider", "files"]).unwrap().provider.as_deref(), Some("files"));
+    }
+
+    #[test]
+    fn hosted_clients_default_to_both_sites_and_can_be_listed_or_refused() {
+        let web = |argv: &[&str]| web_origins(&Args::try_parse_from(argv).unwrap().web);
+        // A build with no channel set is a stable one.
+        assert_eq!(web(&["peek"]).unwrap(), [STABLE_WEB, NEXT_WEB]);
+        assert_eq!(web_for("stable"), [STABLE_WEB, NEXT_WEB]);
+        assert_eq!(web_for("next"), [NEXT_WEB, STABLE_WEB, DEV_WEB]);
+        assert_eq!(web(&["peek", "--web", "https://a.example/", "--web", "http://localhost:5173"]).unwrap(),
+            ["https://a.example", "http://localhost:5173"]);
+        assert_eq!(web(&["peek", "--web", "https://A.example", "--web", "https://a.example"]).unwrap(), ["https://a.example"]);
+        assert!(web(&["peek", "--web", "https://a.example", "--web", "none"]).unwrap().is_empty());
+        assert!(web(&["peek", "--web", "http://a.example"]).is_err());
     }
 
     #[test]

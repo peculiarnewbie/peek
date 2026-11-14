@@ -7,6 +7,19 @@ use std::process::Command;
 const INPUTS: &[&str] = &["src", "public", "index.html", "package.json", "bun.lock", "tsconfig.json", "vite.config.ts"];
 
 fn main() {
+    // Which release channel this build belongs to, and its full version: a
+    // nightly says which one it is (scripts/nightly.mjs sets both).
+    println!("cargo:rerun-if-env-changed=PEEK_CHANNEL");
+    println!("cargo:rerun-if-env-changed=PEEK_BUILD");
+    let channel = std::env::var("PEEK_CHANNEL").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "stable".into());
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let version = match std::env::var("PEEK_BUILD") {
+        Ok(build) if !build.is_empty() => format!("{version}-{build}"),
+        _ => version,
+    };
+    println!("cargo:rustc-env=PEEK_CHANNEL={channel}");
+    println!("cargo:rustc-env=PEEK_VERSION={version}");
+
     for input in INPUTS {
         println!("cargo:rerun-if-changed=client/{input}");
     }

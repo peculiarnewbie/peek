@@ -73,8 +73,8 @@ and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
 `peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
 It also prints a link to the machine's own page, which pairs a browser with that
 machine alone; that page asks for the code when opened without one.
-After updating the package, run `peek install` again; `peek uninstall` removes
-it.
+Once installed, peek updates itself ([below](#update)); `peek uninstall`
+removes it.
 
 To try peek once without installing anything, with Tailscale running:
 
@@ -84,6 +84,33 @@ npx @peculiarnewbie/peek pair
 
 With no peek running yet, `peek pair` starts one in that terminal and prints
 a link and QR code to pair a browser; peek runs until you press Ctrl+C.
+
+## Update
+
+An installed peek updates itself: when a new version is out, each machine's
+card in the hosted client says so, with an **Update** button, and so does
+Settings once a machine is open. The machine downloads the new version from
+its release channel on GitHub, checks it against the release's SHA256SUMS,
+swaps it in for its own file and restarts on it, a few seconds without the
+screen. It looks for one every six hours.
+
+`peek update` does the same from a terminal on the machine. It asks the
+running peek to update itself, so the service needs no administrator
+terminal for it; with no peek running, it replaces the installed file.
+
+- `peek update --check` compares the installed version with the channel's.
+- `peek update --rollback` goes back to the version the last update replaced.
+- `peek update --channel next` moves to the nightlies, and `--channel stable`
+  back. https://next.peek.peculiarnewbie.com is the hosted client that
+  matches them.
+
+Anyone with the access token or a paired browser can ask for an update, as
+they can for everything else; it only ever installs the newest published
+build of the machine's channel. A `--view-only` peek does not take the
+request. Picking a channel and going back are for `peek update` alone.
+
+A peek from before 0.3.1 cannot update itself: update it once with npm and
+`peek install`, as it was installed.
 
 ## Run
 
@@ -577,13 +604,20 @@ it serves the client with hot reload on http://localhost:5173 and forwards
 the socket to the host on port 9182. `bun run dev:hosted` serves the hosted
 client the same way, in Cloudflare's local runtime.
 
+To try a client change against your other machines, `npm run dev:tunnel` in
+`client/` serves the hosted client from the dev server at
+https://dev.peek.peculiarnewbie.com, through a Cloudflare Tunnel, with hot
+reload. Machines on a nightly (`peek update --channel next`) trust that site
+by default; released builds do not. It needs the tunnel's credentials, which
+live on one machine: setting it up is described in `scripts/dev-tunnel.mjs`.
+
 `cargo test` runs the unit tests. `cargo test -- --ignored` adds the ones
 that need a real desktop session. On Linux, the test that clicks and types
 only runs with `PEEK_TEST_NESTED=1`, against a nested compositor (start
 `niri` from inside the session; it opens as a window with its own
 `WAYLAND_DISPLAY`).
 
-### Releasing to npm
+### Releasing
 
 The version is the one in `Cargo.toml`. On Windows, with the Linux targets
 and [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild):
@@ -599,3 +633,14 @@ node scripts/npm-release.mjs --stage    # and stage it on npm
 Staging uses `npm login`, or a stage-only token in `NPM_TOKEN`. A staged
 version is not installable until it is approved with 2FA, on npmjs.com or
 with `npm stage approve <id>`. The Linux builds target glibc 2.28.
+
+Once it is approved, publish the same binaries on GitHub, where installed
+peeks update from:
+
+```
+node scripts/github-release.mjs --skip-build    # v<version>, as the latest release
+```
+
+It tags the commit, which must be pushed, and never replaces a release.
+Nightlies go out with `node scripts/nightly.mjs`, as the rolling `nightly`
+prerelease.

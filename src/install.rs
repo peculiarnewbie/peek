@@ -34,9 +34,13 @@ pub fn check_service_args(args: &[String]) -> Result<(), String> {
 
 #[cfg(windows)]
 pub use self::windows::{install, uninstall};
+#[cfg(windows)]
+pub(crate) use self::windows::{installed_exe, service_exe};
 
 #[cfg(target_os = "linux")]
 pub use self::linux::{install, uninstall};
+#[cfg(target_os = "linux")]
+pub(crate) use self::linux::installed_exe;
 
 fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
@@ -54,14 +58,14 @@ mod windows {
 
     /// %LOCALAPPDATA%\Programs\peek\peek.exe, the per-user programs folder,
     /// for the logon task.
-    fn installed_exe() -> Result<PathBuf, String> {
+    pub(crate) fn installed_exe() -> Result<PathBuf, String> {
         let base = env_path("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
         Ok(base.join("Programs").join("peek").join("peek.exe"))
     }
 
     /// %ProgramFiles%\peek\peek.exe, for the service: SYSTEM runs it, so no
     /// user may be able to replace it.
-    fn service_exe() -> PathBuf {
+    pub(crate) fn service_exe() -> PathBuf {
         env_path("ProgramFiles").unwrap_or_else(|| PathBuf::from(r"C:\Program Files")).join("peek").join("peek.exe")
     }
 
@@ -209,7 +213,7 @@ mod linux {
     }
 
     /// $XDG_DATA_HOME/peek/peek, or ~/.local/share/peek/peek.
-    fn installed_exe() -> Result<PathBuf, String> {
+    pub(crate) fn installed_exe() -> Result<PathBuf, String> {
         let data = match env_path("XDG_DATA_HOME") {
             Some(d) => d,
             None => home()?.join(".local").join("share"),

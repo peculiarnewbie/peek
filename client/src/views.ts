@@ -61,7 +61,7 @@ export interface ProviderAbout {
 
 /** Descriptor for the client served by a machine itself. Refresh after a
  * management page changes providers, just as the hosted client does. */
-export const [own, setOwn] = createSignal<{ providers?: ProviderAbout[] } | null>(null);
+export const [own, setOwn] = createSignal<{ providers?: ProviderAbout[]; version?: string; update?: string | null } | null>(null);
 export async function refreshOwn() {
   try { const r = await fetch('/.well-known/peek', { cache: 'no-store' }); if (r.ok) setOwn(await r.json()); }
   catch { /* the main connection reports availability */ }

@@ -26,7 +26,10 @@ document.addEventListener('pointerdown', e => {
 document.addEventListener('fullscreenchange', () => setFullscreen(!!document.fullscreenElement));
 
 // Installable as an app (only over HTTPS, where service workers are allowed).
-if (!SCREEN_PLUGIN && 'serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// Not from the dev server, whose pages a cache would keep from reloading.
+if (!SCREEN_PLUGIN && !import.meta.env.DEV && 'serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 
 layout();
 setMessage('Connecting…');

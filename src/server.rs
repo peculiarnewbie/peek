@@ -46,9 +46,10 @@ const DEAD_AFTER: Duration = Duration::from_secs(15);
 pub struct Shared {
     /// None: no token, and only Tailscale connections are accepted.
     pub token: Option<String>,
-    /// Origin of the hosted client (e.g. https://peek.peculiarnewbie.com),
-    /// whose pages may connect with a paired token.
-    pub web: Option<String>,
+    /// Origins of the hosted clients (https://peek.peculiarnewbie.com, say),
+    /// whose pages may connect with a paired token. The first is the one
+    /// pairing links go to; empty refuses them all.
+    pub web: Vec<String>,
     /// What Tailscale Serve passes to this peek (`pairing::serve_target`),
     /// to find the HTTPS port it does so on.
     pub serve_target: String,
@@ -86,6 +87,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/.well-known/peek", get(about).options(preflight))
         .route("/api/pair", post(pair).options(preflight))
         .route("/api/provider/{name}", post(provider).options(preflight))
+        .route("/api/update", post(update).options(preflight))
         .route("/api/frame/{name}", post(frame_ticket).options(preflight))
         .route("/api/frame/{name}/ws", get(frame_ws))
         .route("/api/frame/{name}/file/{id}", get(frame_file))
@@ -257,7 +259,7 @@ fn header_str<'a>(headers: &'a HeaderMap, name: header::HeaderName) -> Option<&'
 
 /// The request comes from a page of the hosted client.
 fn from_web(shared: &Shared, headers: &HeaderMap) -> bool {
-    shared.web.as_deref().is_some_and(|web| header_str(headers, header::ORIGIN) == Some(web))
+    header_str(headers, header::ORIGIN).is_some_and(|origin| shared.web.iter().any(|web| web == origin))
 }
 
 /// CORS headers letting the hosted client, and only it, read a response.
@@ -306,6 +308,10 @@ async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Respons
         "name": pairing::machine_name(),
         "protocol": PROTOCOL.parse::<u32>().unwrap_or(0),
         "providers": providers,
+        "version": env!("PEEK_VERSION"),
+        // A newer version it can update itself to, when there is one: a
+        // view-only host takes no such request.
+        "update": if shared.view_only { None } else { crate::update::available() },
     });
     (cors(&shared, &headers), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
         .into_response()
@@ -429,6 +435,64 @@ async fn provider(
     }
 }
 
+/// Update this peek to the newest build on its channel, and restart on it.
+/// Whoever may use the machine may ask (the hosted client, with a paired
+/// token): it installs only what was published, checked against its
+/// SHA256SUMS. `peek update` on this machine may also pick the channel, or
+/// go back to the version before.
+async fn update(
+    State(shared): State<Arc<Shared>>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let cors = cors(&shared, &headers);
+    let reply = |status: StatusCode, body: serde_json::Value| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
+            .into_response()
+    };
+    let error = |status: StatusCode, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }));
+    let local = local_ok(&shared, &headers);
+    let web = from_web(&shared, &headers);
+    if !local && headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
+        return error(StatusCode::FORBIDDEN, "origin");
+    }
+    let Ok(serde_json::Value::Object(req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return error(StatusCode::BAD_REQUEST, "request");
+    };
+    if !local && !token_ok(&shared, req.get("token").and_then(|t| t.as_str()).unwrap_or_default(), web) {
+        return error(StatusCode::FORBIDDEN, "token");
+    }
+    if shared.view_only && !local {
+        return error(StatusCode::FORBIDDEN, VIEW_ONLY);
+    }
+    // Only from this machine: another channel, or the version before.
+    let channel = req.get("channel").and_then(|c| c.as_str()).filter(|_| local).map(str::to_owned);
+    if channel.as_deref().is_some_and(|c| !matches!(c, "stable" | "next")) {
+        return error(StatusCode::BAD_REQUEST, "no such channel");
+    }
+    let back = local && req.get("rollback").and_then(|r| r.as_bool()) == Some(true);
+    let who = if local { "peek update on this machine".to_string() } else { client_ip(&peer, &headers) };
+    crate::log!("update: asked by {who}");
+    let done = tokio::task::spawn_blocking(move || {
+        if back { crate::update::rollback_self() } else { crate::update::update_self(channel.as_deref()) }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match done {
+        Ok(crate::update::Outcome::Current(version)) => reply(StatusCode::OK, serde_json::json!({ "t": "current", "version": version })),
+        Ok(crate::update::Outcome::Changed { from, to }) => {
+            crate::log!("update: {from} to {to}; restarting");
+            crate::update::restart_soon();
+            reply(StatusCode::OK, serde_json::json!({ "t": "updated", "from": from, "to": to }))
+        }
+        Err(why) => {
+            crate::log!("update: {why}");
+            error(StatusCode::CONFLICT, &why)
+        }
+    }
+}
+
 // ---- providers' own pages ----
 //
 // A provider may have a page of its own: a folder it names in what it says
@@ -531,10 +595,7 @@ async fn page(State(shared): State<Arc<Shared>>, name: String, path: String) -> 
         }
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
-    let ancestors = match &shared.web {
-        Some(web) => format!("frame-ancestors 'self' {web}"),
-        None => "frame-ancestors 'self'".into(),
-    };
+    let ancestors = std::iter::once("frame-ancestors 'self'").chain(shared.web.iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
     let mut h = HeaderMap::new();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
@@ -744,7 +805,7 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         let port = pairing::peek_port(&status, &host, &shared.serve_target).unwrap_or(443);
         pairing::serve_host(&host, port)
     });
-    let link = match (&shared.web, &host) {
+    let link = match (shared.web.first(), &host) {
         (Some(web), Some(host)) => Some(pairing::pair_link(web, host, &name, &code)),
         _ => None,
     };
@@ -754,7 +815,7 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         "expires": pairing::CODE_TTL.as_secs(),
         "host": host,
         "name": name,
-        "web": shared.web,
+        "web": shared.web.first(),
         "link": link,
         "own": own,
     })

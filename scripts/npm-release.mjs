@@ -2,10 +2,7 @@
 // Builds peek for every platform the npm package carries, packs
 // @peculiarnewbie/peek, and optionally stages it on npm.
 //
-// Run from Windows (the Windows build needs MSVC), with the Linux targets and
-// cargo-zigbuild installed:
-//   rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
-//   pip install ziglang && cargo install cargo-zigbuild --locked
+// Run from Windows, with what scripts/build.mjs lists installed.
 //
 //   node scripts/npm-release.mjs              build and pack into dist/npm/; uploads nothing
 //   node scripts/npm-release.mjs --stage      also `npm stage publish` (NPM_TOKEN, or npm login)
@@ -14,81 +11,19 @@
 // A staged version is not installable until a maintainer approves it with 2FA,
 // on npmjs.com or with `npm stage approve <id>`.
 
-import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { buildAll, commit, dirty, fail as stop, root, run, version } from './build.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const flags = new Set(process.argv.slice(2));
 const stage = flags.has('--stage');
 const skipBuild = flags.has('--skip-build');
 const repo = 'https://github.com/peculiarnewbie/peek';
+const fail = (message) => stop(`npm-release: ${message}`);
 
-// glibc 2.28 (2018) is the oldest these Linux builds will load on.
-const targets = [
-  { key: 'win32-x64', triple: 'x86_64-pc-windows-msvc', exe: 'peek.exe', cargo: ['build'] },
-  { key: 'linux-x64', triple: 'x86_64-unknown-linux-gnu', exe: 'peek', cargo: ['zigbuild'], glibc: '2.28' },
-  { key: 'linux-arm64', triple: 'aarch64-unknown-linux-gnu', exe: 'peek', cargo: ['zigbuild'], glibc: '2.28' },
-];
-
-function run(cmd, args, opts = {}) {
-  console.log(`> ${cmd} ${args.join(' ')}`);
-  // npm is a .cmd on Windows, which Node only starts through a shell: hand
-  // it one command line, quoted here, rather than arguments to concatenate.
-  if (process.platform === 'win32' && cmd === 'npm') {
-    const line = ['npm', ...args.map((a) => (/[\s"&|<>^%]/.test(a) ? `"${a.replace(/"/g, '""')}"` : a))].join(' ');
-    return execSync(line, { cwd: root, stdio: 'inherit', ...opts });
-  }
-  return execFileSync(cmd, args, { cwd: root, stdio: 'inherit', ...opts });
-}
-
-function fail(message) {
-  console.error(`npm-release: ${message}`);
-  process.exit(1);
-}
-
-const version = fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8').match(/^version\s*=\s*"([^"]+)"/m)?.[1];
-if (!version) fail('no version in Cargo.toml');
-
-if (stage) {
-  const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim();
-  if (dirty) fail('the working tree has changes; stage only what is committed');
-}
-const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+if (stage && dirty()) fail('the working tree has changes; stage only what is committed');
 console.log(`@peculiarnewbie/peek ${version} from ${commit}`);
-
-// cargo-zigbuild looks for `zig`, then `python3 -m ziglang`; on Windows
-// `python3` is often the Microsoft Store stub. Put pip's zig on PATH instead.
-function findZig() {
-  try {
-    execFileSync('zig', ['version'], { stdio: 'ignore' });
-    return;
-  } catch {}
-  for (const python of ['python', 'python3', 'py']) {
-    try {
-      const dir = execFileSync(python, ['-c', 'import ziglang, os; print(os.path.dirname(ziglang.__file__))'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (dir) {
-        process.env.PATH = `${dir}${path.delimiter}${process.env.PATH}`;
-        return;
-      }
-    } catch {}
-  }
-  fail('Zig not found: pip install ziglang (or put zig on PATH)');
-}
-if (!skipBuild) findZig();
-
-for (const t of targets) {
-  if (!skipBuild) {
-    const target = t.glibc ? `${t.triple}.${t.glibc}` : t.triple;
-    run('cargo', [...t.cargo, '--release', '--locked', '--target', target]);
-  }
-  t.bin = path.join(root, 'target', t.triple, 'release', t.exe);
-  if (!fs.existsSync(t.bin)) fail(`missing ${t.bin}; build it, or drop --skip-build`);
-}
+const targets = buildAll({ skip: skipBuild });
 
 // dist/npm/package/ is the package as published.
 const out = path.join(root, 'dist', 'npm');
