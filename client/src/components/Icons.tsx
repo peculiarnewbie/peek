@@ -1,7 +1,7 @@
 // Line icons, drawn once in a sprite and referenced by id.
 export type IconName =
   | 'moon' | 'play' | 'sliders' | 'chart' | 'expand' | 'shrink' | 'pin' | 'x' | 'chev' | 'shield'
-  | 'trackpad' | 'hand' | 'keyboard' | 'backspace' | 'enter' | 'monitor' | 'back' | 'plus' | 'qr' | 'copy' | 'check' | 'star';
+  | 'trackpad' | 'hand' | 'keyboard' | 'backspace' | 'enter' | 'monitor' | 'back' | 'plus' | 'qr' | 'copy' | 'check' | 'star' | 'apps';
 
 export function IconSprite() {
   return (
@@ -26,6 +26,7 @@ export function IconSprite() {
       <symbol id="i-qr" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><path d="M14 14h2v2M20 14v.01M14 20h.01M17 17h3v3h-3z" /></symbol>
       <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" /></symbol>
       <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 4l2.4 5 5.4.6-4 3.7 1.1 5.4L12 16l-4.9 2.7 1.1-5.4-4-3.7 5.4-.6z" /></symbol>
+      <symbol id="i-apps" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5" /><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5" /><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5" /><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5" /></symbol>
       <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></symbol>
       <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6zM12 8v5M12 16h.01" /></symbol>
     </svg>

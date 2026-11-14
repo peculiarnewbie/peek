@@ -5,11 +5,12 @@ import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
   about, BLOCKED_HELP, cleanHost, current, favorite, forget, learn, localAccess, machines, navigate, openMachine,
-  pair, parseLink, probeAll, reach, screenPath, setFavorite, type Machine,
+  pagePath, pair, parseLink, probeAll, reach, screenPath, setFavorite, type Machine,
 } from '../hosted';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
-import { cardError, cardItems, press, pressing } from '../views';
+import { cardError, cardItems, frameProviders, press, pressing } from '../views';
+import { PLUGINS } from './Frame';
 import { Icon } from './Icons';
 import { canScan, QrScan } from './QrScan';
 import { ItemView } from './View';
@@ -89,6 +90,13 @@ function Card(props: { m: Machine }) {
           {STATUS[state()]}</span>
       </a>
       <CardViews m={props.m} />
+      {/* Straight to the machine's Plugins page, without going through its screen and Settings. */}
+      <Show when={state() === 'up' && frameProviders(props.m).includes(PLUGINS)}>
+        <button class="dplugins tb icon" tabIndex={-1} title={`Plugins on ${props.m.name}`}
+          onClick={() => navigate(pagePath(props.m, PLUGINS))}>
+          <Icon name="apps" />
+        </button>
+      </Show>
       <button class="dfav tb icon" classList={{ on: favorite() === props.m.id }} tabIndex={-1}
         title={favorite() === props.m.id ? 'Favorite: the app icon’s shortcut opens it (tap to unset)'
           : 'Make favorite: long-press the app icon to open it'}
