@@ -441,7 +441,9 @@ with peek:
   wired card Windows lets wake the machine, Sleep is not offered. The
   first sleep is a test: the machine sleeps and is woken 15 seconds later.
   If no packet wakes it, it wakes itself after two minutes, where its
-  power settings allow wake timers, and the card says what to check.
+  power settings allow wake timers, and the card says what to check. Off
+  by default: turn it on under Settings → Manage plugins on the machine
+  to sleep and on the one that wakes it, which can be a Linux machine.
 - **Files.** Browse the folders you choose, and download from them. Off
   by default: turn it on and pick the folders under Settings → Manage
   plugins.
