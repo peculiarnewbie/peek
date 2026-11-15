@@ -5,6 +5,7 @@
 // own. Nothing about the machines leaves this browser.
 import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
+import { refreshPlugins, type PluginList } from './plugins';
 import { dropCards, onAgain, refreshCards, type ProviderAbout } from './views';
 import { store } from './util';
 
@@ -24,6 +25,8 @@ export interface Machine {
   /** What each of its providers lets the same provider on the other
    *  machines know of it, kept for while it is away. */
   records?: Record<string, unknown>;
+  /** Its plugins, as it last listed them (plugins.ts). */
+  plugins?: PluginList;
 }
 
 function load(): Machine[] {
@@ -42,14 +45,16 @@ function setMachines(list: Machine[]) {
 // ---- pages ----
 // `/` lists the machines; `/screen/<name>` shows one (its Tailscale name's
 // first part, unique in a tailnet). Plain history entries, so Back returns to
-// the list. The site's own pages (/docs/, /changelog/, /pair) sit beside
-// /screen/, so no machine's name can take one of their addresses.
+// the list. `/plugins` is every machine's plugins side by side. The site's own
+// pages (/docs/, /changelog/, /pair) sit beside /screen/, so no machine's name
+// can take one of their addresses.
 const SCREEN = '/screen/';
+export const PLUGINS_PATH = '/plugins';
 const slug = (m: Machine) => m.host.split(/[.:]/)[0].toLowerCase();
 export const screenPath = (m: Machine) => SCREEN + slug(m);
 // Until 0.2.0 a machine's page was `/<name>` (or `/<id>`); bookmarks of one
 // still lead to it.
-if (HOSTED && /^\/[^/]+$/.test(location.pathname) && location.pathname !== '/pair') {
+if (HOSTED && /^\/[^/]+$/.test(location.pathname) && !['/pair', PLUGINS_PATH].includes(location.pathname)) {
   history.replaceState(null, '', SCREEN + location.pathname.slice(1) + location.search + location.hash);
 }
 // The favorite machine: what the app icon's "Favorite" shortcut (long-press
@@ -87,6 +92,8 @@ export const shownPage = () => current() ? screenParts()[1] ?? null : null;
 export const pagePath = (m: Machine, provider: string) => `${screenPath(m)}/${encodeURIComponent(provider)}`;
 export const openMachine = (m: Machine) => navigate(screenPath(m));
 export const home = () => navigate('/');
+/** Whether the list shows every machine's plugins instead of the machines. */
+export const onPluginsPage = () => path() === PLUGINS_PATH;
 
 export function forget(id: string) {
   setMachines(machines().filter(m => m.id !== id));
@@ -122,7 +129,10 @@ interface About { id: string; name: string; protocol: number; providers?: Provid
 /** A machine's providers as it says them now, kept if they changed. */
 export function learn(m: Machine, a: About) {
   const providers = (Array.isArray(a.providers) ? a.providers : []).filter(p => p && typeof p.name === 'string');
-  if (JSON.stringify(providers) !== JSON.stringify(m.providers ?? [])) updateMachine(m.id, { providers });
+  if (JSON.stringify(providers) === JSON.stringify(m.providers ?? [])) return;
+  updateMachine(m.id, { providers });
+  // Something was turned on or off there: its plugins page may have done it.
+  void refreshPlugins(m, true);
 }
 
 export async function about(host: string, ms = 5000): Promise<About> {
@@ -141,6 +151,7 @@ export function probeAll() {
         if (a.id !== m.id) throw new Error('another machine answers there');
         setReach(m.id, 'up');
         learn(m, a);
+        void refreshPlugins(m);
       })
       .catch(() => {
         setReach(m.id, 'down');

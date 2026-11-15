@@ -1,17 +1,20 @@
 // Hosted client: the page of paired machines at `/`. Choosing one opens it
 // at `/screen/<name>`; the toolbar's back button (or the browser's) returns here.
+// Beside it, `/plugins` has every machine's plugins (Plugins.tsx).
 import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show, untrack } from 'solid-js';
 import { showSettings } from '../actions';
 import { connect, disconnect } from '../connection';
 import {
-  about, BLOCKED_HELP, cleanHost, current, favorite, forget, learn, localAccess, machines, navigate, openMachine,
-  pair, parseLink, probeAll, reach, screenPath, setFavorite, type Machine,
+  about, BLOCKED_HELP, cleanHost, current, favorite, forget, learn, localAccess, machines, navigate, onPluginsPage,
+  openMachine, pagePath, pair, parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, type Machine,
 } from '../hosted';
+import { changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
 import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { canScan, QrScan } from './QrScan';
+import { PluginsOverview } from './Plugins';
 import { ItemView } from './View';
 
 /** Shell commands, one per line, with one button that copies them all. */
@@ -89,6 +92,7 @@ function Card(props: { m: Machine }) {
           {STATUS[state()]}</span>
       </a>
       <CardViews m={props.m} />
+      <CardPlugins m={props.m} />
       <button class="dfav tb icon" classList={{ on: favorite() === props.m.id }} tabIndex={-1}
         title={favorite() === props.m.id ? 'Favorite: the app icon’s shortcut opens it (tap to unset)'
           : 'Make favorite: long-press the app icon to open it'}
@@ -113,6 +117,66 @@ function CardViews(props: { m: Machine }) {
           <ItemView item={s().item} disabled={pressing[props.m.id]} onPress={() => press(props.m, s())} />
         )}</Index>
         <Show when={cardError[props.m.id]}>{why => <p class="vtext wrong">{why()}</p>}</Show>
+      </div>
+    </Show>
+  );
+}
+
+/** The machine's plugins as tags, solid when on and dashed when off. With a
+ *  plugin picked above the list, its tag stands out, and a card where it is
+ *  off or missing offers to turn it on or install it. */
+function CardPlugins(props: { m: Machine }) {
+  const items = () => props.m.plugins?.items ?? [];
+  const pick = () => { const name = picked(); return name ? columns().find(c => c.name === name) : undefined; };
+  const pickedItem = () => items().find(i => i.name === picked());
+  const fix = () => {
+    const c = pick();
+    if (!c || pickedItem()?.on || !props.m.plugins) return null;
+    const can = offers(props.m, c);
+    const fetch = can.find(o => o.t !== 'toggle');
+    return { c, toggle: !!pickedItem() && can.some(o => o.t === 'toggle'), fetch: !pickedItem() && fetch?.t === 'install' ? fetch : undefined };
+  };
+  const working = () => !!changing[`${props.m.id}/${picked()}`];
+  return (
+    <Show when={items().length}>
+      <div class="dplugins">
+        <For each={items()}>{i => (
+          <button class="ptag" classList={{ off: !i.on, hl: i.name === picked() }} tabIndex={-1}
+            title={`${i.name}: ${i.on ? 'on' : 'off'}. Opens ${props.m.name}'s Plugins page`}
+            onClick={() => navigate(pagePath(props.m, 'plugins'))}>{i.name}</button>
+        )}</For>
+      </div>
+      <Show when={fix()}>{f => (
+        <div class="dfix">
+          <span>{f().c.name} is {pickedItem() ? 'off' : 'not installed'}</span>
+          <Show when={f().toggle}>
+            <button class="btn small alt" tabIndex={-1} disabled={working()}
+              onClick={() => void turn(props.m, f().c.name, true)}>{working() ? 'Working…' : 'Turn on'}</button>
+          </Show>
+          <Show when={f().fetch}>{o => (
+            <button class="btn small alt" tabIndex={-1} disabled={working()} title={`From ${o().source}`}
+              onClick={() => void fetchTo(props.m, f().c.name, o().source, false)}>{working() ? 'Working…' : 'Install'}</button>
+          )}</Show>
+        </div>
+      )}</Show>
+    </Show>
+  );
+}
+
+/** Pick a plugin to compare the machines' cards by. */
+function PluginFilter() {
+  const known = () => machines().filter(m => m.plugins).length;
+  return (
+    <Show when={columns().length}>
+      <div class="pfilter">
+        <span>Plugins</span>
+        <button class="pill" classList={{ sel: !picked() }} tabIndex={-1} onClick={() => setPicked(null)}>All</button>
+        <For each={columns()}>{c => (
+          <button class="pill" classList={{ sel: picked() === c.name }} tabIndex={-1}
+            onClick={() => setPicked(picked() === c.name ? null : c.name)}>
+            {c.name} <em>{machines().filter(m => m.plugins?.items.some(i => i.name === c.name && i.on)).length}/{known()}</em>
+          </button>
+        )}</For>
       </div>
     </Show>
   );
@@ -163,7 +227,7 @@ export function Devices() {
           <h1><img src="/icon.svg" alt="" width="28" height="28" />peek</h1>
           <nav class="dnav">
             <Show when={machines().length && !showForm()}>
-              <button class="tb" tabIndex={-1} title="Add a machine" onClick={() => { setError(''); setAdding(true); }}>
+              <button class="tb" tabIndex={-1} title="Add a machine" onClick={() => { setError(''); setAdding(true); navigate('/'); }}>
                 <Icon name="plus" /><span>Add a machine</span>
               </button>
             </Show>
@@ -175,6 +239,13 @@ export function Devices() {
         <Show when={localAccess() === 'denied'}>
           <p class="err banner">{BLOCKED_HELP}</p>
         </Show>
+        <Show when={machines().length}>
+          <div class="dtabs" role="tablist">
+            <button class="tb" tabIndex={-1} aria-pressed={!onPluginsPage()} onClick={() => navigate('/')}>Machines</button>
+            <button class="tb" tabIndex={-1} aria-pressed={onPluginsPage()} onClick={() => navigate(PLUGINS_PATH)}>Plugins</button>
+          </div>
+        </Show>
+        <Show when={!(onPluginsPage() && machines().length)} fallback={<PluginsOverview />}>
         <Show when={machines().length} fallback={
           <section class="intro">
             <p class="hint lead">peek is a small, fast remote desktop, tailored for short sessions.</p>
@@ -195,6 +266,7 @@ export function Devices() {
             <a class="figures-how" href="/docs/#numbers">How these were measured</a>
           </section>
         }>
+          <PluginFilter />
           <div class="dgrid">
             <For each={machines()}>{m => <Card m={m} />}</For>
           </div>
@@ -235,6 +307,7 @@ export function Devices() {
             setCodeField(code);
             submit(host, code);
           }} />
+        </Show>
         </Show>
         <p class="hint small foot">The list of machines and their keys stay in this browser. Nothing about them is
           stored on this site.</p>

@@ -224,6 +224,16 @@ trust. To keep paired browsers from installing, removing or changing plugins, ru
 <code>peek plugin remote-install off</code> on the machine; they can then still turn plugins on and off. To write
 one, see <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/plugin-release.md">the plugin contract</a>
 and <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/frames.md">the page protocol</a>.</p>
+<h3>Every machine at once</h3>
+<p><strong>Plugins</strong>, beside <strong>Machines</strong> at the top of <a href="/">your list</a>, shows which
+plugins each machine has: <strong>By plugin</strong>, one row per plugin with the machines it is on, or
+<strong>Grid</strong>, machines by plugins. From there you can turn a plugin on or off on any machine, install one on
+a machine that lacks it from where another machine got it (an HTTPS git address or npm), and update an older copy.
+It asks before installing or updating, and says what the plugin will run. A machine's name opens its own Plugins
+page, for settings and for installing something new.</p>
+<p>On the list of machines, each card shows its plugins: solid when on, dashed when off. Pick a plugin above the list
+to compare: a card where it is off or missing offers to turn it on or install it. A machine needs peek 0.3.1 or
+newer to show up here.</p>
 
 <h2 id="phone">On a phone or tablet</h2>
 <p>Tap the dot for the toolbar. Its <strong>Trackpad / Touch</strong> button switches how a finger works:</p>
