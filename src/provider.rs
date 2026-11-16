@@ -125,6 +125,38 @@ fn read_frame(r: &mut impl Read) -> io::Result<(u8, u64, Vec<u8>)> {
 
 // ---- the core's end ----
 
+/// A provider's stdout, keeping its first bytes to show when they turn out
+/// not to be peek messages. Its first read takes what there is, up to 64
+/// bytes, so text shows more than a message header's worth.
+struct Opening<R> {
+    inner: R,
+    first: Vec<u8>,
+    /// How much of `first` has been passed on; `None` before the first read.
+    served: Option<usize>,
+}
+
+impl<R: Read> Read for Opening<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let served = match self.served {
+            Some(served) => served,
+            None => {
+                let mut head = [0u8; 64];
+                let n = self.inner.read(&mut head)?;
+                self.first.extend_from_slice(&head[..n]);
+                0
+            }
+        };
+        if served < self.first.len() {
+            let n = buf.len().min(self.first.len() - served);
+            buf[..n].copy_from_slice(&self.first[served..served + n]);
+            self.served = Some(served + n);
+            return Ok(n);
+        }
+        self.served = Some(served);
+        self.inner.read(buf)
+    }
+}
+
 struct Channel {
     /// The `OPEN` payload that opens this channel as it is now: the client's
     /// query at first, then whatever the provider last sent as `STATE`.
@@ -284,7 +316,7 @@ impl Link {
         if view_only {
             command.env("PEEK_VIEW_ONLY", "1");
         }
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -296,7 +328,52 @@ impl Link {
         if let (Some(to), Some(from)) = (to, from) {
             self.attach(to, from);
         }
+        if let Some(err) = child.stderr.take() {
+            self.read_stderr(err);
+        }
         Ok(child)
+    }
+
+    /// The provider's stderr, a line at a time into its recent log (the
+    /// plugins page shows it), and the first lines of each run into peek's
+    /// own. Always read, so a provider never blocks on a full pipe.
+    fn read_stderr(self: &Arc<Self>, from: impl Read + Send + 'static) {
+        /// More of a line than anyone reads; the rest of it is dropped.
+        const MAX_LINE: usize = 1000;
+        /// Lines of each run that go to peek's log too, so a chatty provider
+        /// cannot fill it.
+        const TO_LOG: usize = 20;
+        let link = self.clone();
+        let started = std::thread::Builder::new().name(format!("stderr-{}", self.name)).spawn(move || {
+            let (mut from, mut buf, mut line, mut lines) = (from, [0u8; 4096], Vec::new(), 0);
+            let mut done = |line: &mut Vec<u8>| {
+                let text = String::from_utf8_lossy(line).trim_end().to_string();
+                line.clear();
+                if text.is_empty() {
+                    return;
+                }
+                lines += 1;
+                if lines <= TO_LOG {
+                    crate::log!("{}: {text}", link.name);
+                } else if lines == TO_LOG + 1 {
+                    crate::log!("{}: (more on stderr: see its Plugins page)", link.name);
+                }
+                link.note(|s| s.log.push_back(text));
+            };
+            while let Ok(n @ 1..) = from.read(&mut buf) {
+                for part in buf[..n].split_inclusive(|&b| b == b'\n') {
+                    let (text, end) = part.strip_suffix(b"\n").map_or((part, false), |t| (t, true));
+                    line.extend_from_slice(&text[..text.len().min(MAX_LINE.saturating_sub(line.len()))]);
+                    if end {
+                        done(&mut line);
+                    }
+                }
+            }
+            done(&mut line);
+        });
+        if let Err(e) = started {
+            crate::log!("{}: cannot read the provider's stderr ({e})", self.name);
+        }
     }
 
     /// Make the provider on these pipes the one serving this link, and open
@@ -318,9 +395,29 @@ impl Link {
         };
         let link = self.clone();
         let reader = std::thread::Builder::new().name(format!("from-{}", self.name)).spawn(move || {
-            let mut from = from;
-            while let Ok((kind, channel, payload)) = read_frame(&mut from) {
-                link.receive(kind, channel, payload);
+            let mut from = Opening { inner: from, first: Vec::new(), served: None };
+            let mut frames = 0u64;
+            let error = loop {
+                match read_frame(&mut from) {
+                    Ok((kind, channel, payload)) => {
+                        frames += 1;
+                        link.receive(kind, channel, payload);
+                    }
+                    Err(e) => break e,
+                }
+            };
+            // Text on stdout (a banner, a print left in) reads as a length
+            // far too large; one that ends mid-way without a whole message
+            // is the same mistake. Say so once, rather than go quiet.
+            if error.kind() == io::ErrorKind::InvalidData || frames == 0 && !from.first.is_empty() {
+                let line = format!(
+                    "{}: its output is not peek messages, so peek stopped reading it. It began {:?}. \
+                     A provider writes only framed messages to stdout (docs/providers.md), and anything else to stderr.",
+                    link.name,
+                    String::from_utf8_lossy(&from.first)
+                );
+                crate::log!("{line}");
+                link.note(|s| s.log.push_back(line));
             }
             let mut pipe = link.to.lock().unwrap();
             // Unless another provider has taken over since.
@@ -633,6 +730,21 @@ mod tests {
         assert_eq!(read_frame(&mut r).unwrap(), (BINARY, u64::MAX, big));
         assert_eq!(read_frame(&mut r).unwrap(), (CLOSE, 3, Vec::new()));
         assert!(read_frame(&mut r).is_err(), "end of stream");
+    }
+
+    /// Reading through `Opening` changes nothing, and keeps what came first.
+    #[test]
+    fn opening_passes_frames_through_and_keeps_text() {
+        let mut pipe = Vec::new();
+        write_frame(&mut pipe, TEXT, 3, b"{}").unwrap();
+        write_frame(&mut pipe, BINARY, 4, &vec![1u8; 9000]).unwrap();
+        let mut r = Opening { inner: &pipe[..], first: Vec::new(), served: None };
+        assert_eq!(read_frame(&mut r).unwrap(), (TEXT, 3, b"{}".to_vec()));
+        assert_eq!(read_frame(&mut r).unwrap(), (BINARY, 4, vec![1u8; 9000]));
+        assert!(read_frame(&mut r).is_err());
+        let mut r = Opening { inner: &b"Listening on port 3000\n"[..], first: Vec::new(), served: None };
+        assert_eq!(read_frame(&mut r).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(r.first, b"Listening on port 3000\n");
     }
 
     /// What a provider was sent, readable while the link still writes to it.

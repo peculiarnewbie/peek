@@ -55,7 +55,7 @@ A plugin is a folder with a `peek-plugin.json`:
 
 ```json
 {
-  "name": "files",
+  "name": "my-files",
   "version": "1.0.0",
   "description": "Browse the folders you share, and download their files.",
   "run": ["bin/peek-files"],
@@ -63,6 +63,7 @@ A plugin is a folder with a `peek-plugin.json`:
 }
 ```
 
+- **Its name:** lowercase letters, digits and dashes, and none of peek's own (`screen`, `vitals`, `power`, `plugins`, `files`, `processes`): the example above is `my-files`, as `files` is built in.
 - **Where it lives:** `plugins/<name>/` in peek's config folder.
 - **How it starts:** `run` is started in that folder. Its first word is a program on the machine (`node`), or one the plugin brings (`bin/peek-files`, which is `bin\peek-files.exe` on Windows).
 - **What it's written in:** anything that reads and writes its stdin and stdout. The examples are one of each: `files` in Rust (a 213 KB program, which ran in about 4 MB, 0.6 MB of it its own), `frame` (notes) in Node (an idle Node is about 35 MB).

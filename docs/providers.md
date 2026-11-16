@@ -55,6 +55,11 @@ carry messages of this form, numbers little-endian:
 A channel is one client's conversation with the provider: a request, or a
 socket for as long as it is open. Answer on the channel you were asked on.
 
+Write nothing else to stdout: a stray line there (a banner, a debugging
+print) makes peek stop reading it, and it says so in its log. Anything on
+stderr goes to the provider's recent log, on the Plugins page, and its first
+lines to peek's log.
+
 From peek:
 
 | Kind | | Payload |

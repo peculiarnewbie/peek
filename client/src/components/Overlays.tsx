@@ -1,7 +1,7 @@
-import { createSignal, Show } from 'solid-js';
+import { createEffect, createSignal, Show } from 'solid-js';
 import { setSleep } from '../actions';
-import { pairError, pairHere, pairing, setPairError } from '../pair-here';
-import { autoSlept, blocked, message, sleeping } from '../state';
+import { hostName, learnHostName, pairError, pairHere, pairing, setPairError } from '../pair-here';
+import { autoSlept, blocked, message, messageAction, sleeping } from '../state';
 import { Icon } from './Icons';
 
 export function SleepCard() {
@@ -22,7 +22,12 @@ export function SleepCard() {
 export function Message() {
   return (
     <div id="msg" class={{ show: !!message() }}>
-      <div class="card panel"><div class="s">{message()}</div></div>
+      <div class="card panel">
+        <div class="s">{message()}</div>
+        <Show when={messageAction()}>{a => a().href
+          ? <a class="btn" href={a().href} target="_blank" rel="noopener noreferrer">{a().label}</a>
+          : <button class="btn" tabindex={-1} onClick={() => a().run?.()}>{a().label}</button>}</Show>
+      </div>
     </div>
   );
 }
@@ -37,6 +42,7 @@ export function PairPrompt() {
     const why = await pairHere(code());
     if (why) { setPairError(why); setBusy(false); }
   };
+  createEffect(pairing, p => { if (p) learnHostName(); });
   return (
     <Show when={pairing()}>
       <div id="pairhere">
@@ -45,8 +51,8 @@ export function PairPrompt() {
           <div class="t">Pair this browser</div>
           <div class="s">
             {pairing() === 'wrong' ? 'This browser’s key no longer works here. ' : ''}
-            Run <code>peek pair</code> on this machine and enter the code it shows. A browser that is already
-            paired can show one too, under Settings.
+            Run <code>peek pair</code> on <strong>{hostName()}</strong>, the machine this page comes from, and
+            enter the code it shows. A browser already paired with it can show one too, under Settings.
           </div>
           <form class="mform-row" onSubmit={e => { e.preventDefault(); if (!busy() && code().trim()) void submit(); }}>
             <input class="field" placeholder="Code" autocomplete="one-time-code" autocapitalize="characters"

@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "provider_protocol": 1,
-  "name": "processes",
+  "name": "my-processes",
   "description": "What is running, live, and ending what should not be.",
   "run": [
     "bin/peek-processes"

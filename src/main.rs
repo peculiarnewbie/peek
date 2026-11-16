@@ -154,10 +154,15 @@ enum Command {
     /// Start peek in the background at logon: copies it to a fixed place and
     /// registers a logon task and firewall rule (Windows, asks for
     /// administrator) or a systemd user service (Linux). Flags after it are
-    /// for that peek, like `peek install --no-token`; on Windows, `--service`
+    /// for that peek, like `peek install --no-token`, and replace those of
+    /// the last install; with none, it keeps them. On Windows, `--service`
     /// installs a service instead, which also works at the login screen.
     /// Run again after an update
     Install {
+        /// Drop the flags of the last install and start peek with none (on
+        /// Windows, from the logon task)
+        #[arg(long)]
+        defaults: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
         args: Vec<String>,
     },
@@ -398,20 +403,23 @@ fn user_config_dir() -> PathBuf {
     base.unwrap_or_else(|| PathBuf::from(".")).join("peek")
 }
 
+/// The access token, made on first start. Only its owner may read it, like
+/// the pairing secrets beside it: whoever reads it can control this machine.
 fn load_token() -> std::io::Result<String> {
-    let path = config_dir().join("token");
-    if let Ok(existing) = fs::read_to_string(&path) {
-        let existing = existing.trim();
-        if !existing.is_empty() {
-            return Ok(existing.to_string());
+    let dir = config_dir();
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("token");
+    // Older peeks wrote it readable by every user.
+    #[cfg(unix)]
+    if let Ok(meta) = fs::metadata(&path) {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            if let Err(e) = fs::set_permissions(&path, fs::Permissions::from_mode(0o600)) {
+                eprintln!("warning: {} is readable by other users, and cannot be changed: {e}", path.display());
+            }
         }
     }
-    let mut bytes = [0u8; 24];
-    getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
-    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    fs::create_dir_all(config_dir())?;
-    fs::write(&path, format!("{token}\n"))?;
-    Ok(token)
+    pairing::read_or_create(&path, || pairing::random_hex(24))
 }
 
 /// Re-run this executable hidden and return, for use from a logon task.
@@ -595,13 +603,12 @@ fn ensure_serve(args: &Args, tailscale: &str, host: &str, want: Option<u16>) -> 
 /// `peek pair`. Returns true when no peek is running here yet, so this
 /// process should start the host and show the code itself.
 fn pair(args: &Args, serve_port: Option<u16>) -> Result<bool, String> {
-    match pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
-        Some((tailscale, host)) => ensure_serve(args, tailscale, &host, serve_port)?,
-        None => {
-            return Err("Tailscale is not running here, and the hosted client reaches machines through it. \
-                        Start Tailscale and try again."
-                .into())
-        }
+    // Without Tailscale the hosted client cannot reach this machine, but its
+    // own page can still pair a browser on the same network.
+    if let Some((tailscale, host)) = pairing::tailscale_cmd().zip(pairing::tailscale_name()) {
+        ensure_serve(args, tailscale, &host, serve_port)?;
+    } else if serve_port.is_some() {
+        return Err("--serve-port sets up Tailscale Serve, and Tailscale is not running here".into());
     }
     if !host_running(args) {
         if web_origin(&args.web)?.is_none() {
@@ -630,9 +637,20 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
     // The hosted client's link first, which can add more machines later; the
     // machine's own page works without it, and with `--web none`.
     let (web, own) = (offer["web"].as_str(), offer["own"].as_str());
-    let Some(link) = offer["link"].as_str().or(own) else {
-        return Err(format!("peek could not find {name}'s Tailscale name. Is Tailscale up?"));
+    let lan: Vec<&str> = offer["lan"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
+    let Some(link) = offer["link"].as_str().or(own).or(lan.first().copied()) else {
+        return Err(if offer["tailscale_only"].as_bool() == Some(true) {
+            format!("peek could not find {name}'s Tailscale name, and without a token (--no-token) it accepts \
+                     Tailscale only. Start Tailscale and try again.")
+        } else {
+            format!("peek could not find {name}'s Tailscale name, nor an address of it on a private network. \
+                     Start Tailscale, or join this machine to the network of the device to pair.")
+        });
     };
+    if own.is_none() {
+        println!("Tailscale is not running here, so this pairs a browser on this network with {name}'s own page.");
+        println!("The hosted client reaches machines through Tailscale: start it, then run `peek pair` again for that.\n");
+    }
     println!("Pair a browser with {name}:\n\n  {link}\n");
     if let Ok(qr) = qrcode::QrCode::new(link.as_bytes()) {
         let art = qr
@@ -643,6 +661,12 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
         println!("{art}\n");
     }
     println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
+    if own.is_none() && lan.len() > 1 {
+        println!("If it does not open, try another of {name}'s addresses:");
+        for other in &lan[1..] {
+            println!("  {other}");
+        }
+    }
     if let Some(web) = web.filter(|_| offer["link"].is_string()) {
         println!("Or on {web}, choose Add a machine: {} with code {code}.", offer["host"].as_str().unwrap_or(""));
         if let Some(own) = own {
@@ -715,7 +739,7 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             }
             _ => Err(format!("no paired browser has the id {id} (see `peek clients`)")),
         },
-        Command::Install { args: flags } => {
+        Command::Install { defaults, args: flags } => {
             // --bind and --port are global flags, so clap takes them even
             // after `install`; hand them on to the background peek too.
             let given = |name: &str| flags.iter().any(|f| f == name || f.starts_with(&format!("{name}=")));
@@ -732,8 +756,16 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             if add_port {
                 flags.extend(["--port".into(), args.port.to_string()]);
             }
+            if *defaults && !flags.is_empty() || flags.iter().any(|f| f == "--defaults") {
+                return Err("--defaults starts peek with no flags, so it takes no others".into());
+            }
+            // No flags keeps those of the last install: dropping one silently
+            // could be --view-only, which would give remote input back.
+            if flags.is_empty() && !defaults {
+                return install::install(None);
+            }
             install::check_service_args(&flags)?;
-            install::install(&flags)
+            install::install(Some(&flags))
         }
         Command::Uninstall => install::uninstall(),
         Command::Provider { action } => provider_command(action),
@@ -769,6 +801,7 @@ fn core_in_service() -> Arc<provider::Link> {
         plugins: plugins(&args),
         view_only: args.view_only,
         serve_target: pairing::serve_target(args.bind, args.port),
+        listen: SocketAddr::new(args.bind, args.port),
         next_id: AtomicU64::new(1),
         tickets: Default::default(),
     });
@@ -933,6 +966,7 @@ fn main() {
         token,
         web: web.clone(),
         serve_target: pairing::serve_target(args.bind, args.port),
+        listen: SocketAddr::new(args.bind, args.port),
         pairing,
         screen: server::Screen::Here(screen::start(args.view_only, !args.no_clipboard, args.verbose, args.fps)),
         plugins: plugins(&args),

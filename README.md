@@ -76,7 +76,9 @@ and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
 `peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
 It also prints a link to the machine's own page, which pairs a browser with that
 machine alone; that page asks for the code when opened without one.
-After updating the package, run `peek install` again; `peek uninstall` removes
+After updating the package, run `peek install` again: with no flags it keeps
+the flags of the last install (it prints them), flags after it replace them,
+and `peek install --defaults` starts peek with none. `peek uninstall` removes
 it.
 
 To try peek once without installing anything, with Tailscale running:
@@ -87,6 +89,8 @@ npx @peculiarnewbie/peek pair
 
 With no peek running yet, `peek pair` starts one in that terminal and prints
 a link and QR code to pair a browser; peek runs until you press Ctrl+C.
+Without Tailscale, the link is to the machine's own page at its address on
+this network, for a device on the same network.
 
 ## Run
 
@@ -240,7 +244,9 @@ Windows asks for administrator rights once. peek is copied to
 (private and Tailscale addresses only), and started elevated and hidden by a
 logon task, logging to `%APPDATA%\peek\peek.log`. Flags after `install` are
 for that peek: with `peek install --no-token` the firewall rule admits
-Tailscale addresses only. `peek uninstall` undoes all of it. To reach the
+Tailscale addresses only. Run again without flags, it keeps those of the last
+install, logon task or service; `--defaults` drops them. `peek uninstall`
+undoes all of it. To reach the
 login screen, the lock screen and UAC prompts as well, install it as a
 [service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts)
 instead.
@@ -252,7 +258,9 @@ From a source checkout, the same from an elevated PowerShell, running
 .\scripts\install-autostart.ps1
 ```
 
-`-Remove` undoes it, and flags for peek go in `-PeekArgs`.
+`-Remove` undoes it, and flags for peek go in `-PeekArgs` (`-PeekArgs ''` for
+none). Without `-PeekArgs` or `-Service` it keeps the flags and the kind of
+the install there now.
 
 ### Run as a Windows service: login screen, lock screen and UAC prompts
 
@@ -285,8 +293,9 @@ lock screen and UAC prompts show up and take input like anything else.
   `peek clients` and `peek logs` work for that user without administrator
   rights; anyone else needs an administrator terminal.
 - The token and paired browsers move over from `%APPDATA%\peek`, so
-  bookmarks and paired browsers keep working. `peek install` without
-  `--service` goes back to the logon task and takes them back.
+  bookmarks and paired browsers keep working. Plain `peek install` keeps
+  the service and its flags; flags without `--service`, or `--defaults`, go
+  back to the logon task and take them back.
 - `peek uninstall` removes the service; the settings folder stays.
 
 To reach the login screen over Tailscale, turn on **Run unattended** in
@@ -326,7 +335,8 @@ peek install
 
 This copies peek to `~/.local/share/peek/peek` and writes
 `~/.config/systemd/user/peek.service`; flags after `install` go on its
-`ExecStart` line, and `peek uninstall` removes both. From a source checkout,
+`ExecStart` line. Run again without flags, it keeps that line's flags;
+`--defaults` drops them. `peek uninstall` removes both. From a source checkout,
 by hand:
 
 ```

@@ -9,12 +9,14 @@ import { Settings } from './components/Settings';
 import { Stats } from './components/Stats';
 import { Toolbar } from './components/Toolbar';
 import { stage } from './screen';
-import { isTouch, sleeping } from './state';
+import { isTouch, live, sleeping } from './state';
 import { Show } from 'solid-js';
 
 export function App() {
   // Greyed-out screen behind the pause card.
   createEffect(sleeping, v => { document.body.classList.toggle('sleeping', v); });
+  // The last frame, dimmed while it is no longer live: what it shows may be gone.
+  createEffect(live, v => { document.body.classList.toggle('stale', !v); });
   // Touch layout: tap-to-open toolbar, drawn cursor, stats panel never folded.
   createEffect(isTouch, v => { document.body.classList.toggle('touch', v); });
   return (

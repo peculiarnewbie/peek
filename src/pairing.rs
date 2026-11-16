@@ -80,6 +80,8 @@ fn hash(token: &str) -> String {
 /// Write a file other users cannot read, replacing it in one step.
 fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
+    // The mode applies only to a file it creates, not to one left over.
+    let _ = fs::remove_file(&tmp);
     {
         let mut options = fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -92,7 +94,7 @@ fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
 }
 
 /// A file's trimmed contents, or `make()` written there first.
-fn read_or_create(path: &Path, make: impl FnOnce() -> std::io::Result<String>) -> std::io::Result<String> {
+pub(crate) fn read_or_create(path: &Path, make: impl FnOnce() -> std::io::Result<String>) -> std::io::Result<String> {
     if let Ok(existing) = fs::read_to_string(path) {
         let existing = existing.trim();
         if !existing.is_empty() {

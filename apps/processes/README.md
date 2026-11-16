@@ -11,6 +11,9 @@ mkdir -p bin && cp target/release/peek-processes bin/     (Windows: peek-process
 peek plugin add .
 ```
 
+Its manifest names it `my-processes`, since the built-in one has the name
+`processes` and a plugin cannot take a built-in's name.
+
 - **Nothing is read while nobody looks.** The page asks for updates while it
   is visible, once a second, and gets only what changed. The card on the
   machine list is empty unless a program is busy or memory is nearly full.

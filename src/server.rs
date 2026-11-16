@@ -55,6 +55,8 @@ pub struct Shared {
     /// What Tailscale Serve passes to this peek (`pairing::serve_target`),
     /// to find the HTTPS port it does so on.
     pub serve_target: String,
+    /// Where this peek listens, for the links to its own page on the LAN.
+    pub listen: SocketAddr,
     pub pairing: Pairing,
     pub screen: Screen,
     /// Every other provider, by name: vitals, power, added commands and
@@ -195,7 +197,18 @@ async fn ip_guard(
     } else {
         let why = if shared.token.is_some() { "not a private address" } else { "not over Tailscale" };
         crate::log!("rejected {ip}: {why}");
-        StatusCode::FORBIDDEN.into_response()
+        // One line for whoever opened it in a browser, rather than a blank page.
+        let page = if shared.token.is_some() {
+            "peek answers only devices on a private network or on Tailscale, and this one is on neither."
+        } else {
+            "This peek runs without a token (--no-token), so it answers only over Tailscale. \
+             Connect this device to the same tailnet and open the machine by its Tailscale name or 100.x address."
+        };
+        let html = format!(
+            "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\"><title>peek</title>\
+             <p style=\"font:16px system-ui,sans-serif;max-width:36em;margin:2em auto;padding:0 16px\">{page}</p>"
+        );
+        (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
     }
 }
 
@@ -783,6 +796,15 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         _ => None,
     };
     let own = host.as_deref().map(|host| pairing::own_link(host, &code));
+    // Its own page on this network, for when Tailscale is not up. Without a
+    // token only Tailscale gets in, so there is none.
+    let lan: Vec<String> = match shared.token {
+        Some(_) => lan_addresses(shared.listen.ip())
+            .into_iter()
+            .map(|ip| format!("http://{}/#code={}", SocketAddr::new(ip, shared.listen.port()), pairing::format_code(&code)))
+            .collect(),
+        None => Vec::new(),
+    };
     serde_json::json!({
         "code": pairing::format_code(&code),
         "expires": pairing::CODE_TTL.as_secs(),
@@ -791,7 +813,21 @@ pub fn pairing_offer(shared: &Shared) -> serde_json::Value {
         "web": shared.web,
         "link": link,
         "own": own,
+        "lan": lan,
+        "tailscale_only": shared.token.is_none(),
     })
+}
+
+/// This machine's addresses on private networks that a peek listening on
+/// `bind` answers on: not loopback, and not Tailscale's, which has a name.
+pub fn lan_addresses(bind: IpAddr) -> Vec<IpAddr> {
+    let lan = |ip: &IpAddr| ip.is_ipv4() && !ip.is_loopback() && !tailnet(*ip) && allowed(*ip);
+    if !bind.is_unspecified() {
+        return Some(bind).filter(lan).into_iter().collect();
+    }
+    let mut ips: Vec<IpAddr> = if_addrs::get_if_addrs().map(|a| a.iter().map(|a| a.ip()).filter(lan).collect()).unwrap_or_default();
+    ips.dedup();
+    ips
 }
 
 /// Requests from `peek` commands on this machine: they hold the secret in
