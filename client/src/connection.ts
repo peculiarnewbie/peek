@@ -87,6 +87,18 @@ export function send(o: object) {
   ws.send(text);
 }
 
+/** First byte of a binary message to the screen (screen.rs): an image pasted here, as PNG. */
+export const BIN_CLIPBOARD_PNG = 1;
+
+export function sendBinary(kind: number, body: Uint8Array) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const msg = new Uint8Array(1 + body.length);
+  msg[0] = kind;
+  msg.set(body, 1);
+  countOut(msg.length);
+  ws.send(msg);
+}
+
 /** Drop the connection (to switch machines), without reconnecting. */
 export function disconnect() {
   clearTimeout(retryTimer);

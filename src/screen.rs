@@ -15,7 +15,14 @@ use serde::Deserialize;
 
 use crate::engine::{self, Cmd, Out, Quality, View, ViewChange};
 use crate::platform::{self, Monitor, input};
-use crate::server::MAX_CLIPBOARD;
+use crate::server::{MAX_CLIPBOARD, MAX_CLIPBOARD_IMAGE};
+
+/// The first byte of a client's binary message says what it is.
+/// An image pasted on the client, as PNG, for the host's clipboard.
+const BIN_CLIPBOARD_PNG: u8 = 1;
+/// How many times the watcher looks again at a clipboard change it could
+/// not read: another program may still have the clipboard open.
+const CLIP_READ_TRIES: u32 = 4;
 
 /// Where a session's output goes: a socket's queue, or a provider's pipe.
 pub type Sink = Arc<dyn Fn(Out) + Send + Sync>;
@@ -319,13 +326,51 @@ impl Session {
                 if !shared.clipboard || s.is_empty() || s.len() > MAX_CLIPBOARD {
                     return;
                 }
+                if !inject {
+                    return;
+                }
+                // Already there, perhaps with formatting that the text alone
+                // would lose (it was copied here and came back on a paste).
+                if platform::clipboard::get_text().is_some_and(|now| same_text(&now, &s)) {
+                    return;
+                }
                 if shared.verbose {
                     crate::log!("clipboard from client ({} chars)", s.chars().count());
                 }
-                if inject {
-                    // Record it first so the watcher does not send it straight back.
-                    *shared.clip_last.lock().unwrap() = s.clone();
-                    platform::clipboard::set_text(&s);
+                // Recorded first so the watcher does not send it straight
+                // back, and put back if the clipboard could not be set, so
+                // the next paste of the same text is not taken as done.
+                let before = std::mem::replace(&mut *shared.clip_last.lock().unwrap(), s.clone());
+                if !platform::clipboard::set_text(&s) {
+                    *shared.clip_last.lock().unwrap() = before;
+                    crate::log!("could not set the clipboard to the client's text (another program has it open?)");
+                }
+            }
+        }
+    }
+
+    /// One binary message from the client: its first byte says what it is.
+    pub fn binary(&mut self, shared: &Shared, bytes: &[u8]) {
+        let Some((&kind, body)) = bytes.split_first() else { return };
+        match kind {
+            BIN_CLIPBOARD_PNG => {
+                if !shared.clipboard || shared.view_only || body.is_empty() || body.len() > MAX_CLIPBOARD_IMAGE {
+                    return;
+                }
+                if shared.verbose {
+                    crate::log!("clipboard image from client ({} KB)", body.len().div_ceil(1024));
+                }
+                if platform::clipboard::set_png(body) {
+                    // The text last synchronised is no longer on the clipboard,
+                    // so copying it again here must reach the client.
+                    shared.clip_last.lock().unwrap().clear();
+                } else {
+                    crate::log!("could not put the client's image on the clipboard");
+                }
+            }
+            _ => {
+                if shared.verbose {
+                    crate::log!("unknown binary message {kind}");
                 }
             }
         }
@@ -337,6 +382,11 @@ impl Session {
         shared.peers.lock().unwrap().remove(&self.id);
         let _ = shared.engine.send(Cmd::Remove { id: self.id });
     }
+}
+
+/// The same text, whichever line endings a browser or the OS gave it.
+fn same_text(a: &str, b: &str) -> bool {
+    a == b || a.replace("\r\n", "\n") == b.replace("\r\n", "\n")
 }
 
 /// Map a position given as fractions of a monitor to a desktop pixel.
@@ -357,17 +407,30 @@ fn to_pixel(shared: &Shared, mon: usize, x: f64, y: f64) -> Option<(i32, i32)> {
 /// before opening the session.
 fn watch_clipboard(shared: Arc<Shared>) {
     let mut seen = platform::clipboard::sequence();
+    let mut tries = 0;
     loop {
         std::thread::sleep(Duration::from_millis(250));
         let seq = platform::clipboard::sequence();
         if seq == seen {
             continue;
         }
-        seen = seq;
         if shared.peers.lock().unwrap().is_empty() {
+            seen = seq;
             continue;
         }
-        let Some(text) = platform::clipboard::get_text() else { continue };
+        let Some(text) = platform::clipboard::get_text() else {
+            // No text, or the clipboard is busy: the program that just set
+            // it may still have it open. Look again before letting go of
+            // this change, or a copy is lost.
+            tries += 1;
+            if tries >= CLIP_READ_TRIES {
+                seen = seq;
+                tries = 0;
+            }
+            continue;
+        };
+        seen = seq;
+        tries = 0;
         if text.len() > MAX_CLIPBOARD {
             continue;
         }

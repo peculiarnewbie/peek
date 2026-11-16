@@ -433,7 +433,8 @@ impl Link {
         Self::send(&mut self.to.lock().unwrap(), TEXT, channel, text.as_bytes());
     }
 
-    /// The same, for binary: only a provider's own page sends any.
+    /// The same, for binary: a provider's own page, or an image pasted on
+    /// the screen.
     pub fn binary(&self, channel: u64, bytes: &[u8]) {
         Self::send(&mut self.to.lock().unwrap(), BINARY, channel, bytes);
     }
@@ -576,6 +577,11 @@ pub fn run_screen(shared: Arc<screen::Shared>, input: File, core: Arc<ToCore>) {
                     if let Some(query) = session.changed() {
                         core.send(STATE, channel, &serde_json::to_vec(query).unwrap_or_default());
                     }
+                }
+            }
+            BINARY => {
+                if let Some(session) = sessions.get_mut(&channel) {
+                    session.binary(&shared, &payload);
                 }
             }
             CLOSE => {

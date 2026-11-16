@@ -1,6 +1,7 @@
-//! Clipboard text through wlr-data-control, which lets a program without a
-//! window read and set the clipboard. A thread of its own keeps up with
-//! selection changes and serves the text we set.
+//! The clipboard through wlr-data-control, which lets a program without a
+//! window read and set it: text both ways, and images pasted on a client.
+//! A thread of its own keeps up with selection changes and serves what we
+//! set.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
@@ -119,9 +120,19 @@ pub fn get_text() -> Option<String> {
 }
 
 pub fn set_text(text: &str) -> bool {
+    offer(text.as_bytes(), TEXT_TYPES)
+}
+
+/// An image, as PNG.
+pub fn set_png(png: &[u8]) -> bool {
+    offer(png, &["image/png"])
+}
+
+/// Make these bytes the selection, offered as these types.
+fn offer(bytes: &[u8], mimes: &[&str]) -> bool {
     let Some(s) = shared() else { return false };
-    let source = s.manager.create_data_source(&s.qh, Arc::new(text.to_string()));
-    for mime in TEXT_TYPES {
+    let source = s.manager.create_data_source(&s.qh, Arc::new(bytes.to_vec()));
+    for mime in mimes {
         source.offer(mime.to_string());
     }
     s.device.set_selection(Some(&source));
@@ -206,14 +217,14 @@ impl Dispatch<ZwlrDataControlOfferV1, Mimes> for State {
     }
 }
 
-impl Dispatch<ZwlrDataControlSourceV1, Arc<String>> for State {
-    fn event(_: &mut Self, source: &ZwlrDataControlSourceV1, event: zwlr_data_control_source_v1::Event, text: &Arc<String>, _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<ZwlrDataControlSourceV1, Arc<Vec<u8>>> for State {
+    fn event(_: &mut Self, source: &ZwlrDataControlSourceV1, event: zwlr_data_control_source_v1::Event, bytes: &Arc<Vec<u8>>, _: &Connection, _: &QueueHandle<Self>) {
         match event {
             zwlr_data_control_source_v1::Event::Send { fd, .. } => {
                 // A slow reader must not hold up this thread.
-                let text = text.clone();
+                let bytes = bytes.clone();
                 std::thread::spawn(move || {
-                    let _ = std::fs::File::from(fd).write_all(text.as_bytes());
+                    let _ = std::fs::File::from(fd).write_all(&bytes);
                 });
             }
             zwlr_data_control_source_v1::Event::Cancelled => source.destroy(),

@@ -495,10 +495,13 @@ viability experiment.
   (so the compositor's own shortcuts work, as with a real keyboard), and
   text sent from a phone is typed through a virtual keyboard whose keymap
   holds exactly those characters; the seat's own keymap is put back after.
-- **Clipboard** (text only): the host pushes its clipboard to clients when it
+- **Clipboard**: the host pushes its clipboard text to clients when it
   changes. In the other direction, pressing Ctrl+V in the client sends the
-  local clipboard to the host before the paste. On Wayland this goes through
-  wlr-data-control.
+  local clipboard to the host before the paste: text, or an image (up to
+  32 MB as PNG; turn this off with Paste images in Settings). On Windows the
+  image goes on the clipboard as PNG and as a bitmap, so older programs can
+  paste it too. On Wayland this goes through wlr-data-control. Images copied
+  on the host are not sent to clients.
 
 ## Security
 
@@ -541,6 +544,8 @@ With `--no-token`:
 - On a plain-HTTP page, text copied on the host reaches the local clipboard
   only right after a key press or click in the client, which a copy on the
   remote normally is.
+- Safari raises no paste event outside a text field, so there Ctrl+V pastes
+  what the host already has.
 - No audio, no sending files to the host (Files only downloads from it), no
   phone keyboard.
 - Full-screen motion (video, games) uses a lot of bandwidth. This is built

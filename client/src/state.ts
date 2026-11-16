@@ -20,6 +20,8 @@ export interface Cfg {
   mon: number;
   /** Pause while the window is in the background. This browser only; never sent to the host. */
   autoSleep: boolean;
+  /** Ctrl+V with an image on this browser's clipboard puts it on the host's. This browser only. */
+  pasteImages: boolean;
 }
 
 const savedQuality = store.get('q');
@@ -33,6 +35,7 @@ export const [cfg, setCfg] = createStore<Cfg>({
   // Saved as 'pause' since it became the default: every settings change used to
   // save 'autosleep' too, as off, whether or not anyone had picked it.
   autoSleep: store.get('pause') !== '0',
+  pasteImages: store.get('pasteimg') !== '0',
 });
 
 export interface Monitor { w: number; h: number }

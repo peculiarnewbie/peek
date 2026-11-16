@@ -29,6 +29,7 @@ export function applyCfg(change: Partial<Cfg>) {
   store.set('q', next.quality); store.set('scale', next.scale); store.set('soft', next.soft ? 1 : 0);
   store.set('lossless', next.lossless ? 1 : 0);
   store.set('fps', next.fps); store.set('mon', next.mon); store.set('pause', next.autoSleep ? 1 : 0);
+  store.set('pasteimg', next.pasteImages ? 1 : 0);
   send({ t: 'cfg', q: next.quality, scale: next.scale, mon: next.mon, fps: next.fps, soft: next.soft, lossless: next.lossless });
 }
 

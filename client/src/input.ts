@@ -1,6 +1,6 @@
 // Mouse, wheel, keyboard and clipboard, from this browser to the host.
 import { release, setSleep, showSettings } from './actions';
-import { hooks, send } from './connection';
+import { BIN_CLIPBOARD_PNG, hooks, send, sendBinary } from './connection';
 import { cv, focusScreen } from './screen';
 import { active, autoSlept, cfg, clipboardOn, isTouch, onPage, settingsOpen, sleeping, viewOnly } from './state';
 import { clamp01 } from './util';
@@ -85,8 +85,9 @@ cv.addEventListener('wheel', e => {
 // Host -> client: the host tells us when its clipboard text changes.
 // Client -> host: on Ctrl+V we let the browser raise its own `paste` event,
 // which is the one way to read the local clipboard on a plain-HTTP page,
-// send that text to the host, and only then press V there.
-let lastClip: string | null = null;
+// send that text (or image) to the host, and only then press V there.
+// Every paste is sent: the host skips text its clipboard already holds, and
+// only it knows whether setting its clipboard worked.
 const clipbuf = document.createElement('textarea');
 clipbuf.id = 'clipbuf';
 clipbuf.tabIndex = -1;
@@ -94,7 +95,6 @@ clipbuf.setAttribute('aria-hidden', 'true');
 document.body.append(clipbuf);
 
 hooks.clip = text => {
-  lastClip = text;
   if (window.isSecureContext && navigator.clipboard) {
     navigator.clipboard.writeText(text).catch(() => copyViaSelection(text));
   } else if (!isTouch()) copyViaSelection(text);
@@ -110,8 +110,11 @@ function copyViaSelection(text: string) {
   focusScreen();
 }
 
-/** ms to wait for the browser's paste event. */
-const PASTE_WAIT = 150;
+/** ms to wait for the browser's paste event. Only a browser that never
+ *  raises one (Safari, outside a text field) waits this long. */
+const PASTE_WAIT = 300;
+/** As the host's limits (server.rs): anything larger is not sent. */
+const MAX_CLIP_TEXT = 1 << 20, MAX_CLIP_IMAGE = 32 << 20;
 let pasteTimer: ReturnType<typeof setTimeout> | null = null, swallowV = false;
 function pressV() { send({ t: 'k', c: 'KeyV', d: 1 }); send({ t: 'k', c: 'KeyV', d: 0 }); }
 /** Typing in this page's own text fields (the keyboard bar's, the machine
@@ -126,9 +129,42 @@ document.addEventListener('paste', e => {
   if (!pasteTimer) return;                       // not a paste we are waiting for
   clearTimeout(pasteTimer); pasteTimer = null;
   const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
-  if (text && text !== lastClip) { lastClip = text; send({ t: 'clip', s: text }); }
+  // Text wins when there is both: copied spreadsheet cells come with a
+  // picture of themselves.
+  const image = !text && cfg.pasteImages ? pastedImage(e.clipboardData) : null;
+  if (image) {
+    // Pressed even if the image could not be sent: the host pastes what it has.
+    void sendImage(image).finally(pressV);
+    return;
+  }
+  if (text && text.length <= MAX_CLIP_TEXT) send({ t: 'clip', s: text });
   pressV();
 });
+
+function pastedImage(data: DataTransfer | null): File | null {
+  for (const file of data?.files ?? []) if (file.type.startsWith('image/')) return file;
+  return null;
+}
+
+/** The host's clipboard takes PNG; anything else is redrawn as PNG here. */
+async function sendImage(file: File) {
+  let png: Blob | null = file;
+  if (file.type !== 'image/png') {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width; canvas.height = bitmap.height;
+      canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      png = await new Promise<Blob | null>(done => canvas.toBlob(done, 'image/png'));
+    } catch { png = null; }
+  }
+  if (!png || png.size > MAX_CLIP_IMAGE) {
+    console.warn(png ? `pasted image too large (${png.size} bytes)` : 'pasted image could not be read');
+    return;
+  }
+  sendBinary(BIN_CLIPBOARD_PNG, new Uint8Array(await png.arrayBuffer()));
+}
 
 // ---- keyboard ----
 // The Windows key only goes to the host in fullscreen; otherwise the client's

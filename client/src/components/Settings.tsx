@@ -2,7 +2,7 @@ import { SCREEN_PLUGIN } from '../plugin-mode';
 import { For, Show } from 'solid-js';
 import { applyCfg, showSettings } from '../actions';
 import { focusScreen } from '../screen';
-import { cfg, FPS_STEPS, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
+import { cfg, clipboardOn, FPS_STEPS, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
 import { hasPlugins, openPage, PLUGINS } from './Frame';
 import { PairDevice } from './PairDevice';
 
@@ -37,6 +37,9 @@ const CONTROLS: Control[] = [
     value: () => { const m = monitors()[cfg.mon]; return m ? `${m.w} × ${m.h}` : ''; },
     hidden: () => monitors().length < 2 },
   { key: 'autoSleep', label: 'Pause when unfocused', options: () => [[false, 'Off'], [true, 'On']], value: () => '' },
+  { key: 'pasteImages', label: 'Paste images', options: () => [[false, 'Off'], [true, 'On']],
+    value: () => '',
+    hidden: () => !clipboardOn() || viewOnly() },
 ];
 
 function Segmented<T>(props: { options: [T, string][]; selected: (v: T) => boolean; pick: (v: T) => void }) {
