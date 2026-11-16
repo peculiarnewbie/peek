@@ -20,6 +20,9 @@ export interface Cfg {
   mon: number;
   /** Pause while the window is in the background. This browser only; never sent to the host. */
   autoSleep: boolean;
+  /** Images through the clipboard: Ctrl+V with one here puts it on the host's
+   *  clipboard, and one copied there comes here (HTTPS only). This browser only. */
+  clipImages: boolean;
 }
 
 const savedQuality = store.get('q');
@@ -33,7 +36,15 @@ export const [cfg, setCfg] = createStore<Cfg>({
   // Saved as 'pause' since it became the default: every settings change used to
   // save 'autosleep' too, as off, whether or not anyone had picked it.
   autoSleep: store.get('pause') !== '0',
+  clipImages: store.get('clipimg') !== '0',
 });
+
+/** The largest image sent either way, as PNG (MAX_CLIPBOARD_IMAGE in server.rs). */
+export const MAX_CLIP_IMAGE = 8 << 20;
+/** This page may put an image on the clipboard: only an HTTPS page may. */
+export const COPY_IMAGES = window.isSecureContext && typeof ClipboardItem !== 'undefined' && !!navigator.clipboard?.write;
+/** Whether the host should send images copied there. */
+export const wantImages = () => cfg.clipImages && COPY_IMAGES;
 
 export interface Monitor { w: number; h: number }
 

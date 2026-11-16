@@ -2,7 +2,7 @@
 import { flush } from 'solid-js';
 import { send } from './connection';
 import {
-  active, cfg, pinned, setAutoSlept, setCfg, setPinned, setSettingsOpen, setSleeping, setStatsMode,
+  active, cfg, COPY_IMAGES, pinned, setAutoSlept, setCfg, setPinned, setSettingsOpen, setSleeping, setStatsMode,
   setStatsPinned, setTouchMode, sleeping, statsPinned, touchMode, type Cfg, type StatsMode,
 } from './state';
 import { focusScreen } from './screen';
@@ -29,7 +29,9 @@ export function applyCfg(change: Partial<Cfg>) {
   store.set('q', next.quality); store.set('scale', next.scale); store.set('soft', next.soft ? 1 : 0);
   store.set('lossless', next.lossless ? 1 : 0);
   store.set('fps', next.fps); store.set('mon', next.mon); store.set('pause', next.autoSleep ? 1 : 0);
+  store.set('clipimg', next.clipImages ? 1 : 0);
   send({ t: 'cfg', q: next.quality, scale: next.scale, mon: next.mon, fps: next.fps, soft: next.soft, lossless: next.lossless });
+  if ('clipImages' in change) send({ t: 'clipimg', on: next.clipImages && COPY_IMAGES });
 }
 
 export function showSettings(open: boolean) {
