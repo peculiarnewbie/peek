@@ -28,7 +28,7 @@ export function App() {
       <Show when={!SCREEN_PLUGIN}><Frame /><ProviderPage /></Show>
       <Toolbar />
       <Settings />
-      <Show when={HOSTED}><Devices /></Show>
+      {HOSTED && <Devices />}
       <BlockedNote />
       <Keyboard />
       <Show when={!HOSTED && !SCREEN_PLUGIN}><PairPrompt /></Show>

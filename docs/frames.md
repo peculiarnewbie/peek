@@ -102,6 +102,8 @@ Peek can't hold a plugin to what it says it does; the page says so.
 
 ### The client
 
+A paired browser can send the Plugins page's requests without the page: `POST /api/plugins` with `{ "token": …, "t": "list" }`, or `on`, `inspect`, `install`, `update`, and so on, answered as on the page's socket and under the same rules above. The hosted client uses it to show every machine's plugins side by side and to turn them on and off there.
+
 A page can tell the client the machine's providers changed (`postMessage({t:"changed"})`). The client listens only to the machine's own origin, and re-reads the providers. That's how a plugin's tab appears as soon as it's installed.
 
 ## Why the sandbox can be loose
