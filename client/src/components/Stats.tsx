@@ -100,7 +100,7 @@ export function Stats() {
   const scale = () => niceScale(peak());
   const details = () => {
     const s = shown();
-    const state = !live() ? 'offline' : sleeping() ? 'asleep' : document.hidden ? 'tab hidden' : 'live';
+    const state = !live() ? 'offline' : sleeping() ? 'paused' : document.hidden ? 'tab hidden' : 'live';
     return [
       ['Frames', s.fps ? `${s.fps}/s, ${s.rects.toFixed(1)} rectangles each` : 'none, screen unchanged'],
       ['Last frame', S.lastSize ? `${bytes(S.lastSize)}, ${S.lastKind}` : '–'],

@@ -1,0 +1,25 @@
+# peek
+
+> A remote desktop for your own machines that connects instantly, over Tailscale or a local network. Each machine runs a small host (Windows, or Linux under a wlroots Wayland compositor) that stays idle until you look; any browser is the client.
+
+## Docs
+
+- [Docs](https://peek.peculiarnewbie.com/docs/): setting up a machine, pairing a browser, using it, apps and plugins, security and troubleshooting, on one page.
+- [How it works](https://peek.peculiarnewbie.com/docs/#how): what runs where, and what stays in your browser.
+- [Numbers](https://peek.peculiarnewbie.com/docs/#numbers): how long the first frame takes to arrive, measured.
+- [Set up a machine](https://peek.peculiarnewbie.com/docs/#setup): Tailscale, installing peek, and starting it at logon.
+- [Pair a browser](https://peek.peculiarnewbie.com/docs/#pair): `peek pair` and its one-time code.
+- [Using it](https://peek.peculiarnewbie.com/docs/#use): the toolbar: pause, settings, stats.
+- [Apps and plugins](https://peek.peculiarnewbie.com/docs/#apps): Vitals, Power, Files and Processes, and installing plugins.
+- [On a phone or tablet](https://peek.peculiarnewbie.com/docs/#phone): trackpad and touch modes, and the keyboard bar.
+- [Paired browsers](https://peek.peculiarnewbie.com/docs/#manage): listing and unpairing them.
+- [Security](https://peek.peculiarnewbie.com/docs/#security): who can connect, and with what.
+- [Troubleshooting](https://peek.peculiarnewbie.com/docs/#trouble): a machine that cannot be reached, seeing what peek is doing, and a browser no longer paired.
+
+## Changelog
+
+- [Changelog](https://peek.peculiarnewbie.com/changelog/): what changed in each version, and how to update.
+
+## Optional
+
+- [Source and README](https://github.com/peculiarnewbie/peek): the code, flags, provider and plugin contracts.

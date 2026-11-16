@@ -57,6 +57,8 @@ export function machine(): { base: string; token: string; name: string } | null 
   return t && { base: t.url.replace(/^ws/, 'http').replace(/\/ws$/, ''), token: t.token, name: t.name };
 }
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+/** On a message that will not go away by itself: try again now. */
+const RETRY = { label: 'Retry', run: () => { setMessage('Reconnecting…'); connect(); } };
 /** Failed attempts in a row, to say so once a machine stays away. */
 let failures = 0;
 
@@ -169,7 +171,7 @@ export function connect() {
         return;
       }
       if (HOSTED) {
-        setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`);
+        setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`, RETRY);
         return;
       }
       store.set('token', '');
@@ -180,7 +182,7 @@ export function connect() {
     if (e.code === CLOSE_BAD_ORIGIN) {
       setMessage(HOSTED
         ? `${t.name} does not accept this site. Start peek there with --web ${location.origin}.`
-        : 'The host refused this address. Open it by its IP address or Tailscale name.');
+        : 'The host refused this address. Open it by its IP address or Tailscale name.', RETRY);
       return;
     }
     if (e.code === CLOSE_OUTDATED) {
@@ -189,13 +191,18 @@ export function connect() {
       if (Date.now() - Number(sessionStorage.getItem('peek-reloaded') || 0) > 10000) {
         sessionStorage.setItem('peek-reloaded', String(Date.now()));
         location.reload();
-      } else setMessage(HOSTED
-        ? `${t.name} runs a different version of peek than this site. Update peek there.`
-        : 'This page does not match the host version. Reload it.');
+      } else if (HOSTED) {
+        // The machine serves a client of its own version, which takes this
+        // browser's paired token in the fragment like the host's own token.
+        const m = current();
+        setMessage(`${t.name} runs a different version of peek than this site. Update peek there, or open its own page meanwhile.`,
+          m && { label: `Open ${m.name}'s own page`, href: `https://${m.host}/#${m.token}` });
+      } else setMessage('This page does not match the host version. Reload it.', { label: 'Reload', run: () => location.reload() });
       return;
     }
     failures++;
-    setMessage(!HOSTED || failures <= 2 ? 'Reconnecting…'
+    setMessage(failures <= 2 ? 'Reconnecting…'
+      : !HOSTED ? `Cannot reach ${location.host}. Retrying… (Is peek running there, and this device on its network?)`
       : localAccess() === 'denied' ? BLOCKED_HELP
       : `Cannot reach ${t.name}. Retrying… (Is Tailscale connected on this device?)`);
     retryTimer = setTimeout(connect, retry);

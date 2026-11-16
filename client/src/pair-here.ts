@@ -9,6 +9,21 @@ import { store } from './util';
 /** Why this browser has to pair: it has no token, or its token stopped working. */
 export const [pairing, setPairing] = createSignal<'' | 'needed' | 'wrong'>('');
 
+/** What to call this machine when asking for a code: the name it gives,
+ *  or else its address. */
+export const [hostName, setHostName] = createSignal(location.hostname);
+let askedName = false;
+/** Ask the machine its name, once, when the prompt first shows: it answers
+ *  that without a token. */
+export function learnHostName() {
+  if (askedName) return;
+  askedName = true;
+  fetch('/.well-known/peek', { cache: 'no-store' })
+    .then(r => r.json())
+    .then(a => { if (typeof a?.name === 'string' && a.name) setHostName(a.name); })
+    .catch(() => {});
+}
+
 /** Trade `code` for a token and start again with it. Returns why it failed, or ''. */
 export async function pairHere(code: string): Promise<string> {
   let r: Response;
@@ -20,11 +35,11 @@ export async function pairHere(code: string): Promise<string> {
       cache: 'no-store',
     });
   } catch {
-    return 'This machine did not answer. Try again.';
+    return `${hostName()} did not answer. Try again.`;
   }
-  if (r.status === 403) return 'That code is wrong, used or expired. Run `peek pair` on this machine for a new one.';
+  if (r.status === 403) return `That code is wrong, used or expired. Run \`peek pair\` on ${hostName()} for a new one.`;
   if (r.status === 429) return 'Too many wrong codes. Wait a minute and try again.';
-  if (!r.ok) return `This machine refused to pair (HTTP ${r.status}).`;
+  if (!r.ok) return `${hostName()} refused to pair (HTTP ${r.status}).`;
   const { token } = await r.json();
   store.set('token', token);
   location.reload();

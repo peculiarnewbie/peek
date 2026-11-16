@@ -117,15 +117,19 @@ function Grid() {
 // ---- one row per plugin ----
 
 function Chip(props: { m: Machine; item?: PluginItem }) {
-  const state = () => away(props.m) ? 'away' : !props.m.plugins ? 'unknown' : !props.item ? 'absent' : props.item.on ? 'on' : 'off';
-  const words = () => ({ away: 'offline', unknown: 'not known', absent: 'not installed', off: 'off', on: '' })[state()];
+  // Offline, a machine still shows what it had when last seen, marked so.
+  const state = () => !props.m.plugins ? (away(props.m) ? 'away' : 'unknown') : !props.item ? 'absent' : props.item.on ? 'on' : 'off';
+  const asOf = () => away(props.m) && props.m.plugins ? ago(props.m.plugins.at) : null;
+  const words = () => ({ away: 'offline', unknown: 'not known', absent: 'not installed', off: 'off', on: asOf() ? 'on' : '' })[state()];
   return (
-    <button class={['pchip', { [state()]: true }]} tabindex={-1} title={`${props.m.name}'s Plugins page`}
+    <button class={['pchip', { [state()]: true, stale: !!asOf() }]} tabindex={-1}
+      title={asOf() ? `${props.m.name} is offline: this is as of ${asOf()}. Opens its Plugins page` : `${props.m.name}'s Plugins page`}
       onClick={() => openPlugins(props.m)}>
-      <Show when={state() === 'on'}><span class="mdot up" /></Show>
+      <Show when={state() === 'on' && !asOf()}><span class="mdot up" /></Show>
       {props.m.name}
       <Show when={words()}>{w => <span> · {w()}</span>}</Show>
       <Show when={props.item?.kind !== OWN && props.item?.version}>{v => <span> · {v()}</span>}</Show>
+      <Show when={asOf()}>{a => <span> · offline, as of {a()}</span>}</Show>
     </button>
   );
 }
@@ -135,8 +139,10 @@ function PluginRow(props: { c: Column }) {
   const known = () => machines().filter(m => m.plugins);
   const on = () => known().filter(m => itemOf(m, c.name)?.on);
   const everywhere = () => on().length === machines().length;
-  /** Machines where it is off and could be turned on. */
-  const off = () => known().filter(m => { const i = itemOf(m, c.name); return i && !i.on && offers(m, c).some(o => o.t === 'toggle'); });
+  /** Machines where it could be turned on, or off. */
+  const can = (on: boolean) => known().filter(m => itemOf(m, c.name)?.on === on && offers(m, c).some(o => o.t === 'toggle'));
+  const off = () => can(false);
+  const onHere = () => can(true);
   const fetches = () => known().flatMap(m => offers(m, c).filter(o => o.t !== 'toggle').map(o => ({ m, o })));
   return (
     <div class="panel prow">
@@ -153,7 +159,7 @@ function PluginRow(props: { c: Column }) {
           <For each={machines()}>{m => <Chip m={m} item={itemOf(m, c.name)} />}</For>
         </div>
       </Show>
-      <Show when={off().length || fetches().length}>
+      <Show when={off().length || onHere().length || fetches().length}>
         <div class="pacts">
           <For each={off()}>{m => (
             <button class="btn small" tabindex={-1} disabled={busy(m, c.name)} onClick={() => void turn(m, c.name, true)}>
@@ -161,6 +167,11 @@ function PluginRow(props: { c: Column }) {
             </button>
           )}</For>
           <For each={fetches()}>{f => <FetchButton m={f.m} c={c} offer={f.o} long />}</For>
+          <For each={onHere()}>{m => (
+            <button class="btn small alt" tabindex={-1} disabled={busy(m, c.name)} onClick={() => void turn(m, c.name, false)}>
+              {busy(m, c.name) ? 'Working…' : `Turn off ${m.name}`}
+            </button>
+          )}</For>
         </div>
       </Show>
     </div>

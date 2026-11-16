@@ -57,8 +57,19 @@ export const [blocked, setBlocked] = createSignal(false);
 
 // Connection.
 export const [live, setLive] = createSignal(false);
+/** A button on the status card: a link, or something to do. */
+export interface MessageAction { label: string; href?: string; run?: () => void }
+const [messageText, setMessageText] = createSignal('');
+const [messageAction, setMessageAction] = createSignal<MessageAction | null>(null);
 /** Centred status card; empty hides it. */
-export const [message, setMessage] = createSignal('');
+export const message = messageText;
+export { messageAction };
+/** Shows `text` on the status card, with a button if given; a new message
+ *  without one drops the old button. */
+export function setMessage(text: string, action: MessageAction | null = null) {
+  setMessageText(text);
+  setMessageAction(action);
+}
 
 // Sleep: the connection stays open but the host sends nothing.
 export const [sleeping, setSleeping] = createSignal(false);

@@ -13,10 +13,12 @@ peek plugin add .
 ```
 
 On Linux, copy `target/release/peek-files` to `bin/peek-files` instead,
-preserving executable permissions. Each package needs a binary for the host's
+preserving executable permissions. Its manifest names it `my-files`: peek has
+a `files` of its own built in (off by default), and a plugin cannot take a
+built-in's name. Each package needs a binary for the host's
 OS and architecture. No Node runtime is required.
 
-In Peek's Plugins page, set Files' shared folders and save. Open Files from
-the Pages section. It supports browsing and one-time downloads; it is read-only.
+In Peek's Plugins page, set my-files' shared folders and save. Open my-files
+from the Pages section. It supports browsing and one-time downloads; it is read-only.
 
 The manifest and protocol contract are in [plugin-release.md](../../../docs/plugin-release.md).
