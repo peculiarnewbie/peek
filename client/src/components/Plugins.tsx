@@ -4,7 +4,8 @@
 // Turning a plugin on or off, installing it where another machine has it,
 // and updating an older copy are done from here; anything else is on the
 // machine's own Plugins page, which a machine's name opens.
-import { createMemo, For, onMount, Show, type JSX } from 'solid-js';
+import { createMemo, For, onSettled, Show } from 'solid-js';
+import type { JSX } from '@solidjs/web';
 import { machines, navigate, pagePath, reach, type Machine } from '../hosted';
 import {
   ago, changing, columns, fetchTo, layout, offers, OWN, pluginError, pluginState, portable, refreshAllPlugins, setLayout,
@@ -27,8 +28,8 @@ function emptyWhy(m: Machine): string | null {
 
 export function Switch(props: { on: boolean; disabled?: boolean; busy?: boolean; stale?: boolean; title: string; onToggle: () => void }) {
   return (
-    <button class="psw" classList={{ on: props.on, stale: props.stale, busy: props.busy }} role="switch"
-      aria-checked={props.on} title={props.title} disabled={props.disabled || props.busy} tabIndex={-1}
+    <button class={['psw', { on: props.on, stale: props.stale, busy: props.busy }]} role="switch"
+      aria-checked={props.on ? 'true' : 'false'} title={props.title} disabled={props.disabled || props.busy} tabindex={-1}
       onClick={e => { e.stopPropagation(); props.onToggle(); }} />
   );
 }
@@ -45,7 +46,7 @@ function FetchButton(props: { m: Machine; c: Column; offer: Offer; long?: boolea
   };
   return (
     <Show when={o()}>{f => (
-      <button class={props.long ? 'btn small alt' : 'pbtn'} tabIndex={-1} disabled={busy(props.m, props.c.name)}
+      <button class={props.long ? 'btn small alt' : 'pbtn'} tabindex={-1} disabled={busy(props.m, props.c.name)}
         title={`From ${f().source}`} onClick={e => { e.stopPropagation(); void fetchTo(props.m, props.c.name, f().source, f().t === 'update'); }}>
         {label()}
       </button>
@@ -70,15 +71,15 @@ function Grid() {
         </thead>
         <tbody>
           <For each={machines()}>{m => (
-            <tr classList={{ away: away(m) }}>
+            <tr class={{ away: away(m) }}>
               <td class="pm">
-                <button class="pmname" tabIndex={-1} title={`${m.name}'s Plugins page`} onClick={() => openPlugins(m)}>
-                  <span class="mdot" classList={{ up: reach[m.id] === 'up', down: away(m) }} />{m.name}
+                <button class="pmname" tabindex={-1} title={`${m.name}'s Plugins page`} onClick={() => openPlugins(m)}>
+                  <span class={['mdot', { up: reach[m.id] === 'up', down: away(m) }]} />{m.name}
                 </button>
                 <span class="pmnote">{emptyWhy(m) ?? (away(m) ? `Offline · as of ${ago(m.plugins!.at)}`
                   : m.plugins!.viewOnly ? 'View-only' : !m.plugins!.remoteInstall ? 'Installs only on the machine' : '')}</span>
               </td>
-              <Show when={!emptyWhy(m)} fallback={<td class="pnone" colSpan={columns().length}>—</td>}>
+              <Show when={!emptyWhy(m)} fallback={<td class="pnone" colspan={columns().length}>—</td>}>
                 <For each={columns()}>{c => {
                   const item = () => itemOf(m, c.name);
                   const can = () => offers(m, c);
@@ -96,7 +97,7 @@ function Grid() {
                             title={`${c.name} on ${m.name}: ${i().on ? 'on' : 'off'}`}
                             onToggle={() => void turn(m, c.name, !i().on)} />
                           <Show when={i().kind !== OWN && i().version}>
-                            <span class="pver" classList={{ old: !!fetchOffer() }}>{i().version}</span>
+                            <span class={['pver', { old: !!fetchOffer() }]}>{i().version}</span>
                           </Show>
                           <Show when={fetchOffer()}>{o => <FetchButton m={m} c={c} offer={o()} />}</Show>
                         </>}
@@ -119,7 +120,7 @@ function Chip(props: { m: Machine; item?: PluginItem }) {
   const state = () => away(props.m) ? 'away' : !props.m.plugins ? 'unknown' : !props.item ? 'absent' : props.item.on ? 'on' : 'off';
   const words = () => ({ away: 'offline', unknown: 'not known', absent: 'not installed', off: 'off', on: '' })[state()];
   return (
-    <button class="pchip" classList={{ [state()]: true }} tabIndex={-1} title={`${props.m.name}'s Plugins page`}
+    <button class={['pchip', { [state()]: true }]} tabindex={-1} title={`${props.m.name}'s Plugins page`}
       onClick={() => openPlugins(props.m)}>
       <Show when={state() === 'on'}><span class="mdot up" /></Show>
       {props.m.name}
@@ -155,7 +156,7 @@ function PluginRow(props: { c: Column }) {
       <Show when={off().length || fetches().length}>
         <div class="pacts">
           <For each={off()}>{m => (
-            <button class="btn small" tabIndex={-1} disabled={busy(m, c.name)} onClick={() => void turn(m, c.name, true)}>
+            <button class="btn small" tabindex={-1} disabled={busy(m, c.name)} onClick={() => void turn(m, c.name, true)}>
               {busy(m, c.name) ? 'Working…' : `Turn on ${m.name}`}
             </button>
           )}</For>
@@ -171,16 +172,16 @@ function ByPlugin() {
 }
 
 export function PluginsOverview() {
-  onMount(() => { setPluginError(''); refreshAllPlugins(true); });
+  onSettled(() => { setPluginError(''); refreshAllPlugins(true); });
   const unknown = createMemo(() => machines().filter(m => emptyWhy(m) && reach[m.id] !== 'down'));
   return (
     <section class="plugins">
       <div class="phead">
         <p class="hint">Plugins on every machine. A machine's name opens its own Plugins page, for settings and
           for installing something new.</p>
-        <div class="seg" role="tablist">
-          <button class="tb" tabIndex={-1} aria-pressed={layout() === 'plugin'} onClick={() => setLayout('plugin')}>By plugin</button>
-          <button class="tb" tabIndex={-1} aria-pressed={layout() === 'grid'} onClick={() => setLayout('grid')}>Grid</button>
+        <div class="dtabs pseg" role="tablist">
+          <button class="tb" tabindex={-1} aria-pressed={layout() === 'plugin' ? 'true' : 'false'} onClick={() => setLayout('plugin')}>By plugin</button>
+          <button class="tb" tabindex={-1} aria-pressed={layout() === 'grid' ? 'true' : 'false'} onClick={() => setLayout('grid')}>Grid</button>
         </div>
       </div>
       <Show when={pluginError()}><p class="err banner">{pluginError()}</p></Show>

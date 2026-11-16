@@ -1,5 +1,5 @@
 // Things the UI and input handling both do.
-import { batch } from 'solid-js';
+import { flush } from 'solid-js';
 import { send } from './connection';
 import {
   active, cfg, pinned, setAutoSlept, setCfg, setPinned, setSettingsOpen, setSleeping, setStatsMode,
@@ -15,18 +15,21 @@ export const release = { all: () => {} };
 // capturing and sending (and frees the capture after a few seconds).
 export function setSleep(v: boolean, auto = false) {
   if (sleeping() === v) return;
-  batch(() => { setSleeping(v); setAutoSlept(v && auto); });
+  setSleeping(v); setAutoSlept(v && auto);
+  flush();   // so active() below sees it
   if (v) release.all();
   send({ t: 'vis', v: active() });
   if (!v) focusScreen();
 }
 
 export function applyCfg(change: Partial<Cfg>) {
-  setCfg(change);
-  store.set('q', cfg.quality); store.set('scale', cfg.scale); store.set('soft', cfg.soft ? 1 : 0);
-  store.set('lossless', cfg.lossless ? 1 : 0);
-  store.set('fps', cfg.fps); store.set('mon', cfg.mon); store.set('pause', cfg.autoSleep ? 1 : 0);
-  send({ t: 'cfg', q: cfg.quality, scale: cfg.scale, mon: cfg.mon, fps: cfg.fps, soft: cfg.soft, lossless: cfg.lossless });
+  // (A store's new values are read only after the update lands, so from `next`.)
+  const next: Cfg = { ...cfg, ...change };
+  setCfg(s => { Object.assign(s, change); });
+  store.set('q', next.quality); store.set('scale', next.scale); store.set('soft', next.soft ? 1 : 0);
+  store.set('lossless', next.lossless ? 1 : 0);
+  store.set('fps', next.fps); store.set('mon', next.mon); store.set('pause', next.autoSleep ? 1 : 0);
+  send({ t: 'cfg', q: next.quality, scale: next.scale, mon: next.mon, fps: next.fps, soft: next.soft, lossless: next.lossless });
 }
 
 export function showSettings(open: boolean) {
@@ -40,19 +43,22 @@ export function setStats(mode: StatsMode) {
 }
 
 export function togglePin() {
-  setPinned(!pinned());
-  store.set('pin', pinned() ? 1 : 0);
+  const v = !pinned();
+  setPinned(v);
+  store.set('pin', v ? 1 : 0);
   focusScreen();
 }
 
 export function toggleTouchMode() {
-  setTouchMode(touchMode() === 'trackpad' ? 'direct' : 'trackpad');
-  store.set('touch', touchMode());
+  const v = touchMode() === 'trackpad' ? 'direct' : 'trackpad';
+  setTouchMode(v);
+  store.set('touch', v);
 }
 
 export function toggleStatsPin() {
-  setStatsPinned(!statsPinned());
-  store.set('stats-pin', statsPinned() ? 1 : 0);
+  const v = !statsPinned();
+  setStatsPinned(v);
+  store.set('stats-pin', v ? 1 : 0);
   focusScreen();
 }
 

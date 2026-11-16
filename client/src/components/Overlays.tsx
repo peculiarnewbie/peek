@@ -6,7 +6,7 @@ import { Icon } from './Icons';
 
 export function SleepCard() {
   return (
-    <div id="sleep" classList={{ show: sleeping() }} onClick={() => setSleep(false)}>
+    <div id="sleep" class={{ show: sleeping() }} onClick={() => setSleep(false)}>
       <div class="card panel">
         <Icon name="moon" />
         <div class="t">Paused</div>
@@ -21,7 +21,7 @@ export function SleepCard() {
 /** Connection status, centred over the screen. */
 export function Message() {
   return (
-    <div id="msg" classList={{ show: !!message() }}>
+    <div id="msg" class={{ show: !!message() }}>
       <div class="card panel"><div class="s">{message()}</div></div>
     </div>
   );
@@ -63,7 +63,7 @@ export function PairPrompt() {
 /** The host's foreground window is elevated, so our input does not reach it. */
 export function BlockedNote() {
   return (
-    <div id="note" class="panel" classList={{ show: blocked() }}>
+    <div id="note" class={['panel', { show: blocked() }]}>
       <Icon name="shield" />
       <span>The window in front on the host runs as administrator, so it ignores remote input.
         Start peek as administrator to control it.</span>

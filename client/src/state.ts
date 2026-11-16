@@ -1,7 +1,7 @@
 // State shared by the UI and the connection. Plain signals, so imperative
 // code (input, the socket) and components read and write the same values.
 import { createSignal } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore } from 'solid-js';
 import { store } from './util';
 
 /** JPEG quality while changing / once still, per setting (mirrors engine.rs). */

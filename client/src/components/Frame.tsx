@@ -6,10 +6,10 @@
 // its storage, where the tokens are. It gets a ticket for its provider, not
 // a token. Its box is always drawn with the provider's and the machine's
 // names, so nothing in it can pass for this client.
-import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Accessor } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, onSettled, Show, untrack, type Accessor } from 'solid-js';
 import { machine, send } from '../connection';
 import { about, current, home, learn, navigate, pagePath, screenPath, shownPage, HOSTED } from '../hosted';
-import { active, live, setOnPage } from '../state';
+import { live, setOnPage, sleeping } from '../state';
 import { frameProviders, own, refreshOwn } from '../views';
 import { Icon } from './Icons';
 
@@ -54,11 +54,8 @@ function useTicket(name: Accessor<string | null>) {
   const target = createMemo(() => {
     const p = name(), m = machine();
     return p && m ? { p, ...m } : null;
-  }, null, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) });
-  createEffect(() => {
-    const t = target();
-    const connected = live();
-    revision();
+  }, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) });
+  createEffect(() => ({ t: target(), connected: live(), revision: revision() }), ({ t, connected }) => {
     if (!t) { setSrc(null); setError(''); return; }
     // The host may have restarted and lost its in-memory tickets. Restate
     // authorization after the main socket reconnects, without a manual reload.
@@ -69,7 +66,6 @@ function useTicket(name: Accessor<string | null>) {
     if (identity !== previous) { previous = identity; failures = 0; setSrc(null); }
     const ctl = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
-    onCleanup(() => { ctl.abort(); clearTimeout(retry); });
     fetch(`${m.base}/api/frame/${encodeURIComponent(p)}`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, signal: ctl.signal,
       body: JSON.stringify({ token: m.token }), cache: 'no-store',
@@ -87,6 +83,7 @@ function useTicket(name: Accessor<string | null>) {
         // its page. Bound retries; an uninstalled page must not poll forever.
         if (e.retryable !== false && ++failures <= 10) retry = setTimeout(renew, 1000);
       });
+    return () => { ctl.abort(); clearTimeout(retry); };
   });
   return { src, error, renew };
 }
@@ -108,8 +105,10 @@ function PageFrame(props: { name: string; src: Opened; renew: () => void }) {
       if (m && m.id === id) about(m.host).then(a => { const now = current(); if (now && a.id === now.id) learn(now, a); }, () => {});
     }, wait);
   };
-  addEventListener('message', onMessage);
-  onCleanup(() => removeEventListener('message', onMessage));
+  onSettled(() => {
+    addEventListener('message', onMessage);
+    return () => removeEventListener('message', onMessage);
+  });
   function sendTheme() {
     const css = getComputedStyle(document.documentElement);
     const vars = Object.fromEntries(THEME.map(k => [k, css.getPropertyValue(k).trim()]));
@@ -117,7 +116,7 @@ function PageFrame(props: { name: string; src: Opened; renew: () => void }) {
     frame.contentWindow?.postMessage({ t: 'theme', vars }, props.src.origin);
   }
   return <iframe ref={frame} src={props.src.url} sandbox={SANDBOX} allow={ALLOW}
-    referrerPolicy="no-referrer" title={`${props.name} from ${props.src.machine}`} onLoad={sendTheme} />;
+    referrerpolicy="no-referrer" title={`${props.name} from ${props.src.machine}`} onLoad={sendTheme} />;
 }
 
 /** The panel over the screen. */
@@ -144,9 +143,10 @@ export function ProviderPage() {
   const name = () => HOSTED ? shownPage() : null;
   const { src, error, renew } = useTicket(name);
   // The machine stops sending the screen while it is not shown.
-  createEffect(() => {
-    setOnPage(!!name() || !!framed());
-    send({ t: 'vis', v: active() });
+  createEffect(() => !!name() || !!framed(), page => {
+    setOnPage(page);
+    // (active(), with the value just set: a read would still see the old one.)
+    send({ t: 'vis', v: !document.hidden && !untrack(sleeping) && !page });
   });
   return (
     <Show when={name() && current()}>
@@ -157,7 +157,7 @@ export function ProviderPage() {
             <button class="ptab" role="tab" onClick={() => navigate(screenPath(current()!))}><Icon name="monitor" />Screen</button>
             {/* The plugins page has a tab only while it is open: it is reached from Settings. */}
             <For each={name() === PLUGINS ? [...appPages(), PLUGINS] : appPages()}>{p =>
-              <button class="ptab" role="tab" aria-selected={p === name()} onClick={() => navigate(pagePath(current()!, p))}>{p}</button>
+              <button class="ptab" role="tab" aria-selected={p === name() ? 'true' : 'false'} onClick={() => navigate(pagePath(current()!, p))}>{p}</button>
             }</For>
           </div>
           <span id="ppage-from">{src() ? `drawn by ${name()} on ${src()!.machine}` : ''}</span>

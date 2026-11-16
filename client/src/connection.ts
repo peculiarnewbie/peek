@@ -194,7 +194,7 @@ type HostMsg =
 function onJson(m: HostMsg) {
   switch (m.t) {
     case 'hello':
-      setMonitors(m.monitors); setCfg('mon', m.mon); setViewOnly(m.viewOnly); setClipboardOn(m.clipboard);
+      setMonitors(m.monitors); setCfg(s => { s.mon = m.mon; }); setViewOnly(m.viewOnly); setClipboardOn(m.clipboard);
       break;
     case 'cur':
       cv.style.cursor = m.c;

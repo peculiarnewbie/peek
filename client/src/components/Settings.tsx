@@ -43,7 +43,7 @@ function Segmented<T>(props: { options: [T, string][]; selected: (v: T) => boole
   return (
     <div class="seg" role="radiogroup">
       <For each={props.options}>{([value, text]) =>
-        <button tabIndex={-1} role="radio" aria-checked={props.selected(value)}
+        <button tabindex={-1} role="radio" aria-checked={props.selected(value) ? 'true' : 'false'}
           onClick={() => { props.pick(value); focusScreen(); }}>{text}</button>
       }</For>
     </div>
@@ -63,7 +63,7 @@ export function Settings() {
   const preset = () => PRESETS.find(([, p]) =>
     (Object.keys(p) as (keyof Cfg)[]).every(k => p[k] === cfg[k]));
   return (
-    <div id="settings" class="panel" classList={{ show: settingsOpen() }} role="dialog" aria-label="Stream settings">
+    <div id="settings" class={['panel', { show: settingsOpen() }]} role="dialog" aria-label="Stream settings">
       <Group label="Preset" value={preset() ? '' : 'custom'}>
         <Segmented options={PRESETS.map(([name]) => [name, name])}
           selected={name => preset()?.[0] === name}
@@ -79,7 +79,7 @@ export function Settings() {
       }</For>
       <Show when={!SCREEN_PLUGIN && hasPlugins()}>
         <Group label="Plugins" value="">
-          <button class="btn wide alt" tabIndex={-1} onClick={() => { showSettings(false); openPage(PLUGINS); }}>
+          <button class="btn wide alt" tabindex={-1} onClick={() => { showSettings(false); openPage(PLUGINS); }}>
             Manage plugins
           </button>
         </Group>

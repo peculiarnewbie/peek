@@ -5,7 +5,7 @@
 // the same rules as on the page: a view-only machine only answers `list`,
 // and one with `peek plugin remote-install off` refuses installs and updates.
 import { createSignal } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore } from 'solid-js';
 import { about, learn, machines, reach, updateMachine, type Machine } from './hosted';
 import { store } from './util';
 
@@ -70,9 +70,12 @@ async function post(m: Machine, body: object, ms = 15000): Promise<Record<string
 /** Ask a machine for its plugins: if what it last said is a minute old, or
  *  `force`. */
 export async function refreshPlugins(m: Machine, force = false) {
-  if (pluginState[m.id] === 'loading') return;
+  // (A plain set: the store's 'loading' is read only after the update lands,
+  // and probeAll can ask twice in a row.)
+  if (asking.has(m.id)) return;
   if (!force && m.plugins && Date.now() - m.plugins.at < 60_000) return;
-  setPluginState(m.id, 'loading');
+  asking.add(m.id);
+  setPluginState(s => { s[m.id] = 'loading'; });
   try {
     const a = await post(m, { t: 'list' }, 8000);
     const items = (Array.isArray(a.items) ? a.items : [])
@@ -85,13 +88,17 @@ export async function refreshPlugins(m: Machine, force = false) {
       }));
     const fresh = machines().find(o => o.id === m.id);
     if (fresh) updateMachine(m.id, { plugins: { items, remoteInstall: !!a.remote_install, viewOnly: !!a.view_only, at: Date.now() } });
-    setPluginState(m.id, undefined);
+    setPluginState(s => { delete s[m.id]; });
   } catch (e) {
     // A machine that answers its address but not this is a peek from
     // before 0.3.1. (Without CORS headers, a 404 reads as a network error.)
-    setPluginState(m.id, reach[m.id] === 'up' && e instanceof TypeError ? 'old' : undefined);
+    const old = reach[m.id] === 'up' && e instanceof TypeError;
+    setPluginState(s => { if (old) s[m.id] = 'old'; else delete s[m.id]; });
+  } finally {
+    asking.delete(m.id);
   }
 }
+const asking = new Set<string>();
 
 export function refreshAllPlugins(force = false) {
   for (const m of machines()) if (reach[m.id] === 'up') void refreshPlugins(m, force);
@@ -106,14 +113,14 @@ async function after(m: Machine) {
 async function change(m: Machine, name: string, run: () => Promise<void>) {
   const key = `${m.id}/${name}`;
   if (changing[key]) return;
-  setChanging(key, true);
+  setChanging(s => { s[key] = true; });
   setPluginError('');
   try {
     await run();
   } catch (e) {
     setPluginError(`${m.name}: ${(e as Error).message}`);
   } finally {
-    setChanging(key, undefined);
+    setChanging(s => { delete s[key]; });
     await after(m);
   }
 }
