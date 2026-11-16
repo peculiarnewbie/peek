@@ -187,7 +187,7 @@ export function Devices() {
               over Tailscale.</p>
             <Commands lines={['npx @peculiarnewbie/peek pair']} />
             <dl class="figures">
-              <div><dt>125 ms</dt><dd>to a whole 1080p frame over Tailscale, from idle</dd></div>
+              <div><dt>140 ms</dt><dd>to a whole full-screen frame over Tailscale, from idle</dd></div>
               <div><dt>22 ms</dt><dd>the same on the machine itself</dd></div>
               <div><dt>0.02%</dt><dd>of a CPU core while nobody looks</dd></div>
               <div><dt>18 MB</dt><dd>of memory, in a 4.6 MB program</dd></div>

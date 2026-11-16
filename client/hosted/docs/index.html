@@ -94,17 +94,18 @@ computer's screen for a few seconds, where a five-second connect would be most o
 <p>What matters for a quick look is how long the screen takes to appear, so that is what peek is built around.
 All at medium quality.</p>
 <h3>Over Tailscale</h3>
-<p>From a Linux laptop to a Windows desktop (one 1920×1080 screen) on another network, connected directly with a
-ping of about 8 ms, peek 0.2.2 started with <code>--keep-gpu</code>:</p>
+<p>From a Linux laptop to a Windows desktop (one 1920×1200 screen) on another network, connected directly with a
+ping of 8 to 16 ms, peek 0.3.0 started with <code>--keep-gpu</code>. Two passes of 20 connections from idle, and one
+straight after the last connection:</p>
 <table>
   <tr><th></th><th>Median</th><th>Slowest 10%</th></tr>
-  <tr><td>Connect to an idle machine, until the whole first frame (331 KB) has arrived</td><td>125 ms</td><td>157 ms</td></tr>
-  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>121 ms</td><td>157 ms</td></tr>
-  <tr><td>Of that, capturing and encoding the full screen</td><td>11 ms</td><td>15 ms</td></tr>
-  <tr><td>Socket open (WebSocket handshake answered)</td><td>15 ms</td><td>18 ms</td></tr>
+  <tr><td>Connect to an idle machine, until the whole first frame (304 KB) has arrived</td><td>135–151 ms</td><td>191–215 ms</td></tr>
+  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>125 ms</td><td>154 ms</td></tr>
+  <tr><td>Of that, capturing and encoding the full screen</td><td>6.2 ms</td><td>7.8 ms</td></tr>
+  <tr><td>Socket open (TLS and WebSocket handshakes answered)</td><td>41–55 ms</td><td>50–62 ms</td></tr>
 </table>
 <p>Most of the rest is carrying the frame: the more detail on the screen, the bigger it is and the longer it
-takes. Without <code>--keep-gpu</code>, starting from idle added about 200 ms on this machine.</p>
+takes. Without <code>--keep-gpu</code>, starting from idle took 191–210 ms on this machine.</p>
 <h3>On the machine itself</h3>
 <p>A Linux laptop (niri, one 1920×1080 screen) connecting to its own peek (0.3, with Vitals on and Power off, as
 installed), so these are peek's own share of the wait:</p>

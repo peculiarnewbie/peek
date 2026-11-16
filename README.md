@@ -19,20 +19,21 @@ modern browser.
 The point is a short wait for the screen, so that is what is measured, with
 [`bench/first-frame.ts`](bench/first-frame.ts) at medium quality.
 
-**Over Tailscale**, from a Linux laptop to a Windows desktop (1920×1080) on
-another network, connected directly with a ping of about 8 ms, peek 0.2.2
-started with `--keep-gpu`:
+**Over Tailscale**, from a Linux laptop to a Windows desktop (1920×1200) on
+another network, connected directly with a ping of 8 to 16 ms, peek 0.3.0
+started with `--keep-gpu` (two passes of 20 connections from idle, one
+straight after):
 
 | | Median | p90 |
 |---|---|---|
-| Connect to an idle host, until the whole first frame (331 KB) has arrived | 125 ms | 157 ms |
-| The same within 5 s of the last connection (capture still set up) | 121 ms | 157 ms |
-| Of that, capturing and encoding the full screen | 11 ms | 15 ms |
-| Socket open | 15 ms | 18 ms |
+| Connect to an idle host, until the whole first frame (304 KB) has arrived | 135–151 ms | 191–215 ms |
+| The same within 5 s of the last connection (capture still set up) | 125 ms | 154 ms |
+| Of that, capturing and encoding the full screen | 6.2 ms | 7.8 ms |
+| Socket open (TLS and WebSocket handshakes) | 41–55 ms | 50–62 ms |
 
 Most of the rest is carrying the frame: the more detail on the screen, the
 bigger it is and the longer it takes. Without `--keep-gpu`, starting from
-idle added about 200 ms on this machine.
+idle took 191–210 ms on this machine.
 
 **On the machine itself**, a Linux laptop (niri, 1920×1080) connecting to its
 own peek (0.3, with Vitals on and Power off, as installed), which is peek's
