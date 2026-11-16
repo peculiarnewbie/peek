@@ -1,1 +1,1 @@
-{"name":"power","description":"Sleep, and waking other machines on the network.","run":["peek"]}
+{"name":"power","description":"Sleep, and waking other machines on the network.","run":["peek"],"on_by_default":false}

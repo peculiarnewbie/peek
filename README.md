@@ -19,33 +19,36 @@ modern browser.
 The point is a short wait for the screen, so that is what is measured, with
 [`bench/first-frame.ts`](bench/first-frame.ts) at medium quality.
 
-**Over Tailscale**, from a Linux laptop to a Windows desktop (1920×1080) on
-another network, connected directly with a ping of about 8 ms, peek started
-with `--keep-gpu`:
+**Over Tailscale**, from a Linux laptop to a Windows desktop (1920×1200) on
+another network, connected directly with a ping of 8 to 16 ms, peek 0.3.0
+started with `--keep-gpu` (two passes of 20 connections from idle, one
+straight after):
 
 | | Median | p90 |
 |---|---|---|
-| Connect to an idle host, until the whole first frame (331 KB) has arrived | 125 ms | 157 ms |
-| The same within 5 s of the last connection (capture still set up) | 121 ms | 157 ms |
-| Of that, capturing and encoding the full screen | 11 ms | 15 ms |
-| Socket open | 15 ms | 18 ms |
+| Connect to an idle host, until the whole first frame (304 KB) has arrived | 135–151 ms | 191–215 ms |
+| The same within 5 s of the last connection (capture still set up) | 125 ms | 154 ms |
+| Of that, capturing and encoding the full screen | 6.2 ms | 7.8 ms |
+| Socket open (TLS and WebSocket handshakes) | 41–55 ms | 50–62 ms |
 
 Most of the rest is carrying the frame: the more detail on the screen, the
 bigger it is and the longer it takes. Without `--keep-gpu`, starting from
-idle added about 200 ms on this machine.
+idle took 191–210 ms on this machine.
 
 **On the machine itself**, a Linux laptop (niri, 1920×1080) connecting to its
-own peek, which is peek's own share of the wait:
+own peek (0.3, with Vitals on and Power off, as installed), which is peek's
+own share of the wait:
 
 | | Median | p90 |
 |---|---|---|
-| Connect to an idle host, until the whole first frame (149 KB) has arrived | 24 ms | 26 ms |
-| The same within 5 s of the last connection (capture still set up) | 14 ms | 18 ms |
-| Of that, capturing and encoding the full screen | 13 ms | 14 ms |
-| Socket open | 1.3 ms | 1.6 ms |
+| Connect to an idle host, until the whole first frame (198 KB) has arrived | 22 ms | 24 ms |
+| The same within 5 s of the last connection (capture still set up) | 12 ms | 15 ms |
+| Of that, capturing and encoding the full screen | 8.1 ms | 11 ms |
+| Socket open | 1.3 ms | 1.8 ms |
 
-Idle, the host captures nothing: 10 ms of CPU over two minutes (0.01% of a
-core) and 17 MB of memory. The binary is 3.6 MB.
+Idle, the host captures nothing: peek and its Vitals process used 20 ms of
+CPU over two minutes (0.02% of a core) and held 18 MB of memory between them
+(proportional set size, after the runs above). The binary is 4.6 MB.
 
 The browser then decodes and draws the frame, a few milliseconds more.
 **Stats → First frame** in the client shows the whole wait as you see it.
@@ -441,7 +444,9 @@ with peek:
   wired card Windows lets wake the machine, Sleep is not offered. The
   first sleep is a test: the machine sleeps and is woken 15 seconds later.
   If no packet wakes it, it wakes itself after two minutes, where its
-  power settings allow wake timers, and the card says what to check.
+  power settings allow wake timers, and the card says what to check. Off
+  by default: turn it on under Settings → Manage plugins on the machine
+  to sleep and on the one that wakes it, which can be a Linux machine.
 - **Files.** Browse the folders you choose, and download from them. Off
   by default: turn it on and pick the folders under Settings → Manage
   plugins.

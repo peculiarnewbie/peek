@@ -72,6 +72,7 @@ computer's screen for a few seconds, where a five-second connect would be most o
   <li><a href="#setup">Set up a machine</a></li>
   <li><a href="#pair">Pair a browser</a></li>
   <li><a href="#use">Using it</a></li>
+  <li><a href="#apps">Apps and plugins</a></li>
   <li><a href="#phone">On a phone or tablet</a></li>
   <li><a href="#manage">Paired browsers</a></li>
   <li><a href="#security">Security</a></li>
@@ -93,29 +94,30 @@ computer's screen for a few seconds, where a five-second connect would be most o
 <p>What matters for a quick look is how long the screen takes to appear, so that is what peek is built around.
 All at medium quality.</p>
 <h3>Over Tailscale</h3>
-<p>From a Linux laptop to a Windows desktop (one 1920×1080 screen) on another network, connected directly with a
-ping of about 8 ms, peek started with <code>--keep-gpu</code>:</p>
+<p>From a Linux laptop to a Windows desktop (one 1920×1200 screen) on another network, connected directly with a
+ping of 8 to 16 ms, peek 0.3.0 started with <code>--keep-gpu</code>. Two passes of 20 connections from idle, and one
+straight after the last connection:</p>
 <table>
   <tr><th></th><th>Median</th><th>Slowest 10%</th></tr>
-  <tr><td>Connect to an idle machine, until the whole first frame (331 KB) has arrived</td><td>125 ms</td><td>157 ms</td></tr>
-  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>121 ms</td><td>157 ms</td></tr>
-  <tr><td>Of that, capturing and encoding the full screen</td><td>11 ms</td><td>15 ms</td></tr>
-  <tr><td>Socket open (WebSocket handshake answered)</td><td>15 ms</td><td>18 ms</td></tr>
+  <tr><td>Connect to an idle machine, until the whole first frame (304 KB) has arrived</td><td>135–151 ms</td><td>191–215 ms</td></tr>
+  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>125 ms</td><td>154 ms</td></tr>
+  <tr><td>Of that, capturing and encoding the full screen</td><td>6.2 ms</td><td>7.8 ms</td></tr>
+  <tr><td>Socket open (TLS and WebSocket handshakes answered)</td><td>41–55 ms</td><td>50–62 ms</td></tr>
 </table>
 <p>Most of the rest is carrying the frame: the more detail on the screen, the bigger it is and the longer it
-takes. Without <code>--keep-gpu</code>, starting from idle added about 200 ms on this machine.</p>
+takes. Without <code>--keep-gpu</code>, starting from idle took 191–210 ms on this machine.</p>
 <h3>On the machine itself</h3>
-<p>A Linux laptop (niri, one 1920×1080 screen) connecting to its own peek, so these are peek's own share of the
-wait:</p>
+<p>A Linux laptop (niri, one 1920×1080 screen) connecting to its own peek (0.3, with Vitals on and Power off, as
+installed), so these are peek's own share of the wait:</p>
 <table>
   <tr><th></th><th>Median</th><th>Slowest 10%</th></tr>
-  <tr><td>Connect to an idle machine, until the whole first frame (149 KB) has arrived</td><td>24 ms</td><td>26 ms</td></tr>
-  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>14 ms</td><td>18 ms</td></tr>
-  <tr><td>Of that, capturing and encoding the full screen</td><td>13 ms</td><td>14 ms</td></tr>
-  <tr><td>Socket open (WebSocket handshake answered)</td><td>1.3 ms</td><td>1.6 ms</td></tr>
+  <tr><td>Connect to an idle machine, until the whole first frame (198 KB) has arrived</td><td>22 ms</td><td>24 ms</td></tr>
+  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>12 ms</td><td>15 ms</td></tr>
+  <tr><td>Of that, capturing and encoding the full screen</td><td>8.1 ms</td><td>11 ms</td></tr>
+  <tr><td>Socket open (WebSocket handshake answered)</td><td>1.3 ms</td><td>1.8 ms</td></tr>
 </table>
-<p>While nobody is looking, peek captures nothing: over two idle minutes it used 10 ms of CPU time (0.01% of a
-core) and held 17 MB of memory. The program is 3.6 MB.</p>
+<p>While nobody is looking, peek captures nothing: over two idle minutes, peek and its Vitals process used 20 ms of
+CPU time (0.02% of a core) and held 18 MB of memory between them. The program is 4.6 MB.</p>
 <p>The browser then takes a few milliseconds to decode and draw the frame. To see your own total, open <strong>Stats</strong>: <strong>First frame</strong> is the time from connecting to the screen drawn
 in your browser. To repeat these measurements, run <code>bun bench/first-frame.ts</code> from the repository
 (its header says how).</p>
@@ -194,6 +196,34 @@ the top for the toolbar.</p>
   <li>Mouse, keyboard and clipboard go through as on the machine itself.</li>
 </ul>
 
+<h2 id="apps">Apps and plugins</h2>
+<p>A machine can offer more than its screen. Three apps come with peek; only Vitals is on from the start:</p>
+<ul>
+  <li><strong>Vitals</strong>: processor, memory and storage, as a line on the machine's card in
+    <a href="/">your list</a> and as figures in <strong>Stats</strong>.</li>
+  <li><strong>Power</strong> (Windows): <strong>Sleep</strong> on the machine's card, and <strong>Wake</strong> while
+    it is asleep. A sleeping machine runs nothing, so another paired machine on the same network sends the
+    Wake-on-LAN packet; Sleep is offered only while one is online and the machine has a wired card Windows lets
+    wake it. The first sleep is a test: the machine is woken 15 seconds later, and the card says what to check if it
+    was not. Off by default: turn it on under <strong>Settings → Manage plugins</strong> on the machine to sleep and
+    on the one that wakes it, which can be a Linux machine.</li>
+  <li><strong>Files</strong>: browse folders you choose on the machine and download from them. It is read-only and
+    off by default: turn it on and pick its folders under <strong>Settings → Manage plugins</strong>.</li>
+</ul>
+<p>An app with a page of its own, like Files, gets a button in the toolbar.</p>
+<p><strong>Plugins</strong> add apps of your own. <strong>Settings → Manage plugins</strong> installs one from a
+folder on the machine, a <code>.tgz</code>, an HTTPS git address or an npm name, and starts, stops, updates and
+removes it without restarting peek. The same can be done on the machine:</p>
+<pre><code>peek plugin add &lt;source&gt;     # a folder, an https git address, or an npm package
+peek plugin list             # everything beside the screen, and whether it is on
+peek plugin update &lt;name&gt;
+peek plugin remove &lt;name&gt;    # --purge also deletes what it kept</code></pre>
+<p>A plugin is a program that runs with peek's rights (SYSTEM under the Windows service), so install only ones you
+trust. To keep paired browsers from installing, removing or changing plugins, run
+<code>peek plugin remote-install off</code> on the machine; they can then still turn plugins on and off. To write
+one, see <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/plugin-release.md">the plugin contract</a>
+and <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/frames.md">the page protocol</a>.</p>
+
 <h2 id="phone">On a phone or tablet</h2>
 <p>Tap the dot for the toolbar. Its <strong>Trackpad / Touch</strong> button switches how a finger works:</p>
 <table>
@@ -222,6 +252,9 @@ peek unpair &lt;id&gt;    # unpair one; it can no longer connect</code></pre>
   <li>From this site, a machine accepts only browsers paired with it. Each browser has its own key; the machine
     keeps only a hash of it.</li>
   <li>Pairing codes work once, for five minutes, and guessing is rate-limited.</li>
+  <li>A plugin runs with peek's rights on the machine. Install only ones you trust;
+    <code>peek plugin remote-install off</code> keeps browsers from installing them (see
+    <a href="#apps">Apps and plugins</a>).</li>
   <li>Never expose peek's port with <code>tailscale funnel</code>: that would put it on the internet.</li>
 </ul>
 
