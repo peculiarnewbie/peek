@@ -205,6 +205,10 @@ struct Running {
     service: bool,
     /// Its arguments, to start the same way.
     args: Vec<OsString>,
+    /// The installed file, if this process runs it: only then can it
+    /// replace and restart itself. Found at start, since once the file is
+    /// replaced Linux names this process's program "<path> (deleted)".
+    own: Option<PathBuf>,
 }
 static RUNNING: OnceLock<Running> = OnceLock::new();
 /// The newest version on this build's channel, from the last check.
@@ -214,12 +218,15 @@ static BUSY: Mutex<()> = Mutex::new(());
 
 /// Record how this peek runs. Call once, in the process that listens.
 pub fn started(service: bool) {
-    let _ = RUNNING.set(Running { service, args: std::env::args_os().skip(1).collect() });
+    let _ = RUNNING.set(Running { service, args: std::env::args_os().skip(1).collect(), own: runs_install() });
 }
 
-/// The installed file, if this process runs it: only then can it replace
-/// and restart itself.
+/// The installed file, if this process runs it, as found at start.
 fn own_install() -> Option<PathBuf> {
+    RUNNING.get()?.own.clone()
+}
+
+fn runs_install() -> Option<PathBuf> {
     let target = target().ok()?;
     let exe = std::env::current_exe().ok()?;
     let same = |a: &Path, b: &Path| fs::canonicalize(a).ok().zip(fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b);
