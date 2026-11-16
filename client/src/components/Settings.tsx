@@ -2,7 +2,7 @@ import { SCREEN_PLUGIN } from '../plugin-mode';
 import { For, Show } from 'solid-js';
 import { applyCfg, showSettings } from '../actions';
 import { focusScreen } from '../screen';
-import { cfg, clipboardOn, FPS_STEPS, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
+import { cfg, clipboardOn, FPS_STEPS, MAX_CLIP_IMAGE, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
 import { hasPlugins, openPage, PLUGINS } from './Frame';
 import { PairDevice } from './PairDevice';
 
@@ -38,7 +38,7 @@ const CONTROLS: Control[] = [
     hidden: () => monitors().length < 2 },
   { key: 'autoSleep', label: 'Pause when unfocused', options: () => [[false, 'Off'], [true, 'On']], value: () => '' },
   { key: 'pasteImages', label: 'Paste images', options: () => [[false, 'Off'], [true, 'On']],
-    value: () => '',
+    value: () => `up to ${MAX_CLIP_IMAGE >> 20} MB`,
     hidden: () => !clipboardOn() || viewOnly() },
 ];
 

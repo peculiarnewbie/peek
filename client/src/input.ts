@@ -2,7 +2,9 @@
 import { release, setSleep, showSettings } from './actions';
 import { BIN_CLIPBOARD_PNG, hooks, send, sendBinary } from './connection';
 import { cv, focusScreen } from './screen';
-import { active, autoSlept, cfg, clipboardOn, isTouch, onPage, settingsOpen, sleeping, viewOnly } from './state';
+import {
+  active, autoSlept, cfg, clipboardOn, isTouch, MAX_CLIP_IMAGE, onPage, settingsOpen, sleeping, viewOnly,
+} from './state';
 import { clamp01 } from './util';
 import { current, HOSTED } from './hosted';
 
@@ -114,7 +116,7 @@ function copyViaSelection(text: string) {
  *  raises one (Safari, outside a text field) waits this long. */
 const PASTE_WAIT = 300;
 /** As the host's limits (server.rs): anything larger is not sent. */
-const MAX_CLIP_TEXT = 1 << 20, MAX_CLIP_IMAGE = 32 << 20;
+const MAX_CLIP_TEXT = 1 << 20;
 let pasteTimer: ReturnType<typeof setTimeout> | null = null, swallowV = false;
 function pressV() { send({ t: 'k', c: 'KeyV', d: 1 }); send({ t: 'k', c: 'KeyV', d: 0 }); }
 /** Typing in this page's own text fields (the keyboard bar's, the machine

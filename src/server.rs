@@ -40,8 +40,8 @@ const PROTOCOL: &str = "4";
 /// Clipboard text larger than this is not synchronised.
 pub const MAX_CLIPBOARD: usize = 1 << 20;
 /// A pasted image (PNG) larger than this is not synchronised. A 4K
-/// screenshot is a few megabytes.
-pub const MAX_CLIPBOARD_IMAGE: usize = 32 << 20;
+/// screenshot is a few megabytes. The client's Settings name this limit.
+pub const MAX_CLIPBOARD_IMAGE: usize = 8 << 20;
 const PING_EVERY: Duration = Duration::from_secs(5);
 /// A client silent for this long is gone; its held keys must be released.
 const DEAD_AFTER: Duration = Duration::from_secs(15);

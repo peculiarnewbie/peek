@@ -497,8 +497,8 @@ viability experiment.
   holds exactly those characters; the seat's own keymap is put back after.
 - **Clipboard**: the host pushes its clipboard text to clients when it
   changes. In the other direction, pressing Ctrl+V in the client sends the
-  local clipboard to the host before the paste: text, or an image (up to
-  32 MB as PNG; turn this off with Paste images in Settings). On Windows the
+  local clipboard to the host before the paste: text (up to 1 MB), or an
+  image (up to 8 MB as PNG; turn this off with Paste images in Settings). On Windows the
   image goes on the clipboard as PNG and as a bitmap, so older programs can
   paste it too. On Wayland this goes through wlr-data-control. Images copied
   on the host are not sent to clients.

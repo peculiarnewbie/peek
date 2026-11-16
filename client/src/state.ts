@@ -38,6 +38,9 @@ export const [cfg, setCfg] = createStore<Cfg>({
   pasteImages: store.get('pasteimg') !== '0',
 });
 
+/** The largest image a paste sends, as PNG (MAX_CLIPBOARD_IMAGE in server.rs). */
+export const MAX_CLIP_IMAGE = 8 << 20;
+
 export interface Monitor { w: number; h: number }
 
 // From the host.
