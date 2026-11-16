@@ -3,7 +3,6 @@ import { createEffect } from 'solid-js';
 import { BlockedNote, Message, PairPrompt, SleepCard } from './components/Overlays';
 import { IconSprite } from './components/Icons';
 import { Keyboard } from './components/Keyboard';
-import { Devices } from './components/Devices';
 import { Frame, ProviderPage } from './components/Frame';
 import { HOSTED } from './hosted';
 import { Settings } from './components/Settings';
@@ -15,9 +14,9 @@ import { Show } from 'solid-js';
 
 export function App() {
   // Greyed-out screen behind the pause card.
-  createEffect(() => document.body.classList.toggle('sleeping', sleeping()));
+  createEffect(sleeping, v => { document.body.classList.toggle('sleeping', v); });
   // Touch layout: tap-to-open toolbar, drawn cursor, stats panel never folded.
-  createEffect(() => document.body.classList.toggle('touch', isTouch()));
+  createEffect(isTouch, v => { document.body.classList.toggle('touch', v); });
   return (
     <>
       <IconSprite />
@@ -28,7 +27,6 @@ export function App() {
       <Show when={!SCREEN_PLUGIN}><Frame /><ProviderPage /></Show>
       <Toolbar />
       <Settings />
-      {HOSTED && <Devices />}
       <BlockedNote />
       <Keyboard />
       <Show when={!HOSTED && !SCREEN_PLUGIN}><PairPrompt /></Show>

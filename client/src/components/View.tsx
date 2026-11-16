@@ -1,6 +1,6 @@
 // Draws what a provider asked to be shown (views.ts), from stock pieces.
 // Nothing here knows what any provider is for.
-import { For, Index, Match, Show, Switch } from 'solid-js';
+import { For, Match, Show, Switch } from 'solid-js';
 import type { ButtonItem, Item } from '../views';
 
 /** A value with its unit set smaller, for the stat tiles. */
@@ -13,13 +13,13 @@ export function ItemView(props: { item: Item; disabled?: boolean; onPress: (item
   return (
     <Switch>
       <Match when={props.item.kind === 'text' && props.item}>{i => (
-        <p class="vtext" classList={{ quiet: i().tone === 'hint', wrong: i().tone === 'error', busy: !!i().busy }}>
+        <p class={['vtext', { quiet: i().tone === 'hint', wrong: i().tone === 'error', busy: !!i().busy }]}>
           {i().text}
         </p>
       )}</Match>
       <Match when={props.item.kind === 'button' && props.item}>{i => (
         <div class="vrow">
-          <button class="btn small" classList={{ alt: i().style !== 'primary' }} tabIndex={-1} disabled={props.disabled}
+          <button class={['btn small', { alt: i().style !== 'primary' }]} tabindex={-1} disabled={props.disabled}
             onClick={() => props.onPress(i())}>{i().label}</button>
           <Show when={i().note}><span class="vtext quiet">{i().note}</span></Show>
         </div>
@@ -45,5 +45,5 @@ export function ItemView(props: { item: Item; disabled?: boolean; onPress: (item
 }
 
 export function Items(props: { items: Item[]; disabled?: boolean; onPress: (item: ButtonItem) => void }) {
-  return <Index each={props.items}>{item => <ItemView item={item()} disabled={props.disabled} onPress={props.onPress} />}</Index>;
+  return <For each={props.items} keyed={false}>{item => <ItemView item={item()} disabled={props.disabled} onPress={props.onPress} />}</For>;
 }

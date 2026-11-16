@@ -1,7 +1,7 @@
 // Hosted client: pairing by pointing the camera at the QR code `peek pair`
 // shows. Only where the browser reads QR codes itself (Chrome on Android,
 // among others); elsewhere the camera app opens the link just as well.
-import { createSignal, onCleanup, onMount } from 'solid-js';
+import { createSignal, onSettled } from 'solid-js';
 import { parseLink } from '../hosted';
 
 interface Detector { detect(source: HTMLVideoElement): Promise<{ rawValue: string }[]> }
@@ -28,9 +28,12 @@ export function QrScan(props: { onLink: (host: string, code: string) => void; on
     clearTimeout(timer);
     stream?.getTracks().forEach(t => t.stop());
   };
-  onCleanup(stop);
+  onSettled(() => {
+    void start();
+    return stop;
+  });
 
-  onMount(async () => {
+  async function start() {
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
     } catch (e) {
@@ -63,14 +66,14 @@ export function QrScan(props: { onLink: (host: string, code: string) => void; on
       timer = setTimeout(look, 150);
     };
     look();
-  });
+  }
 
   return (
     <div id="qrscan" role="dialog" aria-label="Scan a pairing QR code">
       <video ref={video} muted playsinline />
       <div class="qrframe" />
       <p class="qrnote">{note()}</p>
-      <button class="btn alt" tabIndex={-1} onClick={() => { stop(); props.onClose(); }}>Cancel</button>
+      <button class="btn alt" tabindex={-1} onClick={() => { stop(); props.onClose(); }}>Cancel</button>
     </div>
   );
 }

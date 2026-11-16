@@ -1,42 +1,19 @@
-// Hosted client: the page of paired machines at `/`. Choosing one opens it
-// at `/screen/<name>`; the toolbar's back button (or the browser's) returns here.
-// Beside it, `/plugins` has every machine's plugins (Plugins.tsx).
-import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show, untrack } from 'solid-js';
-import { showSettings } from '../actions';
-import { connect, disconnect } from '../connection';
+// Hosted site: the page of paired machines at `/`. Choosing one opens it
+// at `/screen/<name>` (HostedScreen.tsx); the toolbar's back button (or the
+// browser's) returns here. Beside it, `/plugins` has every machine's plugins
+// (Plugins.tsx). Loaded only in the browser: the server renders Intro.tsx.
+import { createSignal, For, onSettled, Show } from 'solid-js';
 import {
-  about, BLOCKED_HELP, cleanHost, current, favorite, forget, learn, localAccess, machines, navigate, onPluginsPage,
-  openMachine, pagePath, pair, parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, type Machine,
+  BLOCKED_HELP, cleanHost, favorite, forget, localAccess, machines, navigate, openMachine, pagePath, pair,
+  parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, type Machine,
 } from '../hosted';
 import { changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
-import { focusScreen } from '../screen';
-import { setMessage } from '../state';
 import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
+import { Foot, Header, Intro } from './Intro';
 import { canScan, QrScan } from './QrScan';
 import { PluginsOverview } from './Plugins';
 import { ItemView } from './View';
-
-/** Shell commands, one per line, with one button that copies them all. */
-function Commands(props: { lines: string[] }) {
-  const [copied, setCopied] = createSignal(false);
-  let timer: number | undefined;
-  const copy = () => {
-    navigator.clipboard.writeText(props.lines.join('\n')).then(() => {
-      setCopied(true);
-      clearTimeout(timer);
-      timer = window.setTimeout(() => setCopied(false), 1200);
-    }, () => {});
-  };
-  return (
-    <div class="cmds">
-      <code>{props.lines.join('\n')}</code>
-      <button type="button" class="cmd-copy" onClick={copy} aria-label="Copy commands" title="Copy">
-        <Icon name={copied() ? 'check' : 'copy'} />
-      </button>
-    </div>
-  );
-}
 
 const [error, setError] = createSignal('');
 const [hostField, setHostField] = createSignal('');
@@ -72,14 +49,12 @@ export function pairFromUrl() {
   submit(link.host, link.code);
 }
 
-const GITHUB = 'https://github.com/peculiarnewbie/peek';
-
 const STATUS = { up: 'Online', down: 'Offline', checking: 'Checking…' } as const;
 
 function Card(props: { m: Machine }) {
   const state = () => reach[props.m.id] ?? 'checking';
   return (
-    <div class="dcard" classList={{ down: state() === 'down' }}>
+    <div class={['dcard', { down: state() === 'down' }]}>
       <a class="dopen" href={screenPath(props.m)} onClick={e => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;   // new tab still works
         e.preventDefault();
@@ -88,18 +63,18 @@ function Card(props: { m: Machine }) {
         <span class="dicon"><Icon name="monitor" /></span>
         <span class="dname">{props.m.name}</span>
         <span class="dhost">{props.m.host}</span>
-        <span class="dstate"><span class="mdot" classList={{ up: state() === 'up', down: state() === 'down' }} />
+        <span class="dstate"><span class={['mdot', { up: state() === 'up', down: state() === 'down' }]} />
           {STATUS[state()]}</span>
       </a>
       <CardViews m={props.m} />
       <CardPlugins m={props.m} />
-      <button class="dfav tb icon" classList={{ on: favorite() === props.m.id }} tabIndex={-1}
+      <button class={['dfav tb icon', { on: favorite() === props.m.id }]} tabindex={-1}
         title={favorite() === props.m.id ? 'Favorite: the app icon’s shortcut opens it (tap to unset)'
           : 'Make favorite: long-press the app icon to open it'}
         onClick={() => setFavorite(favorite() === props.m.id ? null : props.m.id)}>
         <Icon name="star" />
       </button>
-      <button class="dforget tb icon" tabIndex={-1} title={`Forget ${props.m.name}`}
+      <button class="dforget tb icon" tabindex={-1} title={`Forget ${props.m.name}`}
         onClick={() => { if (confirm(`Forget ${props.m.name}? Pairing it again needs a new code.`)) forget(props.m.id); }}>
         <Icon name="x" />
       </button>
@@ -113,9 +88,9 @@ function CardViews(props: { m: Machine }) {
   return (
     <Show when={shown().length || cardError[props.m.id]}>
       <div class="dviews">
-        <Index each={shown()}>{s => (
+        <For each={shown()} keyed={false}>{s => (
           <ItemView item={s().item} disabled={pressing[props.m.id]} onPress={() => press(props.m, s())} />
-        )}</Index>
+        )}</For>
         <Show when={cardError[props.m.id]}>{why => <p class="vtext wrong">{why()}</p>}</Show>
       </div>
     </Show>
@@ -141,7 +116,7 @@ function CardPlugins(props: { m: Machine }) {
     <Show when={items().length}>
       <div class="dplugins">
         <For each={items()}>{i => (
-          <button class="ptag" classList={{ off: !i.on, hl: i.name === picked() }} tabIndex={-1}
+          <button class={['ptag', { off: !i.on, hl: i.name === picked() }]} tabindex={-1}
             title={`${i.name}: ${i.on ? 'on' : 'off'}. Opens ${props.m.name}'s Plugins page`}
             onClick={() => navigate(pagePath(props.m, 'plugins'))}>{i.name}</button>
         )}</For>
@@ -150,11 +125,11 @@ function CardPlugins(props: { m: Machine }) {
         <div class="dfix">
           <span>{f().c.name} is {pickedItem() ? 'off' : 'not installed'}</span>
           <Show when={f().toggle}>
-            <button class="btn small alt" tabIndex={-1} disabled={working()}
+            <button class="btn small alt" tabindex={-1} disabled={working()}
               onClick={() => void turn(props.m, f().c.name, true)}>{working() ? 'Working…' : 'Turn on'}</button>
           </Show>
           <Show when={f().fetch}>{o => (
-            <button class="btn small alt" tabIndex={-1} disabled={working()} title={`From ${o().source}`}
+            <button class="btn small alt" tabindex={-1} disabled={working()} title={`From ${o().source}`}
               onClick={() => void fetchTo(props.m, f().c.name, o().source, false)}>{working() ? 'Working…' : 'Install'}</button>
           )}</Show>
         </div>
@@ -170,9 +145,9 @@ function PluginFilter() {
     <Show when={columns().length}>
       <div class="pfilter">
         <span>Plugins</span>
-        <button class="pill" classList={{ sel: !picked() }} tabIndex={-1} onClick={() => setPicked(null)}>All</button>
+        <button class={['pill', { sel: !picked() }]} tabindex={-1} onClick={() => setPicked(null)}>All</button>
         <For each={columns()}>{c => (
-          <button class="pill" classList={{ sel: picked() === c.name }} tabIndex={-1}
+          <button class={['pill', { sel: picked() === c.name }]} tabindex={-1}
             onClick={() => setPicked(picked() === c.name ? null : c.name)}>
             {c.name} <em>{machines().filter(m => m.plugins?.items.some(i => i.name === c.name && i.on)).length}/{known()}</em>
           </button>
@@ -182,90 +157,43 @@ function PluginFilter() {
   );
 }
 
-export function Devices() {
-  // The page decides the connection: a machine's page connects to it, the
-  // list (or a machine no longer paired) drops it.
-  // (A memo: the list of machines changes whenever one says something new
-  // of itself, and that must not reconnect the one being shown.)
-  const shownId = createMemo(() => current()?.id);
-  createEffect(on(shownId, id => {
-    disconnect();
-    if (id) {
-      setMessage(`Connecting to ${current()!.name}…`);
-      connect();
-      // Its providers as they are now: this page may be the first to ask.
-      const m = current()!;
-      about(m.host).then(a => { if (a.id === m.id) learn(m, a); }, () => {});
-      focusScreen();
-    } else {
-      showSettings(false);
-      setMessage('');
-      if (location.pathname !== '/' && location.pathname !== '/pair') navigate('/', true);
-    }
-  }));
-  // Keep the status current while the list shows.
-  createEffect(() => {
-    if (shownId()) return;
-    // Untracked: probing reads the list, and what it learns changes the
-    // list, which must not start it over.
-    untrack(probeAll);
+/** The list of machines, or every machine's plugins (`/plugins`). */
+export function MachinesPage(props: { plugins?: boolean }) {
+  // Keep the status current while the page shows.
+  onSettled(() => {
+    probeAll();
     const timer = setInterval(probeAll, 10000);
-    onCleanup(() => clearInterval(timer));
+    return () => clearInterval(timer);
   });
-  createEffect(() => document.body.classList.toggle('home', !current()));
-
   const onHostInput = (value: string) => {
     // A whole pairing link pasted here fills in both fields.
     const link = parseLink(value);
     if (link) { setHostField(link.host); setCodeField(link.code); } else setHostField(value);
   };
   const showForm = () => adding() || machines().length === 0;
+  const onPlugins = () => !!props.plugins && machines().length > 0;
   return (
-    <Show when={!current()}>
-      <main id="devices">
-        <header class="dhead">
-          <h1><img src="/icon.svg" alt="" width="28" height="28" />peek</h1>
-          <nav class="dnav">
-            <Show when={machines().length && !showForm()}>
-              <button class="tb" tabIndex={-1} title="Add a machine" onClick={() => { setError(''); setAdding(true); navigate('/'); }}>
-                <Icon name="plus" /><span>Add a machine</span>
-              </button>
-            </Show>
-            <a class="tb" href="/docs/">Docs</a>
-            <a class="tb" href="/changelog/">Changelog</a>
-            <a class="tb" href={GITHUB}>GitHub</a>
-          </nav>
-        </header>
-        <Show when={localAccess() === 'denied'}>
-          <p class="err banner">{BLOCKED_HELP}</p>
+    <main id="devices">
+      <Header>
+        <Show when={machines().length && !showForm()}>
+          <button class="tb" tabindex={-1} title="Add a machine" onClick={() => { setError(''); setAdding(true); navigate('/'); }}>
+            <Icon name="plus" /><span>Add a machine</span>
+          </button>
         </Show>
-        <Show when={machines().length}>
+      </Header>
+      <Show when={localAccess() === 'denied'}>
+        <p class="err banner">{BLOCKED_HELP}</p>
+      </Show>
+      <Show when={machines().length}>
+        <div class="dtabs-row">
           <div class="dtabs" role="tablist">
-            <button class="tb" tabIndex={-1} aria-pressed={!onPluginsPage()} onClick={() => navigate('/')}>Machines</button>
-            <button class="tb" tabIndex={-1} aria-pressed={onPluginsPage()} onClick={() => navigate(PLUGINS_PATH)}>Plugins</button>
+            <button class="tb" tabindex={-1} aria-pressed={!onPlugins() ? 'true' : 'false'} onClick={() => navigate('/')}>Machines</button>
+            <button class="tb" tabindex={-1} aria-pressed={onPlugins() ? 'true' : 'false'} onClick={() => navigate(PLUGINS_PATH)}>Plugins</button>
           </div>
-        </Show>
-        <Show when={!(onPluginsPage() && machines().length)} fallback={<PluginsOverview />}>
-        <Show when={machines().length} fallback={
-          <section class="intro">
-            <p class="hint lead">peek is a small, fast remote desktop, tailored for short sessions.</p>
-            <p class="hint lead">It also lets a machine show its vitals, sleep and wake, share folders, and run{' '}
-              <a href="/docs/#apps">plugins</a>: programs on the machine that show up in your browser through peek.</p>
-            <p class="hint lead">Run it on a computer (Windows, or Linux on Wayland) on your{' '}
-              <a href="https://tailscale.com">Tailscale</a> network and pair this browser with it once. Its screen
-              is then a click away, with mouse, keyboard and clipboard.</p>
-            <p class="hint lead">This site only serves the page: your browser connects straight to each machine
-              over Tailscale.</p>
-            <Commands lines={['npx @peculiarnewbie/peek pair']} />
-            <dl class="figures">
-              <div><dt>140 ms</dt><dd>to a whole full-screen frame over Tailscale, from idle</dd></div>
-              <div><dt>22 ms</dt><dd>the same on the machine itself</dd></div>
-              <div><dt>0.02%</dt><dd>of a CPU core while nobody looks</dd></div>
-              <div><dt>18 MB</dt><dd>of memory, in a 4.6 MB program</dd></div>
-            </dl>
-            <a class="figures-how" href="/docs/#numbers">How these were measured</a>
-          </section>
-        }>
+        </div>
+      </Show>
+      <Show when={!onPlugins()} fallback={<PluginsOverview />}>
+        <Show when={machines().length} fallback={<Intro />}>
           <PluginFilter />
           <div class="dgrid">
             <For each={machines()}>{m => <Card m={m} />}</For>
@@ -278,7 +206,7 @@ export function Devices() {
               <code>npx @peculiarnewbie/peek pair</code>). Open the link it shows on this device (or scan its QR
               code), or enter its name and code here.</p>
             <Show when={canScan()}>
-              <button class="btn alt scan" tabIndex={-1} onClick={() => { setError(''); setScanning(true); }}>
+              <button class="btn alt scan" tabindex={-1} onClick={() => { setError(''); setScanning(true); }}>
                 <Icon name="qr" /><span>Scan QR code</span>
               </button>
             </Show>
@@ -296,7 +224,7 @@ export function Devices() {
             </form>
             <Show when={error()}><p class="err">{error()}</p></Show>
             <Show when={machines().length}>
-              <button class="tb cancel" tabIndex={-1} onClick={() => { setAdding(false); setError(''); }}>Cancel</button>
+              <button class="tb cancel" tabindex={-1} onClick={() => { setAdding(false); setError(''); }}>Cancel</button>
             </Show>
           </section>
         </Show>
@@ -308,10 +236,8 @@ export function Devices() {
             submit(host, code);
           }} />
         </Show>
-        </Show>
-        <p class="hint small foot">The list of machines and their keys stay in this browser. Nothing about them is
-          stored on this site.</p>
-      </main>
-    </Show>
+      </Show>
+      <Foot />
+    </main>
   );
 }

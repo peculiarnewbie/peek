@@ -1,10 +1,10 @@
-//! Builds the browser client (client/, Solid + Vite) into one HTML file,
+//! Builds the browser client (client/, Solid + Vite, from client/machine/) into one HTML file,
 //! client/dist/index.html, which server.rs embeds. Needs Bun, or Node's npm.
 
 use std::path::Path;
 use std::process::Command;
 
-const INPUTS: &[&str] = &["src", "public", "index.html", "package.json", "bun.lock", "tsconfig.json", "vite.config.ts"];
+const INPUTS: &[&str] = &["src", "public", "machine", "package.json", "bun.lock", "tsconfig.json", "vite.config.ts"];
 
 fn main() {
     for input in INPUTS {

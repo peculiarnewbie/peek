@@ -4,9 +4,10 @@
 // name (Tailscale Serve, which `peek pair` sets up), with a token of this browser's
 // own. Nothing about the machines leaves this browser.
 import { createSignal } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore } from 'solid-js';
 import { refreshPlugins, type PluginList } from './plugins';
 import { dropCards, onAgain, refreshCards, type ProviderAbout } from './views';
+import { siteRouter } from './site-router';
 import { store } from './util';
 
 export const HOSTED = import.meta.env.MODE === 'hosted';
@@ -35,28 +36,29 @@ function load(): Machine[] {
     return Array.isArray(list) ? list.filter(m => m && m.id && m.host && m.token) : [];
   } catch { return []; }
 }
-const [machines, setMachinesRaw] = createSignal<Machine[]>(load());
+/** The list as last written. Changes are made to this, not to what
+ *  `machines()` reads, which lags a write until the update lands: two changes
+ *  in a row would otherwise each start from the list before either. */
+let list = load();
+const [machines, setMachinesRaw] = createSignal<Machine[]>(list);
 export { machines };
-function setMachines(list: Machine[]) {
-  setMachinesRaw(list);
-  store.set('machines', JSON.stringify(list));
+function setMachines(next: Machine[]) {
+  list = next;
+  setMachinesRaw(next);
+  store.set('machines', JSON.stringify(next));
 }
 
 // ---- pages ----
 // `/` lists the machines; `/screen/<name>` shows one (its Tailscale name's
-// first part, unique in a tailnet). Plain history entries, so Back returns to
-// the list. `/plugins` is every machine's plugins side by side. The site's own
-// pages (/docs/, /changelog/, /pair) sit beside /screen/, so no machine's name
-// can take one of their addresses.
+// first part, unique in a tailnet). `/plugins` is every machine's plugins side
+// by side. The site's own pages (/docs/, /changelog/, /pair) sit beside
+// /screen/, so no machine's name can take one of their addresses. The site's
+// router (site/) owns the address bar: `navigate` goes through it, and the
+// path here follows it.
 const SCREEN = '/screen/';
 export const PLUGINS_PATH = '/plugins';
 const slug = (m: Machine) => m.host.split(/[.:]/)[0].toLowerCase();
 export const screenPath = (m: Machine) => SCREEN + slug(m);
-// Until 0.2.0 a machine's page was `/<name>` (or `/<id>`); bookmarks of one
-// still lead to it.
-if (HOSTED && /^\/[^/]+$/.test(location.pathname) && !['/pair', PLUGINS_PATH].includes(location.pathname)) {
-  history.replaceState(null, '', SCREEN + location.pathname.slice(1) + location.search + location.hash);
-}
 // The favorite machine: what the app icon's "Favorite" shortcut (long-press
 // the icon) opens, at `/?favorite`. Without one, the shortcut opens the list.
 const [favorite, setFavoriteRaw] = createSignal(store.get('favorite'));
@@ -65,14 +67,17 @@ export function setFavorite(id: string | null) {
   setFavoriteRaw(id);
   if (id) store.set('favorite', id); else localStorage.removeItem('peek-favorite');
 }
-if (HOSTED && new URLSearchParams(location.search).has('favorite')) {
-  const m = machines().find(m => m.id === favorite());
-  history.replaceState(null, '', m ? screenPath(m) : '/');
+/** Where the Favorite shortcut leads. */
+export function favoritePath() {
+  const m = list.find(m => m.id === favorite());
+  return m ? screenPath(m) : '/';
 }
 const [path, setPath] = createSignal(location.pathname);
-addEventListener('popstate', () => setPath(location.pathname));
+siteRouter()?.subscribe('onBeforeLoad', e => setPath(e.toLocation.pathname));
 export function navigate(to: string, replace = false) {
   if (to === location.pathname) return;
+  const router = siteRouter();
+  if (router) { void router.navigate({ to, replace }); return; }
   history[replace ? 'replaceState' : 'pushState'](null, '', to);
   setPath(to);
 }
@@ -96,12 +101,12 @@ export const home = () => navigate('/');
 export const onPluginsPage = () => path() === PLUGINS_PATH;
 
 export function forget(id: string) {
-  setMachines(machines().filter(m => m.id !== id));
+  setMachines(list.filter(m => m.id !== id));
   if (favorite() === id) setFavorite(null);
 }
 
 export function updateMachine(id: string, patch: Partial<Machine>) {
-  setMachines(machines().map(m => m.id === id ? { ...m, ...patch } : m));
+  setMachines(list.map(m => m.id === id ? { ...m, ...patch } : m));
 }
 
 // ---- Chrome's Local Network Access ----
@@ -145,16 +150,16 @@ export async function about(host: string, ms = 5000): Promise<About> {
  *  the ones that do have to show on the cards. */
 export function probeAll() {
   const probes = machines().map(m => {
-    if (!reach[m.id]) setReach(m.id, 'checking');
+    if (!reach[m.id]) setReach(s => { s[m.id] = 'checking'; });
     return about(m.host, 4000)
       .then(a => {
         if (a.id !== m.id) throw new Error('another machine answers there');
-        setReach(m.id, 'up');
+        setReach(s => { s[m.id] = 'up'; });
         learn(m, a);
         void refreshPlugins(m);
       })
       .catch(() => {
-        setReach(m.id, 'down');
+        setReach(s => { s[m.id] = 'down'; });
         dropCards(m.id);
       });
   });
@@ -228,7 +233,7 @@ export async function pair(hostText: string, code: string): Promise<Machine> {
   if (!r.ok) throw new Error(`${info.name} refused to pair (HTTP ${r.status}).`);
   const res = await r.json();
   const machine: Machine = { id: res.id, name: res.name || info.name, host, token: res.token, added: Date.now() };
-  setMachines([...machines().filter(m => m.id !== machine.id), machine]);
-  setReach(machine.id, 'up');
+  setMachines([...list.filter(m => m.id !== machine.id), machine]);
+  setReach(s => { s[machine.id] = 'up'; });
   return machine;
 }

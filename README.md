@@ -421,9 +421,13 @@ On the machine's side:
 - Chrome may ask once whether the site may access devices on your local
   network: allow it, since that is how it reaches your machines.
 
-The site also serves short setup docs at `/docs/` (`client/hosted/docs/index.html`) and the changelog at
-`/changelog/` (`client/hosted/changelog/index.html`); `client/hosted/` also has the link preview banner.
-Machine pages are under `/screen/`, so they never take those paths. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
+The site is a [TanStack Start](https://tanstack.com/start) app in `client/site/`. Its home, the
+short setup docs at `/docs/` (`client/site/pages/docs.html`) and the changelog at `/changelog/`
+(`client/site/pages/changelog.html`) are rendered when it is built, so they read as plain pages to
+search engines and link previews; a machine's page, pairing and `/plugins` are drawn in the browser,
+and a small Worker answers those addresses with the page they load in. `client/hosted/` has the link
+preview banner, `robots.txt` and the sitemap. Machine pages are under `/screen/`, so they never take
+those paths. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
 deploy:hosted` (the script runs `cf` under Node, which it needs; Bun cannot
 load its config). To run your own copy, set your worker name and domain in
 `client/cloudflare.config.ts`, deploy, and start peek with `--web
@@ -566,21 +570,23 @@ client/src/input.ts       mouse, keyboard and clipboard to the host
 client/src/state.ts       settings and UI state, as Solid signals
 client/src/components/    toolbar, settings, stats panel, overlays, machine list, pairing
 client/src/hosted.ts      the hosted client: paired machines, pairing, reachability
+client/site/              the hosted site (TanStack Start): its routes, docs and changelog
+client/machine/index.html the page a machine serves itself, built into one file
 client/src/views.ts       what providers ask to be shown: asking them, records carried between machines
-client/cloudflare.config.ts  deploys the hosted client to Cloudflare (`cf deploy --mode hosted`)
+client/cloudflare.config.ts  deploys the hosted site to Cloudflare (`bun run deploy:hosted`)
 npm/                      the npm package: its manifest and the launcher that picks a binary
 scripts/npm-release.mjs   builds every platform, packs the npm package, stages it
 ```
 
-The client is TypeScript and [Solid](https://www.solidjs.com), bundled by
-Vite into one HTML file (`client/dist/index.html`) that is embedded in the
-binary. `cargo build` runs that bundling through `build.rs`, so it needs
+The client is TypeScript and [Solid](https://www.solidjs.com) 2, bundled by
+Vite from `client/machine/index.html` into one HTML file
+(`client/dist/index.html`) that is embedded in the binary. `cargo build` runs that bundling through `build.rs`, so it needs
 [Bun](https://bun.sh) (or Node with npm) installed.
 
 For work on the client alone, run a host, then `bun run dev` in `client/`:
 it serves the client with hot reload on http://localhost:5173 and forwards
 the socket to the host on port 9182. `bun run dev:hosted` serves the hosted
-client the same way, in Cloudflare's local runtime.
+site (`client/site/`) the same way, in Cloudflare's local runtime.
 
 `cargo test` runs the unit tests. `cargo test -- --ignored` adds the ones
 that need a real desktop session. On Linux, the test that clicks and types
