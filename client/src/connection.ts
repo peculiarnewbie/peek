@@ -2,7 +2,7 @@ import { SCREEN_PLUGIN } from './plugin-mode';
 // The WebSocket to the host: connecting, reconnecting, decoding frames.
 import {
   active, cfg, setBlocked, setCfg, setClipboardOn, setLive, setMessage, setMonitors, setViewOnly,
-  statsMode, viewOnly, type Monitor,
+  statsMode, viewOnly, wantImages, type Monitor,
 } from './state';
 import { countIn, countOut, first, ping, S, tick } from './stats';
 import { cv, ctx, resizeScreen } from './screen';
@@ -76,6 +76,8 @@ let chain = Promise.resolve();
 /** Set by the input code: the host's clipboard changed / its pointer shape changed. */
 export const hooks = {
   clip: (_text: string) => {},
+  /** An image copied on the host, as PNG. */
+  clipImage: (_png: Blob) => {},
   cursor: (_css: string) => {},
   paircode: (_offer: PairOffer) => {},
 };
@@ -89,6 +91,8 @@ export function send(o: object) {
 
 /** First byte of a binary message to the screen (screen.rs): an image pasted here, as PNG. */
 export const BIN_CLIPBOARD_PNG = 1;
+/** From it: an image copied on the host, as PNG. */
+const BIN_IN_CLIPBOARD_PNG = 2;
 
 export function sendBinary(kind: number, body: Uint8Array) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -135,6 +139,7 @@ export function connect() {
     // arrives just after a reload) could not be sent; restate where we are now.
     if (SCREEN_PLUGIN) send({ t: 'cfg', q: cfg.quality, scale: cfg.scale, mon: cfg.mon, fps: cfg.fps, soft: cfg.soft, lossless: cfg.lossless });
     send({ t: 'vis', v: active() });
+    send({ t: 'clipimg', on: wantImages() });
   };
   sock.onmessage = e => {
     if (typeof e.data === 'string') {
@@ -143,6 +148,11 @@ export function connect() {
     } else {
       const buf = e.data as ArrayBuffer;
       countIn(buf.byteLength);
+      // The first byte says what it is: a frame (1), or the host's clipboard image (2).
+      if (buf.byteLength && new Uint8Array(buf, 0, 1)[0] === BIN_IN_CLIPBOARD_PNG) {
+        hooks.clipImage(new Blob([new Uint8Array(buf, 1)], { type: 'image/png' }));
+        return;
+      }
       const arrived = performance.now();
       chain = chain.then(() => onFrame(sock, buf, arrived)).catch(err => console.error(err));
     }

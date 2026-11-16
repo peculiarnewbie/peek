@@ -17,9 +17,11 @@ use crate::engine::{self, Cmd, Out, Quality, View, ViewChange};
 use crate::platform::{self, Monitor, input};
 use crate::server::{MAX_CLIPBOARD, MAX_CLIPBOARD_IMAGE};
 
-/// The first byte of a client's binary message says what it is.
-/// An image pasted on the client, as PNG, for the host's clipboard.
+/// The first byte of a binary message says what it is. From a client: an
+/// image pasted there, as PNG, for the host's clipboard.
 const BIN_CLIPBOARD_PNG: u8 = 1;
+/// To a client: an image copied on the host, as PNG. (Frames are 1.)
+const BIN_OUT_CLIPBOARD_PNG: u8 = 2;
 /// How many times the watcher looks again at a clipboard change it could
 /// not read: another program may still have the clipboard open.
 const CLIP_READ_TRIES: u32 = 4;
@@ -38,6 +40,12 @@ pub struct Shared {
     /// The text most recently synchronised in either direction, so a change
     /// we caused ourselves is not echoed back.
     pub clip_last: Mutex<String>,
+    /// The same for images, as a hash of the PNG.
+    pub clip_last_image: Mutex<Option<u64>>,
+    /// The sessions sent images copied here: those that asked, while their
+    /// screen is showing. A browser can only take one into its clipboard
+    /// while it has focus, and each is megabytes.
+    pub images_to: Mutex<HashSet<u64>>,
 }
 
 /// Start the engine and the clipboard watcher. Both stay idle until a
@@ -52,6 +60,8 @@ pub fn start(view_only: bool, clipboard: bool, verbose: bool, fps: u32) -> Arc<S
         monitors: RwLock::new(Vec::new()),
         peers: Mutex::new(HashMap::new()),
         clip_last: Mutex::new(String::new()),
+        clip_last_image: Mutex::new(None),
+        images_to: Mutex::default(),
     });
     {
         let shared = shared.clone();
@@ -111,6 +121,10 @@ enum ClientMsg {
     Type { s: String },
     #[serde(rename = "clip")]
     Clipboard { s: String },
+    /// Whether to send this client images copied on the host. Off until it
+    /// says, as a client from before this does not know the message.
+    #[serde(rename = "clipimg")]
+    ClipboardImages { on: bool },
 }
 
 /// What one client is currently holding down, so it can be let go of.
@@ -180,10 +194,24 @@ pub fn open(shared: &Shared, id: u64, query: &HashMap<String, String>, sink: Sin
         visible: query.get("vis").is_none_or(|v| v != "0"),
     });
     shared.peers.lock().unwrap().insert(id, sink);
-    Session { id, mon, held: Held::default(), query: query.clone(), changed: false }
+    let session = Session { id, mon, held: Held::default(), query: query.clone(), changed: false };
+    session.want_images(shared);
+    session
 }
 
 impl Session {
+    /// Whether this session is sent images copied on the host, as its
+    /// query now says: asked for (`img`), and showing (`vis`).
+    fn want_images(&self, shared: &Shared) {
+        let on = self.query.get("img").is_some_and(|v| v == "1") && self.query.get("vis").is_none_or(|v| v != "0");
+        let mut to = shared.images_to.lock().unwrap();
+        if on {
+            to.insert(self.id);
+        } else {
+            to.remove(&self.id);
+        }
+    }
+
     /// The query to open this session again as it is now, if that has
     /// changed since this was last asked.
     pub fn changed(&mut self) -> Option<&HashMap<String, String>> {
@@ -216,7 +244,12 @@ impl Session {
             }
             ClientMsg::Visible { v } => {
                 self.remember("vis", flag(v));
+                self.want_images(shared);
                 let _ = shared.engine.send(Cmd::Visible { id, visible: v });
+            }
+            ClientMsg::ClipboardImages { on } => {
+                self.remember("img", flag(on));
+                self.want_images(shared);
             }
             ClientMsg::Configure { mon: m, q, scale: s, fps: f, soft, lossless } => {
                 self.mon = m.unwrap_or(self.mon);
@@ -341,7 +374,10 @@ impl Session {
                 // back, and put back if the clipboard could not be set, so
                 // the next paste of the same text is not taken as done.
                 let before = std::mem::replace(&mut *shared.clip_last.lock().unwrap(), s.clone());
-                if !platform::clipboard::set_text(&s) {
+                if platform::clipboard::set_text(&s) {
+                    // The image last synchronised is gone: copying it again here must be sent.
+                    *shared.clip_last_image.lock().unwrap() = None;
+                } else {
                     *shared.clip_last.lock().unwrap() = before;
                     crate::log!("could not set the clipboard to the client's text (another program has it open?)");
                 }
@@ -357,6 +393,13 @@ impl Session {
                 if !shared.clipboard || shared.view_only || body.is_empty() || body.len() > MAX_CLIPBOARD_IMAGE {
                     return;
                 }
+                // The image this host just sent, pasted back: it is still on
+                // the clipboard, with formats the PNG alone would lose.
+                let hash = hash(body);
+                let before = shared.clip_last_image.lock().unwrap().replace(hash);
+                if before == Some(hash) {
+                    return;
+                }
                 if shared.verbose {
                     crate::log!("clipboard image from client ({} KB)", body.len().div_ceil(1024));
                 }
@@ -365,6 +408,7 @@ impl Session {
                     // so copying it again here must reach the client.
                     shared.clip_last.lock().unwrap().clear();
                 } else {
+                    *shared.clip_last_image.lock().unwrap() = before;
                     crate::log!("could not put the client's image on the clipboard");
                 }
             }
@@ -380,8 +424,16 @@ impl Session {
     pub fn close(mut self, shared: &Shared) {
         self.held.release_all(!shared.view_only);
         shared.peers.lock().unwrap().remove(&self.id);
+        shared.images_to.lock().unwrap().remove(&self.id);
         let _ = shared.engine.send(Cmd::Remove { id: self.id });
     }
+}
+
+fn hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 /// The same text, whichever line endings a browser or the OS gave it.
@@ -418,37 +470,90 @@ fn watch_clipboard(shared: Arc<Shared>) {
             seen = seq;
             continue;
         }
-        let Some(text) = platform::clipboard::get_text() else {
-            // No text, or the clipboard is busy: the program that just set
-            // it may still have it open. Look again before letting go of
-            // this change, or a copy is lost.
+        // Text first: copied cells come with a picture of themselves. An
+        // image is only read (and a bitmap encoded) for someone who wants it.
+        let read = match platform::clipboard::get_text() {
+            Some(text) => Some(Clip::Text(text)),
+            None if !shared.images_to.lock().unwrap().is_empty() => platform::clipboard::get_png().map(Clip::Png),
+            None => None,
+        };
+        let Some(clip) = read else {
+            // Nothing we send, or the clipboard is busy: the program that
+            // just set it may still have it open. Look again before letting
+            // go of this change, or a copy is lost.
             tries += 1;
             if tries >= CLIP_READ_TRIES {
                 seen = seq;
                 tries = 0;
+                forget(&shared);
             }
             continue;
         };
         seen = seq;
         tries = 0;
-        if text.len() > MAX_CLIPBOARD {
-            continue;
-        }
-        {
-            let mut last = shared.clip_last.lock().unwrap();
-            if *last == text {
-                continue;
+        match clip {
+            Clip::Text(text) => {
+                if text.len() > MAX_CLIPBOARD {
+                    forget(&shared);
+                    continue;
+                }
+                {
+                    let mut last = shared.clip_last.lock().unwrap();
+                    if *last == text {
+                        continue;
+                    }
+                    last.clone_from(&text);
+                }
+                *shared.clip_last_image.lock().unwrap() = None;
+                if shared.verbose {
+                    crate::log!("clipboard to clients ({} chars)", text.chars().count());
+                }
+                let msg = serde_json::json!({ "t": "clip", "s": text }).to_string();
+                for sink in shared.peers.lock().unwrap().values() {
+                    sink(Out::Text(msg.clone()));
+                }
             }
-            last.clone_from(&text);
-        }
-        if shared.verbose {
-            crate::log!("clipboard to clients ({} chars)", text.chars().count());
-        }
-        let msg = serde_json::json!({ "t": "clip", "s": text }).to_string();
-        for sink in shared.peers.lock().unwrap().values() {
-            sink(Out::Text(msg.clone()));
+            Clip::Png(png) => {
+                if png.len() > MAX_CLIPBOARD_IMAGE {
+                    if shared.verbose {
+                        crate::log!("clipboard image too large to send ({} KB)", png.len().div_ceil(1024));
+                    }
+                    forget(&shared);
+                    continue;
+                }
+                let h = hash(&png);
+                if shared.clip_last_image.lock().unwrap().replace(h) == Some(h) {
+                    continue;
+                }
+                shared.clip_last.lock().unwrap().clear();
+                if shared.verbose {
+                    crate::log!("clipboard image to clients ({} KB)", png.len().div_ceil(1024));
+                }
+                let mut msg = Vec::with_capacity(1 + png.len());
+                msg.push(BIN_OUT_CLIPBOARD_PNG);
+                msg.extend_from_slice(&png);
+                let to = shared.images_to.lock().unwrap().clone();
+                for (id, sink) in shared.peers.lock().unwrap().iter() {
+                    if to.contains(id) {
+                        sink(Out::Binary(msg.clone()));
+                    }
+                }
+            }
         }
     }
+}
+
+/// What the watcher found on the clipboard.
+enum Clip {
+    Text(String),
+    Png(Vec<u8>),
+}
+
+/// The clipboard holds something not synchronised: whatever was last is no
+/// longer there, so it is sent (or set) again if it comes back.
+fn forget(shared: &Shared) {
+    shared.clip_last.lock().unwrap().clear();
+    *shared.clip_last_image.lock().unwrap() = None;
 }
 
 #[cfg(test)]
@@ -465,7 +570,32 @@ mod tests {
             monitors: RwLock::new(monitors),
             peers: Mutex::default(),
             clip_last: Mutex::default(),
+            clip_last_image: Mutex::default(),
+            images_to: Mutex::default(),
         }
+    }
+
+    #[test]
+    fn images_go_to_sessions_that_asked_while_they_are_showing() {
+        let s = shared(Vec::new());
+        let wants = |id| s.images_to.lock().unwrap().contains(&id);
+        let mut old = open(&s, 1, &HashMap::new(), Arc::new(|_| {}));
+        assert!(!wants(1), "a client that never asks gets none");
+
+        old.message(&s, r#"{"t":"clipimg","on":true}"#);
+        assert!(wants(1));
+        old.message(&s, r#"{"t":"vis","v":false}"#);
+        assert!(!wants(1), "not while hidden or paused");
+        old.message(&s, r#"{"t":"vis","v":true}"#);
+        assert!(wants(1));
+        let query = old.changed().unwrap().clone();
+        assert_eq!(query.get("img").map(String::as_str), Some("1"), "kept for the next provider");
+        old.close(&s);
+        assert!(!wants(1));
+
+        let reopened = open(&s, 2, &query, Arc::new(|_| {}));
+        assert!(wants(2), "opened again as it was");
+        reopened.close(&s);
     }
 
     #[test]
@@ -520,6 +650,7 @@ mod tests {
             r#"{"t":"rel"}"#,
             r#"{"t":"type","s":"hello"}"#,
             r#"{"t":"clip","s":"text"}"#,
+            r#"{"t":"clipimg","on":true}"#,
         ] {
             assert!(screen(ours), "{ours}");
         }

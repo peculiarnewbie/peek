@@ -1,5 +1,5 @@
 //! The clipboard through wlr-data-control, which lets a program without a
-//! window read and set it: text both ways, and images pasted on a client.
+//! window read and set it: text and PNG images, both ways.
 //! A thread of its own keeps up with selection changes and serves what we
 //! set.
 
@@ -104,19 +104,28 @@ pub fn sequence() -> u64 {
 
 /// The clipboard as text, or `None` when it holds none (or did not answer).
 pub fn get_text() -> Option<String> {
+    let text = String::from_utf8(receive(TEXT_TYPES)?).ok()?;
+    (!text.is_empty()).then_some(text)
+}
+
+/// The clipboard's image as PNG, or `None` when it holds none (or did not answer).
+pub fn get_png() -> Option<Vec<u8>> {
+    receive(&["image/png"]).filter(|png| !png.is_empty())
+}
+
+/// The selection in the first of these types it is offered in.
+fn receive(types: &[&str]) -> Option<Vec<u8>> {
     let s = shared()?;
     let (offer, mimes) = s.offer.lock().unwrap().clone()?;
     let mime = {
         let mimes = mimes.lock().unwrap();
-        TEXT_TYPES.iter().find(|t| mimes.iter().any(|m| m == *t))?.to_string()
+        types.iter().find(|t| mimes.iter().any(|m| m == *t))?.to_string()
     };
     let (read, write) = super::pipe().ok()?;
     offer.receive(mime, write.as_fd());
     flush();
     drop(write);
-    let bytes = read_all(read)?;
-    let text = String::from_utf8(bytes).ok()?;
-    (!text.is_empty()).then_some(text)
+    read_all(read)
 }
 
 pub fn set_text(text: &str) -> bool {

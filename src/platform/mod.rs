@@ -3,7 +3,7 @@
 //! - `init()`: one-time process setup.
 //! - `Capture`: `new()`, `monitors()`, `acquire()`, `release()`.
 //! - `input`: `mouse_move`, `button`, `wheel`, `key`, `text`.
-//! - `clipboard`: `sequence`, `get_text`, `set_text`, `set_png`.
+//! - `clipboard`: `sequence`, `get_text`, `set_text`, `get_png`, `set_png`.
 //! - `cursor_name()`: CSS cursor name for the pointer shape currently shown.
 //! - `input_blocked()`: true while the OS is refusing our injected input.
 //! - `input_notes()`: lines for the console about what remote input cannot do.

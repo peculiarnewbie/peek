@@ -102,6 +102,13 @@ hooks.clip = text => {
   } else if (!isTouch()) copyViaSelection(text);
   // (On a touch screen, selecting text in a box would bring up the phone's keyboard.)
 };
+// Only sent when this page may take it (wantImages): HTTPS, the setting on,
+// and the screen showing. Chrome also wants the page focused; Firefox, a key
+// press or click shortly before, which a copy on the remote always is.
+hooks.clipImage = png => {
+  navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
+    .catch(err => console.warn('could not put the host\'s image on this clipboard', err));
+};
 // Works on plain HTTP, but only shortly after a key press or click, which a
 // copy on the remote always is.
 function copyViaSelection(text: string) {
@@ -133,7 +140,7 @@ document.addEventListener('paste', e => {
   const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
   // Text wins when there is both: copied spreadsheet cells come with a
   // picture of themselves.
-  const image = !text && cfg.pasteImages ? pastedImage(e.clipboardData) : null;
+  const image = !text && cfg.clipImages ? pastedImage(e.clipboardData) : null;
   if (image) {
     // Pressed even if the image could not be sent: the host pastes what it has.
     void sendImage(image).finally(pressV);
