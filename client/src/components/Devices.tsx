@@ -178,11 +178,11 @@ export function Devices() {
         <Show when={machines().length} fallback={
           <section class="intro">
             <p class="hint lead">peek is a small, fast remote desktop, tailored for short sessions.</p>
+            <p class="hint lead">It also lets a machine show its vitals, sleep and wake, share folders, and run{' '}
+              <a href="/docs/#apps">plugins</a> you add.</p>
             <p class="hint lead">Run it on a computer (Windows, or Linux on Wayland) on your{' '}
               <a href="https://tailscale.com">Tailscale</a> network and pair this browser with it once. Its screen
               is then a click away, with mouse, keyboard and clipboard.</p>
-            <p class="hint lead">Beside the screen, a machine can show its vitals, sleep and wake, share folders, and
-              run <a href="/docs/#apps">plugins</a> you add.</p>
             <p class="hint lead">This site only serves the page: your browser connects straight to each machine
               over Tailscale.</p>
             <Commands lines={['npx @peculiarnewbie/peek pair']} />
