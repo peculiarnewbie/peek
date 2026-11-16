@@ -1,0 +1,46 @@
+<!-- What the home page says, as plain HTML for anything that reads the page
+     without running it (search engines, link previews, AI assistants). The
+     hosted build puts it in #root and a script removes it straight away, so
+     browsers only ever see the app, which says the same. Keep it in step with
+     the intro in src/components/Devices.tsx. -->
+<main id="about">
+<h1>peek: a small, fast remote desktop</h1>
+<p>peek is a small, fast remote desktop, tailored for short sessions.</p>
+<p>It also lets a machine show its vitals, sleep and wake, share folders, and run
+  <a href="/docs/#apps">plugins</a>: programs on the machine that show up in your browser through peek.</p>
+<p>Run it on a computer (Windows, or Linux on Wayland) on your <a href="https://tailscale.com">Tailscale</a>
+  network and pair this browser with it once. Its screen is then a click away, with mouse, keyboard and
+  clipboard.</p>
+<p>This site only serves the page: your browser connects straight to each machine over Tailscale.</p>
+<pre><code>npx @peculiarnewbie/peek pair</code></pre>
+
+<h2>How it works</h2>
+<ul>
+  <li>The machine runs a small host that stays idle until you look. It captures the screen only while a browser
+    is watching. The host runs on Windows x64, and on Linux x64 and arm64 under a Wayland compositor with the
+    wlroots protocols (niri, sway, Hyprland, river).</li>
+  <li>Any browser is the client, on a computer, a phone or a tablet. There is nothing to install on the device
+    you view from.</li>
+  <li>Install the host with <code>npm install -g @peculiarnewbie/peek</code>, then pair a browser with a one-time
+    code. The list of your machines and their keys stay in that browser; nothing about them is sent to or
+    stored on this site.</li>
+  <li>peek is free and open source, under the MIT license.</li>
+</ul>
+
+<h2>Numbers</h2>
+<dl>
+  <dt>140 ms</dt><dd>to a whole full-screen frame over Tailscale, from idle</dd>
+  <dt>22 ms</dt><dd>the same on the machine itself</dd>
+  <dt>0.02%</dt><dd>of a CPU core while nobody looks</dd>
+  <dt>18 MB</dt><dd>of memory, in a 4.6 MB program</dd>
+</dl>
+<p><a href="/docs/#numbers">How these were measured</a></p>
+
+<h2>More</h2>
+<ul>
+  <li><a href="/docs/">Docs</a>: setting up a machine, pairing, using it, plugins, security.</li>
+  <li><a href="/changelog/">Changelog</a></li>
+  <li><a href="https://github.com/peculiarnewbie/peek">Source code on GitHub</a></li>
+  <li><a href="https://www.npmjs.com/package/@peculiarnewbie/peek">@peculiarnewbie/peek on npm</a></li>
+</ul>
+</main>
