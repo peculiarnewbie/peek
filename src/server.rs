@@ -86,6 +86,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/.well-known/peek", get(about).options(preflight))
         .route("/api/pair", post(pair).options(preflight))
         .route("/api/provider/{name}", post(provider).options(preflight))
+        .route("/api/plugins", post(plugins_api).options(preflight))
         .route("/api/frame/{name}", post(frame_ticket).options(preflight))
         .route("/api/frame/{name}/ws", get(frame_ws))
         .route("/api/frame/{name}/file/{id}", get(frame_file))
@@ -427,6 +428,36 @@ async fn provider(
         Some(answer) => reply(StatusCode::OK, answer),
         None => error(StatusCode::SERVICE_UNAVAILABLE, "the provider did not answer"),
     }
+}
+
+/// The plugins page's requests (`list`, `on`, `inspect`, `install`, …) from
+/// a paired browser without the page: the hosted client asks every machine
+/// for its list, to show them side by side, and turns plugins on and off
+/// there. The same rules hold as on the page (Plugins::answer): view-only
+/// machines only answer `list`, and `remote-install off` refuses changes.
+async fn plugins_api(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
+    let cors = cors(&shared, &headers);
+    let reply = |status: StatusCode, body: String| {
+        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body)
+            .into_response()
+    };
+    let error = |status: StatusCode, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }).to_string());
+    let web = from_web(&shared, &headers);
+    if headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
+        return error(StatusCode::FORBIDDEN, "origin");
+    }
+    let Ok(serde_json::Value::Object(mut ask)) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return error(StatusCode::BAD_REQUEST, "request");
+    };
+    let given = ask.remove("token").and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default();
+    if !token_ok(&shared, &given, web) {
+        return error(StatusCode::FORBIDDEN, "token");
+    }
+    let plugins = shared.plugins.clone();
+    let ask = serde_json::Value::Object(ask);
+    // Installing fetches and copies: off the async threads.
+    let answer = tokio::task::spawn_blocking(move || plugins.answer(&ask)).await.unwrap_or_default();
+    reply(StatusCode::OK, answer.to_string())
 }
 
 // ---- providers' own pages ----

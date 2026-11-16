@@ -906,8 +906,9 @@ mod tests {
 
     #[test]
     fn built_in_manifests_and_state() {
-        for text in [include_str!("apps/vitals.json"), include_str!("apps/power.json")] {
-            assert!(parse_manifest(text, true).unwrap().on_by_default);
+        assert!(parse_manifest(include_str!("apps/vitals.json"), true).unwrap().on_by_default);
+        for text in [include_str!("apps/power.json"), include_str!("apps/files.json")] {
+            assert!(!parse_manifest(text, true).unwrap().on_by_default);
         }
         const APP: &str = r#"{"name":"sample","run":["peek"],"on_by_default":false,"settings":{"share":{"kind":"text","default":"hello","label":"Share"}}}"#;
         let root = std::env::temp_dir().join(format!("peek-own-{}", crate::pairing::random_hex(6).unwrap()));

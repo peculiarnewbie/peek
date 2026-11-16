@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+# A paired machine's page, and pairing: private to whoever has paired, and
+# the same page as the home page to anyone else.
+Disallow: /screen/
+Disallow: /pair
+
+Sitemap: https://peek.peculiarnewbie.com/sitemap.xml
