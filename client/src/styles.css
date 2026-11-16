@@ -210,9 +210,9 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 #devices { position: fixed; inset: 0; z-index: 6; overflow-y: auto; background: var(--page);
   padding: max(28px, env(safe-area-inset-top)) 16px 28px; box-sizing: border-box; scrollbar-width: thin; }
 #devices > * { max-width: 760px; margin-left: auto; margin-right: auto; }
-/* The introduction the site is built with, while a browser with machines
-   paired loads its list (site/routes/_app.tsx). */
-.paired #devices.static .intro { visibility: hidden; }
+/* The welcome the site is built with, while a browser with machines paired
+   loads its list (site/routes/_app.tsx). */
+.paired #devices.static .intro, .paired #devices.static .dadd { visibility: hidden; }
 .dhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
 .dhead h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
 .hint.lead { font-size: 14px; margin: 0 auto 18px; }

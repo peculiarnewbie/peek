@@ -10,7 +10,7 @@ import {
 import { changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
 import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
-import { Foot, Header, Intro } from './Intro';
+import { AddForm, Foot, Header, Intro } from './Intro';
 import { canScan, QrScan } from './QrScan';
 import { PluginsOverview } from './Plugins';
 import { ItemView } from './View';
@@ -157,6 +157,12 @@ function PluginFilter() {
   );
 }
 
+/** A whole pairing link pasted in the host field fills in both fields. */
+function onHostInput(value: string) {
+  const link = parseLink(value);
+  if (link) { setHostField(link.host); setCodeField(link.code); } else setHostField(value);
+}
+
 /** The list of machines, or every machine's plugins (`/plugins`). */
 export function MachinesPage(props: { plugins?: boolean }) {
   // Keep the status current while the page shows.
@@ -165,11 +171,6 @@ export function MachinesPage(props: { plugins?: boolean }) {
     const timer = setInterval(probeAll, 10000);
     return () => clearInterval(timer);
   });
-  const onHostInput = (value: string) => {
-    // A whole pairing link pasted here fills in both fields.
-    const link = parseLink(value);
-    if (link) { setHostField(link.host); setCodeField(link.code); } else setHostField(value);
-  };
   const showForm = () => adding() || machines().length === 0;
   const onPlugins = () => !!props.plugins && machines().length > 0;
   return (
@@ -200,33 +201,13 @@ export function MachinesPage(props: { plugins?: boolean }) {
           </div>
         </Show>
         <Show when={showForm()}>
-          <section class="dadd panel">
-            <div class="label"><span>Add a machine</span></div>
-            <p class="hint">On the machine, run <code>peek pair</code> (or, without installing peek,{' '}
-              <code>npx @peculiarnewbie/peek pair</code>). Open the link it shows on this device (or scan its QR
-              code), or enter its name and code here.</p>
-            <Show when={canScan()}>
-              <button class="btn alt scan" tabindex={-1} onClick={() => { setError(''); setScanning(true); }}>
-                <Icon name="qr" /><span>Scan QR code</span>
-              </button>
-            </Show>
-            <form onSubmit={e => { e.preventDefault(); if (!busy()) submit(hostField(), codeField()); }}>
-              <input class="field" placeholder="my-pc.tail1234.ts.net or pairing link" autocomplete="off"
-                autocapitalize="off" spellcheck={false} value={hostField()}
-                onInput={e => onHostInput(e.currentTarget.value)} />
-              <div class="mform-row">
-                <input class="field" placeholder="Code" autocomplete="one-time-code" autocapitalize="characters"
-                  spellcheck={false} value={codeField()} onInput={e => setCodeField(e.currentTarget.value)} />
-                <button class="btn" type="submit" disabled={busy() || !cleanHost(hostField()) || !codeField().trim()}>
-                  {busy() ? 'Pairing…' : 'Pair'}
-                </button>
-              </div>
-            </form>
-            <Show when={error()}><p class="err">{error()}</p></Show>
-            <Show when={machines().length}>
-              <button class="tb cancel" tabindex={-1} onClick={() => { setAdding(false); setError(''); }}>Cancel</button>
-            </Show>
-          </section>
+          <AddForm host={hostField()} code={codeField()} busy={busy()} error={error()}
+            ready={!busy() && !!cleanHost(hostField()) && !!codeField().trim()}
+            scan={canScan()} cancel={machines().length > 0}
+            onHost={onHostInput} onCode={setCodeField}
+            onSubmit={() => { if (!busy()) submit(hostField(), codeField()); }}
+            onScan={() => { setError(''); setScanning(true); }}
+            onCancel={() => { setAdding(false); setError(''); }} />
         </Show>
         <Show when={scanning()}>
           <QrScan onClose={() => setScanning(false)} onLink={(host, code) => {

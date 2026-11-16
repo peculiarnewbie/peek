@@ -7,10 +7,12 @@ import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js';
 import { refreshPlugins, type PluginList } from './plugins';
 import { dropCards, onAgain, refreshCards, type ProviderAbout } from './views';
+import { cleanHost } from './links';
 import { siteRouter } from './site-router';
 import { store } from './util';
 
 export const HOSTED = import.meta.env.MODE === 'hosted';
+export { cleanHost, parseLink } from './links';
 
 export interface Machine {
   /** The host's own id, so a machine keeps its place whatever it is reached at. */
@@ -173,21 +175,6 @@ export function probeAll() {
 onAgain(probeAll);
 
 // ---- pairing ----
-/** A host and code from a pairing link (`peek pair` prints one), if it is one. */
-export function parseLink(text: string): { host: string; code: string; name?: string } | null {
-  try {
-    const url = new URL(text.trim());
-    const host = url.searchParams.get('host');
-    const code = new URLSearchParams(url.hash.slice(1)).get('code');
-    if (host && code) return { host, code, name: url.searchParams.get('name') ?? undefined };
-  } catch {}
-  return null;
-}
-
-/** A machine as typed: no scheme, no path, no trailing dot. */
-export const cleanHost = (text: string) =>
-  text.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\.$/, '').toLowerCase();
-
 /** How this browser is listed on the machine (`peek clients`). */
 export function deviceLabel() {
   const ua = navigator.userAgent;

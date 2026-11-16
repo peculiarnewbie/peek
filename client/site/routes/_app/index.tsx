@@ -1,9 +1,11 @@
 // `/`: the machines paired with this browser, or, with none, what peek is
-// and how to start. The site is built with the introduction; the list loads
-// in the browser.
-import { ClientOnly, createFileRoute } from '@tanstack/solid-router';
-import { lazy, Loading } from 'solid-js';
-import { Foot, Header, Intro } from '../../../src/components/Intro';
+// and how to start. The page is built with the introduction and the form for
+// adding a machine, and loads no code of its own until it needs it: at once
+// in a browser with machines paired, for the list; in any other, only when
+// someone starts adding one (site/home-loader.js, put in by vite.config.ts).
+import { createFileRoute } from '@tanstack/solid-router';
+import { createSignal, lazy, Loading, onSettled, Show } from 'solid-js';
+import { Welcome } from '../../../src/components/Welcome';
 import { pageHead, SITE } from '../../seo';
 
 const DESCRIPTION = 'peek is a small, fast remote desktop for your own Windows and Linux machines, used from any ' +
@@ -39,13 +41,16 @@ export const Route = createFileRoute('/_app/')({
   component: HomePage,
 });
 
-/** What the page is built with, and shows until the list has loaded. */
-const Static = () => <main id="devices" class="static"><Header /><Intro /><Foot /></main>;
-
 function HomePage() {
+  // Built, and first drawn, as the welcome; a browser with machines paired
+  // then shows its list (hidden until then by the `paired` class, _app.tsx).
+  const [paired, setPaired] = createSignal(false);
+  onSettled(() => {
+    try { if ((localStorage.getItem('peek-machines') ?? '[]').length > 2) setPaired(true); } catch {}
+  });
   return (
-    <ClientOnly fallback={<Static />}>
-      <Loading fallback={<Static />}><Machines /></Loading>
-    </ClientOnly>
+    <Show when={paired()} fallback={<Welcome />}>
+      <Loading fallback={<Welcome />}><Machines /></Loading>
+    </Show>
   );
 }

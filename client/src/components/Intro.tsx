@@ -1,7 +1,7 @@
 // The hosted site's header and the introduction a browser with no machines
 // sees. Rendered on the server too, when the site is built (site/), so it
 // must not touch the browser: no imports from hosted.ts or the screen.
-import { createSignal } from 'solid-js';
+import { createSignal, Show } from 'solid-js';
 import type { JSX } from '@solidjs/web';
 import { Icon } from './Icons';
 
@@ -61,6 +61,47 @@ export function Intro() {
         <div><dt>18 MB</dt><dd>of memory, in a 4.6 MB program</dd></div>
       </dl>
       <a class="figures-how" href="/docs/#numbers">How these were measured</a>
+    </section>
+  );
+}
+
+/** The form for adding a machine: on the list of machines (Devices.tsx) and
+ *  on the welcome (Welcome.tsx). (Not a field named `host`: the form would
+ *  answer to `form.host` with it, which sends Solid's hydration script, looking
+ *  for a shadow root's host, round in a loop.) */
+export function AddForm(props: {
+  host?: string; code?: string; busy?: boolean; ready?: boolean; error?: string;
+  /** Whether to offer scanning a QR code; 'maybe' while that is not known. */
+  scan?: boolean | 'maybe';
+  cancel?: boolean;
+  onHost?: (value: string) => void; onCode?: (value: string) => void;
+  onSubmit?: () => void; onScan?: () => void; onCancel?: () => void;
+}) {
+  return (
+    <section class="dadd panel">
+      <div class="label"><span>Add a machine</span></div>
+      <p class="hint">On the machine, run <code>peek pair</code> (or, without installing peek,{' '}
+        <code>npx @peculiarnewbie/peek pair</code>). Open the link it shows on this device (or scan its QR
+        code), or enter its name and code here.</p>
+      <Show when={props.scan}>
+        <button class="btn alt scan" tabindex={-1} hidden={props.scan === 'maybe'} onClick={() => props.onScan?.()}>
+          <Icon name="qr" /><span>Scan QR code</span>
+        </button>
+      </Show>
+      <form onSubmit={e => { e.preventDefault(); props.onSubmit?.(); }}>
+        <input class="field" name="machine" placeholder="my-pc.tail1234.ts.net or pairing link" autocomplete="off"
+          autocapitalize="off" spellcheck={false} value={props.host ?? ''}
+          onInput={e => props.onHost?.(e.currentTarget.value)} />
+        <div class="mform-row">
+          <input class="field" name="code" placeholder="Code" autocomplete="one-time-code" autocapitalize="characters"
+            spellcheck={false} value={props.code ?? ''} onInput={e => props.onCode?.(e.currentTarget.value)} />
+          <button class="btn" type="submit" disabled={!props.ready}>{props.busy ? 'Pairing…' : 'Pair'}</button>
+        </div>
+      </form>
+      <Show when={props.error}><p class="err">{props.error}</p></Show>
+      <Show when={props.cancel}>
+        <button class="tb cancel" tabindex={-1} onClick={() => props.onCancel?.()}>Cancel</button>
+      </Show>
     </section>
   );
 }

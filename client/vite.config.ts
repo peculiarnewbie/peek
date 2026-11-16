@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 import solid from '@solidjs/vite-plugin';
@@ -49,6 +50,27 @@ const hostedFiles = (): Plugin => ({
   },
 });
 
+// The home page as built loads none of the app until it is needed: its
+// script and preloads give way to site/home-loader.js, which loads them at
+// once in a browser with machines paired, and in any other only when someone
+// starts adding a machine. Written over the page prerendering has just saved.
+let clientOutDir = '';
+const clientDir = (): Plugin => ({
+  name: 'peek-client-dir',
+  configResolved(config) {
+    clientOutDir = resolve(config.root, config.environments.client?.build.outDir ?? config.build.outDir);
+  },
+});
+function loadAppWhenNeeded(html: string) {
+  const entry = /<script type="module" async src="([^"]+)"><\/script>/.exec(html);
+  if (!entry) throw new Error('home page: the app\'s script is not where it was expected');
+  const preload = [...html.matchAll(/<link rel="modulepreload" href="([^"]+)"[^>]*>/g)].map(m => m[1]);
+  const loader = readFileSync('site/home-loader.js', 'utf8').replace(/^\s*\/\/.*\n/gm, '')
+    .replace("'%APP%'", JSON.stringify(entry[1])).replace("'%PRELOAD%'", JSON.stringify(preload));
+  writeFileSync(resolve(clientOutDir, 'index.html'),
+    html.replace(/<link rel="modulepreload"[^>]*>/g, '').replace(entry[0], `<script>${loader}</script>`));
+}
+
 async function hostedPlugins() {
   const { tanstackStart } = await import('@tanstack/solid-start/plugin/vite');
   const { cloudflare } = await import('@cloudflare/vite-plugin');
@@ -56,11 +78,15 @@ async function hostedPlugins() {
     cloudflare({ viteEnvironment: { name: 'ssr' } }),
     tanstackStart({
       srcDirectory: 'site',
-      pages: [{ path: '/' }, { path: '/docs' }, { path: '/changelog' }],
+      pages: [
+        { path: '/', prerender: { onSuccess: ({ html }) => loadAppWhenNeeded(html) } },
+        { path: '/docs' }, { path: '/changelog' },
+      ],
       prerender: { enabled: true, crawlLinks: false, autoSubfolderIndex: true, failOnError: true },
     }),
     solid({ ssr: true }),
     hostedFiles(),
+    clientDir(),
   ];
 }
 
