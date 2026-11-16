@@ -22,7 +22,8 @@ export const Route = createFileRoute('/_app')({
 
 function AppLayout() {
   onSettled(() => {
-    if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    // Not from the dev server (dev.peek too), whose pages a cache would keep from reloading.
+    if (!import.meta.env.DEV && 'serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
   });
   return <><IconSprite /><Outlet /></>;
 }

@@ -18,12 +18,13 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 
 // Headers for the hosted site on Cloudflare (Workers static assets read
 // `_headers`). Sockets and requests may only go to Tailscale HTTPS names.
+const NEXT = process.env.PEEK_CHANNEL === 'next';
 const HOSTED_HEADERS = `/*
   Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://*.ts.net wss://*.ts.net; frame-src https://*.ts.net; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
   Permissions-Policy: camera=(self), microphone=(), geolocation=()
-/assets/*
+${NEXT ? '  X-Robots-Tag: noindex\n' : ''}/assets/*
   Cache-Control: public, max-age=31536000, immutable
 /index.html
   Cache-Control: no-cache
@@ -95,7 +96,13 @@ export default defineConfig(async ({ mode }) => {
   // told it belongs to the hosted build by the environment.
   const hosted = mode === 'hosted' || process.env.PEEK_HOSTED_BUILD === '1';
   if (hosted) process.env.PEEK_HOSTED_BUILD = '1';
-  if (hosted) return { plugins: await hostedPlugins(), build: { target: 'es2022' } };
+  // The site's dev server also answers as dev.peek.peculiarnewbie.com, through
+  // scripts/dev-tunnel.mjs.
+  if (hosted) return {
+    plugins: await hostedPlugins(),
+    build: { target: 'es2022' },
+    server: { allowedHosts: ['dev.peek.peculiarnewbie.com'] },
+  };
   return {
     plugins: [solid(), viteSingleFile()],
     // From machine/index.html, not one here: the site's dev server would serve

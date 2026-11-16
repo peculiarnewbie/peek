@@ -4,10 +4,11 @@
 // (Plugins.tsx). Loaded only in the browser: the server renders Intro.tsx.
 import { createSignal, For, onSettled, Show } from 'solid-js';
 import {
-  BLOCKED_HELP, cleanHost, favorite, forget, localAccess, machines, navigate, openMachine, pagePath, pair,
-  parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, type Machine,
+  BLOCKED_HELP, cleanHost, favorite, forget, learn, localAccess, machines, navigate, openMachine, pagePath, pair,
+  parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, type About, type Machine,
 } from '../hosted';
 import { ago, changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
+import { upgrade, updating } from '../update';
 import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { AddForm, Foot, Header, Intro } from './Intro';
@@ -67,6 +68,7 @@ function Card(props: { m: Machine }) {
           {STATUS[state()]}</span>
       </a>
       <CardViews m={props.m} />
+      <Show when={state() === 'up'}><CardUpdate m={props.m} /></Show>
       <CardPlugins m={props.m} />
       <button class={['dfav tb icon', { on: favorite() === props.m.id }]} tabindex={-1}
         title={favorite() === props.m.id ? 'Favorite: the app icon’s shortcut opens it (tap to unset)'
@@ -79,6 +81,31 @@ function Card(props: { m: Machine }) {
         <Icon name="x" />
       </button>
     </div>
+  );
+}
+
+/** A newer peek the machine can update itself to, and the update under way. */
+function CardUpdate(props: { m: Machine }) {
+  const base = () => `https://${props.m.host}`;
+  const [error, setError] = createSignal('');
+  const busy = () => updating[base()];
+  const go = () => {
+    setError('');
+    upgrade(base(), props.m.token, a => learn(props.m, a as unknown as About)).catch(e => setError(`Not updated: ${e?.message ?? e}`));
+  };
+  return (
+    <Show when={busy() || props.m.update || error()}>
+      <div class="dviews">
+        <div class="vrow">
+          <p class={['vtext', { busy: !!busy(), wrong: !busy() && !!error() }]} style={{ flex: 1 }}>
+            {busy() ?? (error() || `peek ${props.m.update} is available`)}
+          </p>
+          <Show when={!busy() && props.m.update}>
+            <button class="btn small" tabindex={-1} onClick={go}>Update</button>
+          </Show>
+        </div>
+      </div>
+    </Show>
   );
 }
 

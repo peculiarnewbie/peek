@@ -9,15 +9,20 @@
 //   cd client && npx vite build --mode hosted && npx cf deploy --prebuilt
 // (`bun run deploy:hosted` does both.) The Vite build writes what is deployed,
 // _headers included.
+//
+// With PEEK_CHANNEL=next it is the nightly site instead, a Worker of its own
+// on next.peek.peculiarnewbie.com (scripts/nightly.mjs deploys it).
 import { defineConfig } from 'cf/config';
+
+const next = process.env.PEEK_CHANNEL === 'next';
 
 export default defineConfig({
   worker: {
-    name: 'peek',
+    name: next ? 'peek-next' : 'peek',
     compatibilityDate: '2026-11-01',
     compatibilityFlags: ['nodejs_compat'],
     entrypoint: '@tanstack/solid-start/server-entry',
-    domains: ['peek.peculiarnewbie.com'],
+    domains: [next ? 'next.peek.peculiarnewbie.com' : 'peek.peculiarnewbie.com'],
     workersDev: false,
     previewUrls: false,
   },

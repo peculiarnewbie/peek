@@ -28,6 +28,9 @@ export interface Machine {
   /** What each of its providers lets the same provider on the other
    *  machines know of it, kept for while it is away. */
   records?: Record<string, unknown>;
+  /** The peek version it runs, and a newer one it can update itself to. */
+  version?: string;
+  update?: string | null;
   /** Its plugins, as it last listed them (plugins.ts). */
   plugins?: PluginList;
 }
@@ -131,15 +134,22 @@ export const BLOCKED_HELP = 'This browser is blocking the site from reaching dev
 export type Reach = 'checking' | 'up' | 'down';
 export const [reach, setReach] = createStore<Record<string, Reach>>({});
 
-interface About { id: string; name: string; protocol: number; providers?: ProviderAbout[] }
+export interface About {
+  id: string; name: string; protocol: number; providers?: ProviderAbout[];
+  version?: string; update?: string | null;
+}
 
-/** A machine's providers as it says them now, kept if they changed. */
+/** A machine's providers and version as it says them now, kept if they changed. */
 export function learn(m: Machine, a: About) {
   const providers = (Array.isArray(a.providers) ? a.providers : []).filter(p => p && typeof p.name === 'string');
-  if (JSON.stringify(providers) === JSON.stringify(m.providers ?? [])) return;
-  updateMachine(m.id, { providers });
-  // Something was turned on or off there: its plugins page may have done it.
-  void refreshPlugins(m, true);
+  if (JSON.stringify(providers) !== JSON.stringify(m.providers ?? [])) {
+    updateMachine(m.id, { providers });
+    // Something was turned on or off there: its plugins page may have done it.
+    void refreshPlugins(m, true);
+  }
+  const version = typeof a.version === 'string' ? a.version : undefined;
+  const update = typeof a.update === 'string' ? a.update : null;
+  if (version !== m.version || update !== (m.update ?? null)) updateMachine(m.id, { version, update });
 }
 
 export async function about(host: string, ms = 5000): Promise<About> {

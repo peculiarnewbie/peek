@@ -28,5 +28,7 @@ export function boot() {
 
 /** Installable as an app (only over HTTPS, where service workers are allowed). */
 export function registerWorker() {
+  // Not from a dev server, whose pages a cache would keep from reloading.
+  if (import.meta.env.DEV) return;
   if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
