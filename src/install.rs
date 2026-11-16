@@ -116,10 +116,22 @@ mod windows {
             .is_ok_and(|s| s.success())
     }
 
-    pub fn uninstall() -> Result<(), String> {
+    /// False when nothing was installed: then there is nothing to remove,
+    /// and no reason to ask for administrator rights.
+    pub fn uninstall() -> Result<bool, String> {
+        let task = std::process::Command::new("schtasks.exe")
+            .args(["/query", "/tn", "peek"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !task && !service_installed() && !installed_exe()?.exists() && !service_exe().exists() {
+            return Ok(false);
+        }
         let mut config = paths()?;
         config["remove"] = serde_json::json!(true);
-        run_script(&config)
+        run_script(&config)?;
+        Ok(true)
     }
 
     /// DOMAIN\user of whoever ran `peek install`. Taken here, not in the
@@ -362,20 +374,24 @@ mod linux {
         Ok(())
     }
 
-    pub fn uninstall() -> Result<(), String> {
+    /// False when nothing was installed.
+    pub fn uninstall() -> Result<bool, String> {
         let path = unit_path()?;
+        let target = installed_exe()?;
+        if !path.exists() && !target.exists() {
+            return Ok(false);
+        }
         if path.exists() {
             let _ = systemctl(&["disable", "--now", "peek"]);
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
             let _ = systemctl(&["daemon-reload"]);
         }
-        let target = installed_exe()?;
         if target.exists() {
             std::fs::remove_file(&target).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_dir(target.parent().unwrap());
         }
         println!("Removed the peek service and {}.", target.display());
-        Ok(())
+        Ok(true)
     }
 }
 

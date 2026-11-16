@@ -8,7 +8,7 @@ export function SleepCard() {
   return (
     <div id="sleep" class={{ show: sleeping() }} onClick={() => setSleep(false)}>
       <div class="card panel">
-        <Icon name="moon" />
+        <Icon name="pause" />
         <div class="t">Paused</div>
         <div class="s">{autoSlept()
           ? 'Paused while this window is in the background. It resumes when you come back.'

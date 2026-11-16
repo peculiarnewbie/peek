@@ -14,7 +14,7 @@ import { showSettings } from './actions';
 import { hooks, send } from './connection';
 import { sendButton, sendMove } from './input';
 import { areaH, areaW, onViewChange, shownRect, stage, toCanvas, view, zoomed, zoomTo } from './screen';
-import { setBarOpen, setIsTouch, settingsOpen, touchMode } from './state';
+import { onPage, setBarOpen, setIsTouch, settingsOpen, touchMode } from './state';
 import { clamp01 } from './util';
 
 /** CSS px a finger may wander and still count as a tap or a press. */
@@ -166,6 +166,8 @@ stage.addEventListener('pointerdown', e => {
       g = { kind: 'ignore', most: 1, t0: now, afterTap: false };
       return;
     }
+    // The screen is frozen behind a page: nothing goes to the machine unseen.
+    if (onPage()) { g = { kind: 'ignore', most: 1, t0: now, afterTap: false }; return; }
     g = { kind: 'pending', most: 1, t0: now, afterTap: touchMode() === 'trackpad' && now - lastTap < TAP_DRAG_MS };
     g.timer = setTimeout(longPress, LONG_PRESS_MS);
     if (touchMode() === 'direct') cursorTo(e.clientX, e.clientY);

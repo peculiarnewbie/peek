@@ -36,7 +36,7 @@ const HOSTED_HEADERS = `/*
 `;
 
 // Files only the hosted site has, beside what it builds: its headers, and
-// those in hosted/ (robots.txt, sitemap.xml, the preview banner og.png;
+// those in hosted/ (robots.txt, llms.txt, sitemap.xml, the preview banner og.png;
 // og.svg is the banner's source). Written with the browser's files, not the Worker's.
 const hostedFiles = (): Plugin => ({
   name: 'peek-hosted-files',

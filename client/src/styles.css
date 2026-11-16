@@ -167,6 +167,8 @@ body.touch #bar:not(.open) #status-text { display: none; }
 /* Labels go first when the toolbar would not fit. */
 @media (max-width: 640px) {
   .tb span { display: none; }
+  /* A plugin's button has no icon: its name stays. */
+  .tb.text span { display: inline; }
   .tb { padding: 0 8px; }
   /* The dot's colour still tells the state. */
   #status-text { display: none; }
@@ -252,11 +254,11 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
   border-radius: 10px; background: var(--raised); color: var(--ink-2); }
 .dicon svg.i { width: 20px; height: 20px; }
 .dcard.down .dicon { color: var(--muted); }
-.dname { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding-right: 56px; }
+.dname { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dhost { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dstate { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
-.dforget { position: absolute; top: 8px; right: 8px; opacity: 0; }
+/* Beside the status, so the name has the card's whole width. */
+.dforget { position: absolute; top: 56px; right: 8px; opacity: 0; }
 /* What providers ask to be shown (components/View.tsx): on a card, and in the stats panel. */
 .dviews { display: grid; gap: 8px; padding: 0 16px 14px; }
 .vtext { margin: 0; font-size: 12px; line-height: 1.45; color: var(--ink-2); -webkit-user-select: text; user-select: text; }
@@ -269,7 +271,7 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 @keyframes dpulse { from { opacity: .25; } }
 .btn.small { height: 28px; padding: 0 12px; font-size: 13px; }
 .dcard:hover .dforget, .dforget:focus-visible, body.touch .dforget { opacity: 1; }
-.dfav { position: absolute; top: 8px; right: 40px; opacity: 0; }
+.dfav { position: absolute; top: 56px; right: 40px; opacity: 0; }
 .dcard:hover .dfav, .dfav:focus-visible, body.touch .dfav, .dfav.on { opacity: 1; }
 .dfav.on { color: #e8b84a; }
 .dfav.on svg.i { fill: currentColor; }
@@ -302,7 +304,10 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 .pill:hover { background: var(--hover); color: var(--ink); }
 .pill.sel { background: var(--raised); color: var(--ink); border-color: rgba(255, 255, 255, .22); }
 .pill em { font-style: normal; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.dplugins { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
+.dplugins { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 10px 16px 14px; border-top: 1px solid var(--line); }
+/* An offline machine's plugins, as last seen. */
+.dplugins.stale .ptag { opacity: .55; }
+.pasof { font-size: 11.5px; color: var(--muted); }
 .ptag { height: 22px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; background: var(--raised); color: var(--ink-2); }
 .ptag:hover { color: var(--ink); }
 .ptag.off { background: none; border: 1px dashed rgba(255, 255, 255, .16); color: var(--muted); }
@@ -361,7 +366,7 @@ td > .pbtn:first-child { margin-top: 0; }
 .pchip:hover { color: var(--ink); border-color: rgba(255, 255, 255, .24); }
 .pchip.on { background: rgba(12, 163, 12, .12); border-color: rgba(12, 163, 12, .35); color: var(--ink); }
 .pchip.off { border-style: dashed; color: var(--muted); }
-.pchip.away, .pchip.unknown { color: var(--muted); opacity: .7; }
+.pchip.away, .pchip.unknown, .pchip.stale { color: var(--muted); opacity: .7; }
 .pchip.absent { border-style: dotted; color: #66665f; }
 @media (max-width: 560px) {
   .phead { flex-direction: column; }

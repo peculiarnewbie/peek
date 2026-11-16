@@ -189,6 +189,18 @@ export function deviceLabel() {
 export async function pair(hostText: string, code: string): Promise<Machine> {
   const host = cleanHost(hostText);
   if (!host) throw new Error('Enter the machine’s Tailscale name, like my-pc.tail1234.ts.net.');
+  // This site reaches a machine over HTTPS, whose certificate names it in
+  // full: an address or a short name cannot work, so say what will.
+  const ip = /^(\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\])(?::(\d+))?$/.exec(host);
+  if (ip) {
+    throw new Error(`This site reaches a machine by its full Tailscale name, as \`peek pair\` prints it ` +
+      `(like my-pc.tail1234.ts.net), not by its address. On your own network, open the machine’s own page ` +
+      `instead: http://${ip[1]}:${ip[2] ?? 9182}/`);
+  }
+  if (!/^[^.:]+\./.test(host)) {
+    throw new Error(`Enter the machine’s full Tailscale name, as \`peek pair\` prints it, like ` +
+      `${host.replace(/:.*/, '')}.tail1234.ts.net.`);
+  }
   let info: About;
   try {
     // Long enough for Tailscale to fetch the machine's certificate on its first HTTPS request.

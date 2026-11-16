@@ -14,6 +14,37 @@ modern browser.
 
 ![peek in a browser: the host's desktop with the toolbar at the top and the stats panel open on the left](docs/screenshot.png)
 
+## Install
+
+```
+npm install -g @peculiarnewbie/peek     (or: bun add -g, pnpm add -g)
+peek install
+peek pair
+```
+
+The package holds the binary for Windows x64 and Linux x64 and arm64; Node
+only starts it. `peek install` copies it to a fixed place and starts it at
+logon from there (details for [Windows](#install-on-windows-firewall-rule-and-start-at-logon-as-administrator)
+and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
+`peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
+It also prints a link to the machine's own page, which pairs a browser with that
+machine alone; that page asks for the code when opened without one.
+After updating the package, run `peek install` again: with no flags it keeps
+the flags of the last install (it prints them), flags after it replace them,
+and `peek install --defaults` starts peek with none. `peek uninstall` removes
+it.
+
+To try peek once without installing anything, with Tailscale running:
+
+```
+npx @peculiarnewbie/peek pair
+```
+
+With no peek running yet, `peek pair` starts one in that terminal and prints
+a link and QR code to pair a browser; peek runs until you press Ctrl+C.
+Without Tailscale, the link is to the machine's own page at its address on
+this network, for a device on the same network.
+
 ## Numbers
 
 The point is a short wait for the screen, so that is what is measured, with
@@ -61,37 +92,6 @@ bun bench/first-frame.ts ws://127.0.0.1:9182/ws [runs] [token]   # cold: waits o
 bun bench/first-frame.ts ws://127.0.0.1:9182/ws 20 --warm       # warm: back to back
 ```
 
-## Install
-
-```
-npm install -g @peculiarnewbie/peek     (or: bun add -g, pnpm add -g)
-peek install
-peek pair
-```
-
-The package holds the binary for Windows x64 and Linux x64 and arm64; Node
-only starts it. `peek install` copies it to a fixed place and starts it at
-logon from there (details for [Windows](#install-on-windows-firewall-rule-and-start-at-logon-as-administrator)
-and [Linux](#install-on-linux-key-access-start-at-login-firewall)), and
-`peek pair` pairs a browser through the [hosted client](#one-site-for-all-your-machines).
-It also prints a link to the machine's own page, which pairs a browser with that
-machine alone; that page asks for the code when opened without one.
-After updating the package, run `peek install` again: with no flags it keeps
-the flags of the last install (it prints them), flags after it replace them,
-and `peek install --defaults` starts peek with none. `peek uninstall` removes
-it.
-
-To try peek once without installing anything, with Tailscale running:
-
-```
-npx @peculiarnewbie/peek pair
-```
-
-With no peek running yet, `peek pair` starts one in that terminal and prints
-a link and QR code to pair a browser; peek runs until you press Ctrl+C.
-Without Tailscale, the link is to the machine's own page at its address on
-this network, for a device on the same network.
-
 ## Run
 
 ```
@@ -109,8 +109,9 @@ target/release/peek            (Linux, from inside the Wayland session)
 Building needs [Bun](https://bun.sh) (or Node) as well as Rust: the browser
 client is bundled as part of the build.
 
-It prints URLs ending in `#<token>`. Open the one with the host's LAN or
-Tailscale address on another device. The browser remembers the token after
+It prints URLs ending in `#<token>`, each saying where it works (this
+machine, your network, Tailscale). Open the one for your network or
+Tailscale on another device. The browser remembers the token after
 the first visit, so a bookmark is enough from then on.
 
 If you only connect over Tailscale, `--no-token` drops the token: open
@@ -141,9 +142,9 @@ started (as a service it has no console); `-f` keeps showing new ones, `-n
 
 Hover the dot at the top to show the toolbar; the pin keeps it open.
 
-- **Sleep** stops the host sending the screen while keeping the connection
+- **Pause** stops the host sending the screen while keeping the connection
   open. Click the page or press Space to resume. Nothing is sent while
-  asleep; after five seconds the host also releases the capture.
+  paused; after five seconds the host also releases the capture.
 - **Settings** has three presets (Saver, Balanced, Crisp) and the individual
   settings, each applied as soon as it is picked:
   - **Quality**: JPEG quality while moving / once still: `lowest` 30 / 65,
@@ -162,7 +163,7 @@ Hover the dot at the top to show the toolbar; the pin keeps it open.
   - **Frame rate**: at most 60, 30, 15 or 10 per second. Changes in between
     are combined, not dropped.
   - **Monitor**, when the host has more than one.
-  - **Pause when unfocused**: sleep while the browser window is in the
+  - **Pause when unfocused**: pause while the browser window is in the
     background and resume when it is focused again. On by default;
     remembered per browser.
 - **Stats** is one line (frame rate, receive rate, latency) until hovered;
@@ -393,7 +394,7 @@ which needs, once per tailnet, **HTTPS Certificates** turned on in the
 Tailscale admin console under **DNS** (this puts machine and tailnet names in
 the public Certificate Transparency logs). `peek pair` sets up the rest: it
 runs `tailscale serve --bg http://127.0.0.1:9182` if Serve does not already
-forward there, and Tailscale prints a link if the tailnet still has to allow
+forward there (and says so, with the command that undoes it), and Tailscale prints a link if the tailnet still has to allow
 Serve. On Linux, Tailscale may first ask for
 `sudo tailscale set --operator=$USER`. The first connection to a machine can
 take a few seconds while Tailscale fetches its certificate.
@@ -436,7 +437,7 @@ short setup docs at `/docs/` (`client/site/pages/docs.html`) and the changelog a
 (`client/site/pages/changelog.html`) are rendered when it is built, so they read as plain pages to
 search engines and link previews; a machine's page, pairing and `/plugins` are drawn in the browser,
 and a small Worker answers those addresses with the page they load in. `client/hosted/` has the link
-preview banner, `robots.txt` and the sitemap. Machine pages are under `/screen/`, so they never take
+preview banner, `robots.txt`, `llms.txt` and the sitemap. Machine pages are under `/screen/`, so they never take
 those paths. The site deploys with Cloudflare's `cf` CLI: `cd client && bun run
 deploy:hosted` (the script runs `cf` under Node, which it needs; Bun cannot
 load its config). To run your own copy, set your worker name and domain in
@@ -447,7 +448,7 @@ https://your.domain`.
 
 A machine can offer more than its screen, through providers: programs peek
 starts beside itself. A provider can describe a view using the client's stock
-controls, or offer its own page served by the machine in a frame. Three come
+controls, or offer its own page served by the machine in a frame. Four come
 with peek:
 
 - **Vitals.** Processor, memory and storage: one line on each machine's
@@ -464,9 +465,11 @@ with peek:
 - **Files.** Browse the folders you choose, and download from them. Off
   by default: turn it on and pick the folders under Settings → Manage
   plugins.
+- **Processes.** What is running, with its processor and memory use, and
+  ending a program after asking; by default only your own. Off by default.
 
-You can add your own: `peek provider add <name> -- <command>`, then restart
-peek. It runs as the same user as peek. [docs/providers.md](docs/providers.md)
+You can add your own: `peek provider add <name> -- <command>`; a running
+peek starts it straight away. It runs as the same user as peek. [docs/providers.md](docs/providers.md)
 has what a provider and a client say to each other, and
 `examples/provider/hello.mjs` is one in a single file. The parts of that
 which let a provider know of your other machines are provisional.
@@ -515,24 +518,38 @@ viability experiment.
 
 ## Security
 
-- Every socket needs the access token, stored in `%APPDATA%\peek\token`
+- Every socket, and every request to a provider, needs a token: the
+  machine's access token, stored in `%APPDATA%\peek\token`
   (`%ProgramData%\peek\token` for the [service](#run-as-a-windows-service-login-screen-lock-screen-and-uac-prompts))
-  (Windows) or `~/.config/peek/token` (Linux).
+  (Windows) or `~/.config/peek/token` (Linux), readable only by its owner;
+  or a paired browser's own token. Pairing trades a one-time code (`peek
+  pair`, five minutes, once) for one; the machine keeps only its hash, and
+  `peek unpair` revokes it.
 - Connections from anything but private, link-local and Tailscale addresses
   are refused.
-- A socket is accepted only from the page peek served: its `Origin` must
-  match the address it connected to. Otherwise any web page open on a
-  trusted device could open one.
+- A socket is accepted only from the page peek served, whose `Origin` must
+  match the address it connected to, or from the hosted client named by
+  `--web` (`none` refuses it). Otherwise any web page open on a trusted
+  device could open one.
 - Traffic is plain HTTP: encrypted by the tunnel over Tailscale, in the clear
-  on a LAN.
-- Anyone with the token has full control of the desktop. Treat it like a
+  on a LAN. The hosted client reaches a machine over HTTPS, through
+  Tailscale Serve.
+- Anyone with a token has full control of the desktop. Treat it like a
   password.
+- Plugins and providers are programs that run with peek's rights (SYSTEM
+  under the Windows service). A plugin's page is served by the machine
+  itself, in a frame on the machine's own address, so in the hosted client it
+  cannot reach the tokens of your other machines; what it can reach of this
+  machine, its program running there already could. A paired browser may install plugins unless `peek plugin remote-install off`
+  says otherwise; it can always turn them on and off. `--view-only` refuses
+  input, the clipboard and every provider's actions.
 
 With `--no-token`:
 
 - Anyone on your tailnet who can reach the host has full control. That suits
   a tailnet of only your own devices; with shared machines or other users,
-  limit who reaches it with Tailscale ACLs, or keep the token.
+  limit who reaches it with Tailscale ACLs, or keep the token. The hosted
+  client still needs a paired token.
 - A connection must come from a Tailscale address *to* one of the host's
   Tailscale addresses, so a LAN device that gives itself a 100.x address
   gets nowhere. Everything else is refused, loopback aside.

@@ -825,9 +825,30 @@ pub fn lan_addresses(bind: IpAddr) -> Vec<IpAddr> {
     if !bind.is_unspecified() {
         return Some(bind).filter(lan).into_iter().collect();
     }
-    let mut ips: Vec<IpAddr> = if_addrs::get_if_addrs().map(|a| a.iter().map(|a| a.ip()).filter(lan).collect()).unwrap_or_default();
+    own_addresses().into_iter().filter(lan).collect()
+}
+
+/// This machine's IPv4 addresses that another device could reach it at:
+/// none of loopback, nor of the bridges containers and virtual machines get.
+pub fn own_addresses() -> Vec<IpAddr> {
+    let mut ips: Vec<IpAddr> = if_addrs::get_if_addrs()
+        .map(|all| all.iter().filter(|a| !virtual_bridge(&a.name)).map(|a| a.ip()).collect())
+        .unwrap_or_default();
+    ips.retain(|ip| ip.is_ipv4() && !ip.is_loopback());
     ips.dedup();
     ips
+}
+
+/// A bridge to containers or virtual machines on this machine, by the name
+/// its tool gives it (Docker, libvirt, LXC, Podman, VirtualBox, VMware, and
+/// on Windows WSL's and Hyper-V's Default Switch). A bridge to the real
+/// network (br0, a Hyper-V external switch) keeps its address.
+pub fn virtual_bridge(name: &str) -> bool {
+    const NAMES: [&str; 17] = [
+        "docker", "br-", "veth", "virbr", "vnet", "vmnet", "vboxnet", "cni", "flannel", "podman", "lxcbr", "lxdbr",
+        "incusbr", "vEthernet (WSL", "vEthernet (Default Switch)", "VirtualBox Host-Only", "VMware Network Adapter",
+    ];
+    NAMES.iter().any(|n| name.starts_with(n))
 }
 
 /// Requests from `peek` commands on this machine: they hold the secret in
@@ -1227,5 +1248,15 @@ mod tests {
         assert!(!token_matches("abd", "abc"));
         assert!(!token_matches("ab", "abc"));
         assert!(!token_matches("", "abc"));
+    }
+
+    #[test]
+    fn container_and_vm_bridges_are_not_listed() {
+        for bridge in ["docker0", "br-3f2a9c", "veth12ab", "virbr0", "vboxnet0", "vEthernet (WSL (Hyper-V firewall))", "vEthernet (Default Switch)"] {
+            assert!(virtual_bridge(bridge), "{bridge}");
+        }
+        for real in ["eth0", "enp5s0", "wlan0", "br0", "tailscale0", "Ethernet", "Wi-Fi", "vEthernet (External)"] {
+            assert!(!virtual_bridge(real), "{real}");
+        }
     }
 }

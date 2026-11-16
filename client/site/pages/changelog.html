@@ -37,11 +37,42 @@
     peek expects. A plugin cannot take the name of an app that comes with peek, and the error says so.</li>
   <li>Power is off by default, like Files. An install that never changed it loses it on updating; turn it on
     under Settings → Manage plugins.</li>
+  <li>The toolbar's <strong>Sleep</strong> is now <strong>Pause</strong>, and the status says Paused: it pauses the
+    picture in this browser, while Power's Sleep puts the machine to sleep.</li>
+  <li>Adding a machine by a short name or an address says what to type instead: its full Tailscale name, as
+    <code>peek pair</code> prints it, or for an address, the machine's own page at
+    <code>http://&lt;address&gt;:9182/</code>.</li>
+  <li>The addresses peek prints when it starts are labelled (this machine, your network, Tailscale), and leave
+    out the bridges of containers and virtual machines (Docker, libvirt, WSL and the like), as the pairing links
+    of <code>peek pair</code> do.</li>
+  <li><code>peek pair</code> says when it sets up Tailscale Serve, and the command that undoes it. Its QR code is
+    left out when the output goes to a pipe or a file; the link stays.</li>
+  <li>While a machine's screen shows, the tab's title is the machine's name, here and on the machine's own
+    page.</li>
+  <li><code>peek provider add</code> and <code>remove</code> start and stop the provider in the running peek,
+    as <code>peek plugin</code> does, with no restart.</li>
+  <li>A machine's card gives its name the card's whole width, and the full name shows on hovering it. An
+    offline machine's card and the Plugins overview show the plugins it had when last seen, faded and marked with
+    when that was, instead of only "offline".</li>
+  <li>The Plugins overview's By plugin layout can turn a plugin off on a machine, not only on.</li>
+  <li><code>peek -h</code> is short, a line for each command and flag; <code>peek --help</code> and
+    <code>peek &lt;command&gt; --help</code> give the detail.</li>
   <li>The prompt for a pairing code names the machine, and a visitor refused with <code>--no-token</code> is told
     why instead of getting an empty page.</li>
 </ul>
 <h3>Fixed</h3>
 <ul>
+  <li>With a plugin's page open over a machine's screen, mouse, wheel and touch went to the frozen screen behind
+    it and clicked on the machine unseen. They are ignored now, as keys already were.</li>
+  <li>A plugin that names its page by a path relative to its folder (<code>{"page": "page"}</code>) gets it
+    served, where before it opened a 404. A page folder that is not there gives no button, and peek's log says
+    why.</li>
+  <li><code>peek uninstall</code> said it had removed peek when nothing was installed. It says so now, and if
+    Tailscale Serve still passes to peek, it prints the command that removes that.</li>
+  <li>A flag of peek's given after a command, like <code>peek pair --no-token</code>, failed with no hint. The
+    error now says the flag goes before the command, and shows the command line that works.</li>
+  <li>Starting peek a second time on the same port says that peek already runs there and how to pick another
+    port, before starting anything, instead of failing with "Address already in use".</li>
   <li>The access token's file could be read by other users of the machine (Linux). It is private now, and an
     existing one is made private when peek starts.</li>
   <li>Pasting text could stop working until the page was reloaded.</li>

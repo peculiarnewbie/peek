@@ -71,21 +71,31 @@ macro_rules! log {
 }
 
 #[derive(Parser)]
-#[command(version, about = "Instant-connect remote desktop host for LAN and Tailscale.")]
+#[command(
+    version,
+    about = "Instant-connect remote desktop host for LAN and Tailscale.",
+    after_long_help = "`peek <command> --help` says more of each command."
+)]
 struct Args {
     /// Address to listen on
     #[arg(long, default_value = "0.0.0.0", global = true)]
     bind: IpAddr,
+    /// Port to listen on
     #[arg(long, default_value_t = 9182, global = true)]
     port: u16,
-    /// Origin of the hosted client, whose pages may connect with a paired
-    /// token ("none" to refuse them)
+    /// Origin of the hosted client ("none" to refuse it)
+    ///
+    /// Pages from this origin may connect with a paired token. "none"
+    /// refuses them.
     #[arg(long, value_name = "ORIGIN", default_value = "https://peek.peculiarnewbie.com")]
     web: String,
     /// Maximum frames per second
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..=240))]
     fps: u32,
-    /// Show the screen but ignore mouse, keyboard and clipboard from clients
+    /// Show the screen but ignore input
+    ///
+    /// Mouse, keyboard and clipboard from clients are ignored, and
+    /// providers' actions refused.
     #[arg(long)]
     view_only: bool,
     /// Do not synchronise the clipboard in either direction
@@ -94,7 +104,10 @@ struct Args {
     /// Also append log lines to this file
     #[arg(long, value_name = "FILE")]
     log: Option<PathBuf>,
-    /// Need no access token; accept connections only over Tailscale instead
+    /// Need no access token; accept Tailscale connections only
+    ///
+    /// Connections that do not come over Tailscale are refused. The hosted
+    /// client still needs a paired browser.
     #[arg(long)]
     no_token: bool,
     /// Log every input event and periodic throughput figures
@@ -104,15 +117,18 @@ struct Args {
     #[cfg(windows)]
     #[arg(long)]
     detach: bool,
-    /// Keep the GPU device open while nobody is watching, so connecting from
-    /// idle is faster. Costs some memory, and on a laptop can keep a discrete
-    /// GPU from sleeping
+    /// Keep the GPU device open while idle, to connect faster
+    ///
+    /// Kept open while nobody is watching, so connecting from idle is
+    /// faster. Costs some memory, and on a laptop can keep a discrete GPU
+    /// from sleeping.
     #[cfg(windows)]
     #[arg(long)]
     keep_gpu: bool,
-    /// Run as a Windows service, which starts peek as SYSTEM in the session
-    /// at the console, so it also shows the login and lock screens and UAC
-    /// prompts. Set it up with `peek install --service`
+    /// Run as a Windows service (set up by `peek install --service`)
+    ///
+    /// The service starts peek as SYSTEM in the session at the console, so
+    /// it also shows the login and lock screens and UAC prompts.
     #[cfg(windows)]
     #[arg(long)]
     service: bool,
@@ -129,12 +145,16 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Show a one-time code that pairs a browser with this machine. If peek
-    /// is not running yet, this starts it here and keeps it running
+    /// Show a one-time code that pairs a browser with this machine
+    ///
+    /// If peek is not running yet, this starts it here and keeps it
+    /// running. With Tailscale, it sets up Tailscale Serve for the hosted
+    /// client first.
     Pair {
-        /// The HTTPS port Tailscale Serve passes to peek on: 443, 8443 or
-        /// 10000. For when another app has 443. Without it, peek keeps the
-        /// port it already has, or takes 443
+        /// The HTTPS port Tailscale Serve passes to peek on: 443, 8443 or 10000
+        ///
+        /// For when another app has 443. Without it, peek keeps the port it
+        /// already has, or takes 443.
         #[arg(long, value_name = "PORT", value_parser = serve_port)]
         serve_port: Option<u16>,
     },
@@ -151,16 +171,19 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 50)]
         lines: usize,
     },
-    /// Start peek in the background at logon: copies it to a fixed place and
-    /// registers a logon task and firewall rule (Windows, asks for
-    /// administrator) or a systemd user service (Linux). Flags after it are
+    /// Start peek in the background at logon
+    ///
+    /// It copies peek to a fixed place and registers a logon task and
+    /// firewall rule (Windows, asks for administrator) or a systemd user
+    /// service (Linux). Flags after it are
     /// for that peek, like `peek install --no-token`, and replace those of
     /// the last install; with none, it keeps them. On Windows, `--service`
     /// installs a service instead, which also works at the login screen.
-    /// Run again after an update
+    /// Run again after an update.
     Install {
-        /// Drop the flags of the last install and start peek with none (on
-        /// Windows, from the logon task)
+        /// Drop the flags of the last install and start peek with none
+        ///
+        /// On Windows, from the logon task.
         #[arg(long)]
         defaults: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "PEEK FLAGS")]
@@ -168,15 +191,19 @@ enum Command {
     },
     /// Undo `peek install`
     Uninstall,
+    /// Add, remove and list programs started beside peek
+    ///
     /// Programs that add to what this machine offers, beside its screen:
     /// each is started with peek and speaks to it on stdin and stdout
-    /// (docs/providers.md). Restart peek after a change
+    /// (docs/providers.md). A running peek starts and stops them to match.
     Provider {
         #[command(subcommand)]
         action: ProviderCommand,
     },
+    /// Install, update, remove and list plugins
+    ///
     /// Plugins: folders with a peek-plugin.json, installed here from a
-    /// folder, a git repository or npm. Also on the Plugins page in a browser
+    /// folder, a git repository or npm. Also on the Plugins page in a browser.
     Plugin {
         #[command(subcommand)]
         action: PluginCommand,
@@ -185,8 +212,10 @@ enum Command {
 
 #[derive(Subcommand)]
 enum PluginCommand {
-    /// Install a plugin: a folder on this machine, an https address of a git
-    /// repository, or an npm package
+    /// Install a plugin from a folder, a git repository or npm
+    ///
+    /// A folder on this machine, an https address of a git repository, or an
+    /// npm package.
     Add { source: String },
     /// Update a plugin, keeping its settings and data
     Update { name: String, source: Option<String> },
@@ -199,8 +228,9 @@ enum PluginCommand {
     },
     /// List everything beside the screen, and whether it is on
     List,
-    /// Whether a paired browser may install, remove and change plugins (it
-    /// can always turn them on and off)
+    /// Whether a paired browser may install, remove and change plugins
+    ///
+    /// It can always turn them on and off.
     RemoteInstall {
         #[arg(value_parser = ["on", "off"])]
         on: String,
@@ -209,8 +239,9 @@ enum PluginCommand {
 
 #[derive(Subcommand)]
 enum ProviderCommand {
-    /// Add a provider: a name, then the command that starts it, like
-    /// `peek provider add jobs -- node C:\jobs\provider.js`
+    /// Add a provider: a name, then the command that starts it
+    ///
+    /// Like `peek provider add jobs -- node C:\jobs\provider.js`.
     Add {
         name: String,
         #[arg(last = true, required = true, value_name = "COMMAND")]
@@ -324,7 +355,7 @@ A browser {} install, remove and change plugins here (`peek plugin remote-instal
     }
 }
 
-fn provider_command(action: &ProviderCommand) -> Result<(), String> {
+fn provider_command(args: &Args, action: &ProviderCommand) -> Result<(), String> {
     let dir = installed_config_dir();
     let path = dir.join(plugins::PROVIDERS_FILE);
     let mut all = plugins::read_commands(&dir);
@@ -332,6 +363,13 @@ fn provider_command(action: &ProviderCommand) -> Result<(), String> {
         fs::create_dir_all(&dir)
             .and_then(|()| fs::write(&path, serde_json::to_string_pretty(all).unwrap_or_default()))
             .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    };
+    // As for plugins: a running peek starts and stops providers to match.
+    let tell = |quiet: bool| {
+        let running = matches!(local_request(args, "POST", "/api/plugins/reload", ""), Ok((204, _)));
+        if !quiet {
+            println!("{}", if running { "The running peek has it now." } else { "peek reads this when it starts." });
+        }
     };
     match action {
         ProviderCommand::List => {
@@ -350,9 +388,15 @@ fn provider_command(action: &ProviderCommand) -> Result<(), String> {
                     plugins::OWN.join(", ")
                 ));
             }
+            // A new command for a provider that runs: stop the old one first.
+            if all.remove(name).is_some() {
+                save(&all)?;
+                tell(true);
+            }
             all.insert(name.clone(), command.clone());
             save(&all)?;
-            println!("Added {name}. It starts with peek, as the same user: restart peek to start it now.");
+            println!("Added {name}. It runs with peek, as the same user.");
+            tell(false);
             Ok(())
         }
         ProviderCommand::Remove { name } => {
@@ -360,7 +404,8 @@ fn provider_command(action: &ProviderCommand) -> Result<(), String> {
                 return Err(format!("no provider is called {name} (see `peek provider list`)"));
             }
             save(&all)?;
-            println!("Removed {name}. Restart peek to stop it.");
+            println!("Removed {name}.");
+            tell(false);
             Ok(())
         }
     }
@@ -506,6 +551,36 @@ fn host_running(args: &Args) -> bool {
     std::net::TcpStream::connect_timeout(&local_addr(args), std::time::Duration::from_secs(1)).is_ok()
 }
 
+/// Why this peek cannot listen, in words: most often another peek already
+/// does, on the same port.
+fn listen_error(args: &Args, e: std::io::Error) -> String {
+    let addr = SocketAddr::new(args.bind, args.port);
+    if e.kind() != std::io::ErrorKind::AddrInUse {
+        return format!("cannot listen on {addr}: {e}");
+    }
+    let (port, next) = (args.port, args.port.checked_add(1).unwrap_or(1024));
+    if is_peek(args) {
+        format!("peek is already running on port {port}. To run another, give it a port of its own, like --port {next}.")
+    } else {
+        format!("another program already uses port {port}. Start peek on another, like --port {next}.")
+    }
+}
+
+/// Whether what listens where this peek would is a peek: it answers
+/// /.well-known/peek with its protocol.
+fn is_peek(args: &Args) -> bool {
+    use std::io::Read;
+    let addr = local_addr(args);
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(1)) else { return false };
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    if write!(stream, "GET /.well-known/peek HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    let _ = stream.take(64 * 1024).read_to_string(&mut response);
+    response.contains("\"protocol\"")
+}
+
 fn local_request_with(args: &Args, method: &str, path: &str, body: &str, secret: &str) -> Result<(u16, String), String> {
     use std::io::Read;
     let addr = local_addr(args);
@@ -596,8 +671,25 @@ fn ensure_serve(args: &Args, tailscale: &str, host: &str, want: Option<u16>) -> 
         }
         return Err(why);
     }
-    println!();
+    println!(
+        "Tailscale Serve now passes https://{} to peek. To undo it: tailscale serve --https={port} off\n",
+        pairing::serve_host(host, port)
+    );
     Ok(())
+}
+
+/// After `peek uninstall`: Tailscale Serve may still pass HTTPS to peek's
+/// port, as `peek pair` set it up. Say how to remove that; it is not removed
+/// here, as the user may have set it up for more than peek.
+fn serve_left(args: &Args) {
+    let Some((tailscale, host)) = pairing::tailscale_cmd().zip(pairing::tailscale_name()) else { return };
+    let Ok(status) = pairing::serve_status(tailscale) else { return };
+    if let Some(port) = pairing::peek_port(&status, &host, &pairing::serve_target(args.bind, args.port)) {
+        println!(
+            "Tailscale Serve still passes https://{} to peek's port. To remove that too: tailscale serve --https={port} off",
+            pairing::serve_host(&host, port)
+        );
+    }
 }
 
 /// `peek pair`. Returns true when no peek is running here yet, so this
@@ -652,7 +744,9 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
         println!("The hosted client reaches machines through Tailscale: start it, then run `peek pair` again for that.\n");
     }
     println!("Pair a browser with {name}:\n\n  {link}\n");
-    if let Ok(qr) = qrcode::QrCode::new(link.as_bytes()) {
+    // Into a pipe or a file, the code would be a block of noise.
+    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    if let Some(qr) = qrcode::QrCode::new(link.as_bytes()).ok().filter(|_| terminal) {
         let art = qr
             .render::<qrcode::render::unicode::Dense1x2>()
             .dark_color(qrcode::render::unicode::Dense1x2::Light)
@@ -660,7 +754,7 @@ fn print_offer(offer: &serde_json::Value) -> Result<(), String> {
             .build();
         println!("{art}\n");
     }
-    println!("Open the link on that device, or scan it. It works once, within 5 minutes.");
+    println!("Open the link on that device{}. It works once, within 5 minutes.", if terminal { ", or scan it" } else { "" });
     if own.is_none() && lan.len() > 1 {
         println!("If it does not open, try another of {name}'s addresses:");
         for other in &lan[1..] {
@@ -767,8 +861,14 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
             install::check_service_args(&flags)?;
             install::install(Some(&flags))
         }
-        Command::Uninstall => install::uninstall(),
-        Command::Provider { action } => provider_command(action),
+        Command::Uninstall => {
+            if !install::uninstall()? {
+                println!("peek was not installed here, so there was nothing to remove.");
+            }
+            serve_left(args);
+            Ok(())
+        }
+        Command::Provider { action } => provider_command(args, action),
         Command::Plugin { action } => plugin_command(args, action),
     }
 }
@@ -792,6 +892,17 @@ fn core_in_service() -> Arc<provider::Link> {
     });
     let pairing = pairing::Pairing::load(&config_dir())
         .unwrap_or_else(|e| fail(format!("cannot read or store pairing data in {}: {e}", config_dir().display())));
+    // Listening before any provider is started: a second peek on the same
+    // port stops here, and a client that connects in between waits.
+    let addr = SocketAddr::new(args.bind, args.port);
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap_or_else(|e| fail(format!("cannot start the async runtime: {e}")));
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind(addr))
+        .unwrap_or_else(|e| fail(listen_error(&args, e)));
     let screen = provider::Link::new("screen");
     let shared = Arc::new(server::Shared {
         token,
@@ -805,17 +916,6 @@ fn core_in_service() -> Arc<provider::Link> {
         next_id: AtomicU64::new(1),
         tickets: Default::default(),
     });
-    let addr = SocketAddr::new(args.bind, args.port);
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap_or_else(|e| fail(format!("cannot start the async runtime: {e}")));
-    // Listening before the first provider is started: a client that
-    // connects in between waits for it.
-    let listener = runtime
-        .block_on(tokio::net::TcpListener::bind(addr))
-        .unwrap_or_else(|e| fail(format!("cannot listen on {addr}: {e}")));
     log!("service: listening on {addr}");
     std::thread::Builder::new()
         .name("core".into())
@@ -833,8 +933,41 @@ fn power_flags(args: &Args) -> Vec<String> {
     if args.view_only { vec!["--view-only".into()] } else { Vec::new() }
 }
 
+/// For a flag of peek's given after a command (`peek pair --no-token`):
+/// where it goes instead, as the command line with it moved.
+fn flag_placement(e: &clap::Error) -> Option<String> {
+    use clap::CommandFactory;
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if e.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    let Some(ContextValue::String(given)) = e.get(ContextKind::InvalidArg) else { return None };
+    let flag = given.split('=').next().unwrap_or(given);
+    let peek = Args::command();
+    let arg = peek.get_arguments().find(|a| a.get_long().is_some_and(|l| format!("--{l}") == flag))?;
+    let words: Vec<String> = std::env::args().skip(1).collect();
+    let at = words.iter().position(|w| peek.find_subcommand(w).is_some())?;
+    let from = words.iter().position(|w| w == flag || w.starts_with(&format!("{flag}=")))?;
+    // Its value comes along, when given apart from it.
+    let till = if words[from] == flag && arg.get_action().takes_values() { from + 2 } else { from + 1 }.min(words.len());
+    let mut moved: Vec<String> = words[..at].to_vec();
+    moved.extend_from_slice(&words[from..till]);
+    moved.extend(words[at..from].iter().chain(&words[till..]).cloned());
+    Some(format!(
+        "error: {flag} is a flag of peek itself, not of `peek {}`: it goes before the command.\n\n  peek {}",
+        words[at],
+        moved.join(" ")
+    ))
+}
+
 fn main() {
-    let args = Args::parse();
+    let args = Args::try_parse().unwrap_or_else(|e| match flag_placement(&e) {
+        Some(why) => {
+            eprintln!("{why}");
+            std::process::exit(2);
+        }
+        None => e.exit(),
+    });
 
     // `peek pair` with no peek running starts one here, then pairs.
     let mut pair_here = false;
@@ -935,6 +1068,23 @@ fn main() {
         return;
     }
 
+    // Listen first: a second peek on the same port should say so before it
+    // has started anything. And listen before saying so, and before handing
+    // out a pairing code.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("start async runtime");
+    let addr = SocketAddr::new(args.bind, args.port);
+    let listener = match runtime.block_on(tokio::net::TcpListener::bind(addr)) {
+        Ok(listener) => listener,
+        Err(e) => {
+            log!("{}", listen_error(&args, e));
+            std::process::exit(1);
+        }
+    };
+
     platform::init();
     #[cfg(windows)]
     platform::keep_device(args.keep_gpu);
@@ -975,32 +1125,13 @@ fn main() {
         tickets: Default::default(),
     });
 
-    // Listen before saying so, and before handing out a pairing code.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .expect("start async runtime");
-    let addr = SocketAddr::new(args.bind, args.port);
-    let listener = match runtime.block_on(tokio::net::TcpListener::bind(addr)) {
-        Ok(listener) => listener,
-        Err(e) => {
-            log!("cannot listen on {addr}: {e}");
-            std::process::exit(1);
-        }
-    };
-
     let hosts: Vec<IpAddr> = if args.bind.is_unspecified() {
         let mut hosts = vec![IpAddr::from([127, 0, 0, 1])];
-        if let Ok(addrs) = if_addrs::get_if_addrs() {
-            hosts.extend(
-                addrs.iter().map(|a| a.ip()).filter(|ip| {
-                    ip.is_ipv4()
-                        && !ip.is_loopback()
-                        && if args.no_token { server::tailnet(*ip) } else { server::allowed(*ip) }
-                }),
-            );
-        }
+        hosts.extend(
+            server::own_addresses()
+                .into_iter()
+                .filter(|ip| if args.no_token { server::tailnet(*ip) } else { server::allowed(*ip) }),
+        );
         hosts
     } else {
         vec![args.bind]
@@ -1008,10 +1139,14 @@ fn main() {
     let fragment = shared.token.as_ref().map_or(String::new(), |t| format!("#{t}"));
     println!("peek is running. Open one of these on the client:");
     for host in &hosts {
-        match host {
-            IpAddr::V6(v6) => println!("  http://[{v6}]:{}/{fragment}", args.port),
-            v4 => println!("  http://{v4}:{}/{fragment}", args.port),
-        }
+        let label = if host.is_loopback() {
+            "This machine"
+        } else if server::tailnet(*host) {
+            "Tailscale"
+        } else {
+            "Your network"
+        };
+        println!("  {label:<13} http://{}/{fragment}", SocketAddr::new(*host, args.port));
     }
     if shared.token.is_some() {
         println!("The part after # is the access token; the browser remembers it after the first visit.");

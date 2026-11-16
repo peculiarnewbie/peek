@@ -26,7 +26,7 @@ export function Toolbar() {
   });
   const status = () => {
     const m = monitors()[cfg.mon];
-    const state = !live() ? 'Connecting' : sleeping() ? 'Asleep' : 'Live';
+    const state = !live() ? 'Connecting' : sleeping() ? 'Paused' : 'Live';
     return state + (live() && m ? ` · ${m.w}×${m.h}` : '') + (viewOnly() ? ' · view only' : '');
   };
   return (
@@ -38,30 +38,34 @@ export function Toolbar() {
       <div class="more">
         <span class="sep" />
         <Show when={HOSTED}>
-          <button id="b-machines" class="tb" tabindex={-1} title="All machines" onClick={home}>
+          <button id="b-machines" class="tb" tabindex={-1} title="All machines" aria-label={`${current()?.name}: all machines`} onClick={home}>
             <Icon name="back" /><span>{current()?.name}</span>
           </button>
         </Show>
         {/* The machine's apps with a page of their own (Frame.tsx); plugins are under Settings. */}
         <For each={appPages()}>{p =>
-          <button class="tb" tabindex={-1} title={`${p}: its page on this machine`} aria-pressed={framed() === p ? 'true' : 'false'}
+          <button class="tb text" tabindex={-1} title={`${p}: its page on this machine`} aria-pressed={framed() === p ? 'true' : 'false'}
             onClick={() => openPage(p)}><span>{p}</span></button>
         }</For>
-        <button id="b-sleep" class="tb" tabindex={-1} onClick={() => setSleep(!sleeping())}>
-          <Show when={sleeping()} fallback={<><Icon name="moon" /><span>Sleep</span></>}>
+        {/* Labels as well as text: a narrow screen shows the icons only. */}
+        <button id="b-sleep" class="tb" tabindex={-1} onClick={() => setSleep(!sleeping())}
+          aria-label={sleeping() ? 'Resume' : 'Pause'}
+          title={sleeping() ? 'Resume the picture' : 'Pause the picture in this browser, keeping the connection'}>
+          <Show when={sleeping()} fallback={<><Icon name="pause" /><span>Pause</span></>}>
             <Icon name="play" /><span>Resume</span>
           </Show>
         </button>
-        <button id="b-settings" class="tb" tabindex={-1} aria-pressed={settingsOpen() ? 'true' : 'false'}
+        <button id="b-settings" class="tb" tabindex={-1} aria-label="Settings" title="Settings" aria-pressed={settingsOpen() ? 'true' : 'false'}
           onClick={() => showSettings(!settingsOpen())}>
           <Icon name="sliders" /><span>Settings</span>
         </button>
-        <button id="b-stats" class="tb" tabindex={-1} aria-pressed={statsMode() !== 'off' ? 'true' : 'false'}
+        <button id="b-stats" class="tb" tabindex={-1} aria-label="Stats" title="Stats" aria-pressed={statsMode() !== 'off' ? 'true' : 'false'}
           onClick={() => { setStats(statsMode() === 'off' ? 'open' : 'off'); focusScreen(); }}>
           <Icon name="chart" /><span>Stats</span>
         </button>
         <Show when={isTouch()}>
           <button id="b-touch" class="tb" tabindex={-1} onClick={toggleTouchMode}
+            aria-label={touchMode() === 'trackpad' ? 'Trackpad' : 'Touch'}
             title={touchMode() === 'trackpad'
               ? 'Trackpad: drag to move the pointer, tap to click. Switch to touch'
               : 'Touch: tap where you want to click. Switch to trackpad'}>
@@ -70,11 +74,11 @@ export function Toolbar() {
           </button>
         </Show>
         <button id="b-full" class="tb icon" tabindex={-1} title={fullscreen() ? 'Exit fullscreen' : 'Fullscreen'}
-          onClick={toggleFullscreen}>
+          aria-label={fullscreen() ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen}>
           <Icon name={fullscreen() ? 'shrink' : 'expand'} />
         </button>
         <button id="b-pin" class="tb icon" tabindex={-1} aria-pressed={pinned() ? 'true' : 'false'} title={pinned() ? 'Unpin' : 'Pin'}
-          onClick={togglePin}>
+          aria-label={pinned() ? 'Unpin the toolbar' : 'Pin the toolbar'} onClick={togglePin}>
           <Icon name="pin" />
         </button>
       </div>

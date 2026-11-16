@@ -7,7 +7,7 @@ import {
   BLOCKED_HELP, cleanHost, favorite, forget, localAccess, machines, navigate, openMachine, pagePath, pair,
   parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, type Machine,
 } from '../hosted';
-import { changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
+import { ago, changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
 import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { AddForm, Foot, Header, Intro } from './Intro';
@@ -61,7 +61,7 @@ function Card(props: { m: Machine }) {
         openMachine(props.m);
       }}>
         <span class="dicon"><Icon name="monitor" /></span>
-        <span class="dname">{props.m.name}</span>
+        <span class="dname" title={props.m.name}>{props.m.name}</span>
         <span class="dhost">{props.m.host}</span>
         <span class="dstate"><span class={['mdot', { up: state() === 'up', down: state() === 'down' }]} />
           {STATUS[state()]}</span>
@@ -112,14 +112,17 @@ function CardPlugins(props: { m: Machine }) {
     return { c, toggle: !!pickedItem() && can.some(o => o.t === 'toggle'), fetch: !pickedItem() && fetch?.t === 'install' ? fetch : undefined };
   };
   const working = () => !!changing[`${props.m.id}/${picked()}`];
+  // Away: what it had when last seen, faded, and saying when that was.
+  const asOf = () => reach[props.m.id] === 'down' && props.m.plugins ? ago(props.m.plugins.at) : null;
   return (
     <Show when={items().length}>
-      <div class="dplugins">
+      <div class={['dplugins', { stale: !!asOf() }]}>
         <For each={items()}>{i => (
           <button class={['ptag', { off: !i.on, hl: i.name === picked() }]} tabindex={-1}
-            title={`${i.name}: ${i.on ? 'on' : 'off'}. Opens ${props.m.name}'s Plugins page`}
+            title={`${i.name}: ${i.on ? 'on' : 'off'}${asOf() ? `, as of ${asOf()}` : ''}. Opens ${props.m.name}'s Plugins page`}
             onClick={() => navigate(pagePath(props.m, 'plugins'))}>{i.name}</button>
         )}</For>
+        <Show when={asOf()}>{a => <span class="pasof">as of {a()}</span>}</Show>
       </div>
       <Show when={fix()}>{f => (
         <div class="dfix">
@@ -177,7 +180,7 @@ export function MachinesPage(props: { plugins?: boolean }) {
     <main id="devices">
       <Header>
         <Show when={machines().length && !showForm()}>
-          <button class="tb" tabindex={-1} title="Add a machine" onClick={() => { setError(''); setAdding(true); navigate('/'); }}>
+          <button class="tb" tabindex={-1} title="Add a machine" aria-label="Add a machine" onClick={() => { setError(''); setAdding(true); navigate('/'); }}>
             <Icon name="plus" /><span>Add a machine</span>
           </button>
         </Show>

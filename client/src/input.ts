@@ -37,6 +37,12 @@ export function sendButton(b: number, down: boolean, x: number, y: number) {
 // Diffing `buttons` (rather than trusting pointerdown/up) handles chorded
 // clicks, where the second button only shows up as a pointermove.
 function pointer(e: PointerEvent) {
+  // A page covers the screen, which is frozen behind it: a click there would
+  // land on the machine unseen.
+  if (onPage()) {
+    if (held) { held = 0; pendingMove = null; send({ t: 'rel' }); }
+    return;
+  }
   const [x, y] = pos(e);
   const now = e.type === 'pointerup' || e.type === 'pointercancel' ? e.buttons & held : e.buttons;
   if (now !== held) {
@@ -76,6 +82,7 @@ for (const type of ['contextmenu', 'mousedown', 'mouseup', 'auxclick', 'dragstar
 let wheelX = 0, wheelY = 0;
 cv.addEventListener('wheel', e => {
   e.preventDefault();
+  if (onPage()) return;
   // Normalise to Windows wheel units (120 per notch).
   const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 480 : 1.2;
   wheelX += e.deltaX * unit; wheelY -= e.deltaY * unit;

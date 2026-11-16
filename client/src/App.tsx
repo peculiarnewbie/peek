@@ -10,6 +10,7 @@ import { Stats } from './components/Stats';
 import { Toolbar } from './components/Toolbar';
 import { stage } from './screen';
 import { isTouch, live, sleeping } from './state';
+import { own } from './views';
 import { Show } from 'solid-js';
 
 export function App() {
@@ -19,6 +20,9 @@ export function App() {
   createEffect(live, v => { document.body.classList.toggle('stale', !v); });
   // Touch layout: tap-to-open toolbar, drawn cursor, stats panel never folded.
   createEffect(isTouch, v => { document.body.classList.toggle('touch', v); });
+  // The machine's name on the tab of its own page. (The hosted site's
+  // router titles its pages: site/routes/_app/screen/$.tsx.)
+  if (!HOSTED) createEffect(() => own()?.name, n => { if (n) document.title = `${n} · peek`; });
   return (
     <>
       <IconSprite />

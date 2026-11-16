@@ -22,7 +22,7 @@
 //! (little-endian), then the payload.
 //!
 //! - To the provider: `OPEN` (how to open the channel: the client's query,
-//!   as JSON), `TEXT` (a client's message, untouched), `CLOSE`.
+//!   as JSON), `TEXT` and `BINARY` (a client's message, untouched), `CLOSE`.
 //! - From it: `TEXT` and `BINARY` for the client, `STATE` (how to open this
 //!   channel again as it is now, which the core keeps and does not read),
 //!   `LOG` (a line for the core's log), and `ABOUT` (what the provider says
@@ -182,13 +182,15 @@ pub struct Link {
     child: Mutex<Option<std::process::Child>>,
     /// Stopped for good: not started again.
     stopped: std::sync::atomic::AtomicBool,
+    /// The folder it runs in, if not peek's: a relative page is in it.
+    dir: std::sync::OnceLock<std::path::PathBuf>,
 }
 
 impl Link {
     /// A link with no provider yet. Channels opened on it wait for one.
     pub fn new(name: &str) -> Arc<Link> {
         Arc::new(Link { name: name.into(), to: Mutex::new((0, None)), channels: Mutex::default(), about: Mutex::default(), offers: Mutex::default(),
-            status: Mutex::default(), child: Mutex::default(), stopped: Default::default() })
+            status: Mutex::default(), child: Mutex::default(), stopped: Default::default(), dir: Default::default() })
     }
 
     /// What the provider says of itself, for `/.well-known/peek`: empty
@@ -202,6 +204,9 @@ impl Link {
     /// clients do, which the child is told (`PEEK_VIEW_ONLY=1`).
     pub fn spawn(name: &str, start: Start, view_only: bool) -> Arc<Link> {
         let link = Link::new(name);
+        if let Start::Program(Program { dir: Some(dir), .. }) = &start {
+            let _ = link.dir.set(dir.clone());
+        }
         let keep = link.clone();
         let name = name.to_string();
         let started = std::thread::Builder::new().name(format!("{name}-provider")).spawn(move || {
@@ -464,11 +469,30 @@ impl Link {
                 }
             }
             ABOUT if payload.len() <= MAX_ABOUT => {
-                if let Ok(serde_json::Value::Object(about)) = serde_json::from_slice(&payload) {
+                if let Ok(serde_json::Value::Object(mut about)) = serde_json::from_slice(&payload) {
+                    self.place_page(&mut about);
                     *self.about.lock().unwrap() = Some(about);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A page named relative to the folder the provider runs in (a plugin's),
+    /// which peek, running elsewhere, would not find. A page that is not
+    /// there is dropped, and the log says why, rather than a button that
+    /// opens a 404.
+    fn place_page(&self, about: &mut serde_json::Map<String, serde_json::Value>) {
+        let Some(page) = about.get("page").and_then(|p| p.as_str()).map(std::path::PathBuf::from) else { return };
+        let page = match self.dir.get() {
+            Some(dir) if page.is_relative() => dir.join(page),
+            _ => page,
+        };
+        if page.is_dir() {
+            about.insert("page".into(), page.display().to_string().into());
+        } else {
+            crate::log!("{}: its page, {}, is not a folder, so it has none", self.name, page.display());
+            about.remove("page");
         }
     }
 

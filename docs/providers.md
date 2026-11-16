@@ -67,15 +67,18 @@ From peek:
 | 1 | A channel opens | `{}`, or the state you last gave for it (see kind 5) |
 | 2 | It closes | none |
 | 3 | A client's message | JSON |
+| 4 | A client's binary message, from a page's own socket ([frames.md](frames.md)) | bytes. Never on a view-only host |
 
 To peek:
 
 | Kind | | Payload |
 |---|---|---|
 | 3 | A message for the client | JSON |
+| 4 | Binary for the client, on a page's own socket only (dropped on any other channel) | bytes |
 | 5 | How to open this channel again as it is now | JSON. If your process is replaced while the channel is open, the next one gets this as the channel's opening |
 | 6 | A line for peek's log | text |
 | 7 | What the provider says of itself (channel 0) | a JSON object, see below |
+| 8 | A file the client on this channel may download | `{"path": …, "name": …, "ref": …}`. The client gets `{"t": "file", "ref": …, "url": …, "name": …, "size": …}` on the channel, a link that works once, within a minute ([frames.md](frames.md)) |
 
 Send kind 7 once, as you start:
 
