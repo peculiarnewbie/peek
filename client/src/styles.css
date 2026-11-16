@@ -223,8 +223,11 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 .cmd-copy { position: absolute; top: 6px; right: 6px; display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; border-radius: 7px; color: var(--muted); }
 .cmd-copy:hover { background: var(--hover); color: var(--ink); }
-.figures { list-style: none; margin: 18px 0 0; padding: 0; color: var(--ink-2); font-size: 12.5px; line-height: 1.7; }
-.figures b { display: inline-block; min-width: 4.2em; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 16px; max-width: 620px; margin: 18px 0 0; }
+.figures dt { color: var(--ink); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.figures dd { margin: 1px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
+.figures-how { display: inline-block; margin-top: 8px; font-size: 11.5px; }
+@media (max-width: 520px) { .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .dhead h1 { display: flex; align-items: center; gap: 10px; }
 .dhead h1 img { border-radius: 7px; }
 .dnav { display: flex; align-items: center; gap: 2px; }

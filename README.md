@@ -20,8 +20,8 @@ The point is a short wait for the screen, so that is what is measured, with
 [`bench/first-frame.ts`](bench/first-frame.ts) at medium quality.
 
 **Over Tailscale**, from a Linux laptop to a Windows desktop (1920×1080) on
-another network, connected directly with a ping of about 8 ms, peek started
-with `--keep-gpu`:
+another network, connected directly with a ping of about 8 ms, peek 0.2.2
+started with `--keep-gpu`:
 
 | | Median | p90 |
 |---|---|---|
@@ -35,17 +35,19 @@ bigger it is and the longer it takes. Without `--keep-gpu`, starting from
 idle added about 200 ms on this machine.
 
 **On the machine itself**, a Linux laptop (niri, 1920×1080) connecting to its
-own peek, which is peek's own share of the wait:
+own peek (0.3, with Vitals on and Power off, as installed), which is peek's
+own share of the wait:
 
 | | Median | p90 |
 |---|---|---|
-| Connect to an idle host, until the whole first frame (149 KB) has arrived | 24 ms | 26 ms |
-| The same within 5 s of the last connection (capture still set up) | 14 ms | 18 ms |
-| Of that, capturing and encoding the full screen | 13 ms | 14 ms |
-| Socket open | 1.3 ms | 1.6 ms |
+| Connect to an idle host, until the whole first frame (198 KB) has arrived | 22 ms | 24 ms |
+| The same within 5 s of the last connection (capture still set up) | 12 ms | 15 ms |
+| Of that, capturing and encoding the full screen | 8.1 ms | 11 ms |
+| Socket open | 1.3 ms | 1.8 ms |
 
-Idle, the host captures nothing: 10 ms of CPU over two minutes (0.01% of a
-core) and 17 MB of memory. The binary is 3.6 MB.
+Idle, the host captures nothing: peek and its Vitals process used 20 ms of
+CPU over two minutes (0.02% of a core) and held 18 MB of memory between them
+(proportional set size, after the runs above). The binary is 4.6 MB.
 
 The browser then decodes and draws the frame, a few milliseconds more.
 **Stats → First frame** in the client shows the whole wait as you see it.

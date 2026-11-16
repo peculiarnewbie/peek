@@ -179,20 +179,20 @@ export function Devices() {
           <section class="intro">
             <p class="hint lead">peek is a small, fast remote desktop, tailored for short sessions.</p>
             <p class="hint lead">It also lets a machine show its vitals, sleep and wake, share folders, and run{' '}
-              <a href="/docs/#apps">plugins</a> you add.</p>
+              <a href="/docs/#apps">plugins</a>: programs on the machine that show up in your browser through peek.</p>
             <p class="hint lead">Run it on a computer (Windows, or Linux on Wayland) on your{' '}
               <a href="https://tailscale.com">Tailscale</a> network and pair this browser with it once. Its screen
               is then a click away, with mouse, keyboard and clipboard.</p>
             <p class="hint lead">This site only serves the page: your browser connects straight to each machine
               over Tailscale.</p>
             <Commands lines={['npx @peculiarnewbie/peek pair']} />
-            <ul class="figures">
-              <li><b>125 ms</b>from connecting to a whole 1080p frame over Tailscale, with the machine idle until then</li>
-              <li><b>24 ms</b>the same on the machine itself, peek's own share</li>
-              <li><b>0.01%</b>of one CPU core while nobody is looking: no capture runs</li>
-              <li><b>17 MB</b>of memory, in a 3.6 MB program</li>
-              <li><a href="/docs/#numbers">How these were measured</a></li>
-            </ul>
+            <dl class="figures">
+              <div><dt>125 ms</dt><dd>to a whole 1080p frame over Tailscale, from idle</dd></div>
+              <div><dt>22 ms</dt><dd>the same on the machine itself</dd></div>
+              <div><dt>0.02%</dt><dd>of a CPU core while nobody looks</dd></div>
+              <div><dt>18 MB</dt><dd>of memory, in a 4.6 MB program</dd></div>
+            </dl>
+            <a class="figures-how" href="/docs/#numbers">How these were measured</a>
           </section>
         }>
           <div class="dgrid">
