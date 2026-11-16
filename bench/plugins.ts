@@ -50,6 +50,14 @@ class Host {
     this.token = (await readFile(join(this.config, 'token'), 'utf8')).trim();
   }
   async stop() { this.process.kill(); await this.process.exited; }
+  /** The plugins page's requests without the page (POST /api/plugins), as the hosted client sends them. */
+  async api(body: object, token: string | null = this.token) {
+    const r = await fetch(`${this.base}/api/plugins`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(token == null ? body : { ...body, token }),
+    });
+    return { status: r.status, body: await r.json() };
+  }
   async cli(...args: string[]) {
     const p = Bun.spawn([exe, '--port', String(this.port), 'plugin', ...args], {
       env: { ...process.env, PEEK_CONFIG_DIR: this.config }, stdout: 'pipe', stderr: 'pipe',
@@ -159,6 +167,30 @@ try {
   assert.equal((await fetch(`${a.base}/p/files/`)).status, 404);
   console.log('PASS: built-in files starts, shares a folder, and stops');
 
+  assert.equal(initial.items.find((item: any) => item.name === 'processes').on, false);
+  assert.equal((await a.ticket('processes')).status, 404);
+  assert.equal((await manager.answer({ t: 'on', name: 'processes', on: true }, 'ok')).t, 'ok');
+  await a.ready('processes');
+  const victim = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 60000)'], { stdout: 'ignore', stderr: 'ignore' });
+  const procPage = await a.page('processes');
+  procPage.send({ t: 'watch' });
+  const firstTick = await until(async () => procPage.messages.find(m => m.t === 'tick' && m.full), 'first processes tick');
+  assert.ok(firstTick.cores >= 1 && firstTick.mem[1] > 0 && firstTick.ending === true);
+  const victimRow = firstTick.add.find((p: any[]) => p[0] === victim.pid);
+  assert.ok(victimRow, 'the spawned process is listed');
+  await until(async () => procPage.messages.find(m => m.t === 'tick' && m.cpu != null), 'processor figures');
+  const end = (start: string, ref: number) => ({ t: 'do', do: { t: 'end', pid: victim.pid, start, force: false, ref } });
+  assert.equal((await procPage.answer(end('1', 1), 'error')).why, 'it has already ended');
+  assert.equal((await procPage.answer(end(victimRow[1], 2), 'ended')).pid, victim.pid);
+  await victim.exited;
+  await until(async () => procPage.messages.find(m => m.t === 'tick' && m.gone.includes(victim.pid)), 'ended process gone');
+  const procCard = await fetch(`${a.base}/api/provider/processes`, { method: 'POST', headers: { 'content-type': 'application/json', Origin: a.base }, body: JSON.stringify({ token: a.token, t: 'view', place: 'card' }) });
+  assert.ok(Array.isArray((await procCard.json() as any).view.items));
+  procPage.close();
+  assert.equal((await manager.answer({ t: 'on', name: 'processes', on: false }, 'ok')).t, 'ok');
+  assert.equal((await a.ticket('processes')).status, 404);
+  console.log('PASS: built-in processes lists, ends only the process it was shown, answers its card, and stops');
+
   const filesSource = join(temp, 'files-source');
   await cp(join(root, 'apps/files/page'), join(filesSource, 'page'), { recursive: true });
   await copyFile(join(root, 'apps/files/peek-plugin.json'), join(filesSource, 'peek-plugin.json'));
@@ -215,7 +247,21 @@ try {
   assert.equal((await manager.answer({ t: 'on', name, on: false }, 'ok')).t, 'ok');
   assert.equal((await manager.answer({ t: 'on', name, on: true }, 'ok')).t, 'ok');
   await a.ready(name);
-  console.log('PASS: view-only and remote-install policies');
+  // The same requests over HTTP: a token is needed, and the same rules hold.
+  assert.equal((await a.api({ t: 'list' }, null)).status, 403);
+  assert.equal((await a.api({ t: 'list' }, 'wrong')).body.why, 'token');
+  const listed = await a.api({ t: 'list' });
+  assert.equal(listed.body.t, 'list');
+  assert.equal(listed.body.remote_install, false);
+  assert.ok(listed.body.items.some((i: { name: string; on: boolean }) => i.name === name && i.on));
+  assert.equal((await a.api({ t: 'inspect', source: archive })).body.t, 'error');
+  assert.equal((await a.api({ t: 'on', name, on: false })).body.t, 'ok');
+  assert.ok((await a.api({ t: 'list' })).body.items.some((i: { name: string; on: boolean }) => i.name === name && !i.on));
+  assert.equal((await a.api({ t: 'on', name, on: true })).body.t, 'ok');
+  await a.ready(name);
+  assert.equal((await b.api({ t: 'list' })).body.view_only, true);
+  assert.equal((await b.api({ t: 'on', name, on: false })).body.why, 'this machine is view-only');
+  console.log('PASS: view-only and remote-install policies, on the page and over /api/plugins');
 
   if (process.argv.includes('--browser')) {
     const screen = process.argv.includes('--screen');

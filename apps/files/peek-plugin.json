@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "provider_protocol": 1,
-  "name": "files",
+  "name": "my-files",
   "description": "Browse the folders you share, and download their files.",
   "run": [
     "bin/peek-files"

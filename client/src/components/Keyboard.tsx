@@ -2,7 +2,7 @@
 // Two faces: a text field that types through the phone's own keyboard, and
 // a PC keyboard (with a Shift layer and an Fn layer of F-keys, numpad and
 // navigation keys) for everything a phone keyboard lacks.
-import { createSignal, For, onCleanup, onMount } from 'solid-js';
+import { createSignal, For, onSettled } from 'solid-js';
 import {
   dock, field, keyDown, keyUp, lockModifier, mods, sendDraft, setDock, shifted, tap, tapModifier,
 } from '../keyboard';
@@ -85,19 +85,22 @@ function Key(props: { def: KeyDef; fn: boolean; toggleFn: () => void }) {
     else if (d.kind === 'mod') { clearTimeout(lockTimer); if (!locked && e.type === 'pointerup') tapModifier(d.code); }
     else if (e.type !== 'pointerup') return;
     else if (d.kind === 'fn') props.toggleFn();
-    else if (d.kind === 'text') setDock('text');
   };
+  // ✎ switches on its click, not on pointerup: the text bar's Send button
+  // takes its place under the finger, and the tap's click would land on Send,
+  // pressing Enter on the host.
+  const click = () => { if (d.kind === 'text') setDock('text'); };
   const label = () => (shifted() && d.shift) || d.label;
   return d.kind === 'gap'
     ? <div class="key gap" style={{ 'flex-grow': d.w }} />
-    : <button class="key" tabIndex={-1} style={{ 'flex-grow': d.w }}
-        classList={{
+    : <button class={['key', {
           down: down(), small: !!d.small, mod: d.kind === 'mod', space: d.code === 'Space',
           latched: d.kind === 'mod' && mods[d.code] === 'latched',
           locked: d.kind === 'mod' && mods[d.code] === 'locked',
           on: d.kind === 'fn' && props.fn,
-        }}
-        onPointerDown={press} onPointerUp={release} onPointerCancel={release} onPointerLeave={release}
+        }]} tabindex={-1} style={{ 'flex-grow': d.w }}
+
+        onPointerDown={press} onPointerUp={release} onPointerCancel={release} onPointerLeave={release} onClick={click}
         onContextMenu={e => e.preventDefault()}>{label()}</button>;
 }
 
@@ -106,10 +109,10 @@ export function Keyboard() {
   const [fn, setFn] = createSignal(false);
 
   // The remote screen is fitted into the space above the dock.
-  onMount(() => {
+  onSettled(() => {
     const ro = new ResizeObserver(() => setBottomInset(box.offsetHeight));
     ro.observe(box);
-    onCleanup(() => ro.disconnect());
+    return () => ro.disconnect();
   });
 
   // Android's Back closes the phone's keyboard but leaves the field focused,
@@ -119,7 +122,7 @@ export function Keyboard() {
   // Only once the keyboard has been seen open, though: while it is opening,
   // Chrome moves its own bars and the window can briefly be its full height
   // (or taller), which must not count as the keyboard closing.
-  onMount(() => {
+  onSettled(() => {
     const height = () => window.visualViewport?.height ?? innerHeight;
     let full = height(), keyboardSeen = false;
     const onResize = () => {
@@ -129,7 +132,7 @@ export function Keyboard() {
     };
     addEventListener('resize', onResize);
     visualViewport?.addEventListener('resize', onResize);
-    onCleanup(() => { removeEventListener('resize', onResize); visualViewport?.removeEventListener('resize', onResize); });
+    return () => { removeEventListener('resize', onResize); visualViewport?.removeEventListener('resize', onResize); };
   });
 
   // The phone keyboard's Enter (shown as Send) sends the draft. On an empty
@@ -156,18 +159,18 @@ export function Keyboard() {
   const keep = (e: PointerEvent) => e.preventDefault();   // buttons must not take focus from the field
 
   return (
-    <div id="kbd" ref={box} classList={{ show: isTouch(), keys: dock() === 'keys' }}>
+    <div id="kbd" ref={box} class={{ show: isTouch(), keys: dock() === 'keys' }}>
       <div class="kbd-bar">
-        <button class="kbd-btn" tabIndex={-1} title="PC keyboard: Esc, Ctrl, F-keys, arrows…" onPointerDown={keep}
+        <button class="kbd-btn" tabindex={-1} title="PC keyboard: Esc, Ctrl, F-keys, arrows…" onPointerDown={keep}
           onClick={() => setDock('keys')}><Icon name="keyboard" /></button>
         {/* A textarea, not an input: Chrome puts its autofill bar (passwords,
             cards, addresses) above the keyboard for inputs. */}
         <textarea id="kbd-text" ref={el => { field.el = el; }} placeholder="Send text" rows={1}
           autocomplete="off" autocapitalize="off" enterkeyhint="send" onKeyDown={onKeyDown} />
-        <button class="kbd-btn" tabIndex={-1} title="Backspace on the host" onPointerDown={holdBackspace}
+        <button class="kbd-btn" tabindex={-1} title="Backspace on the host" onPointerDown={holdBackspace}
           onPointerUp={stopBackspace} onPointerCancel={stopBackspace} onPointerLeave={stopBackspace}>
           <Icon name="backspace" /></button>
-        <button class="kbd-btn" tabIndex={-1} title="Send the text; Enter when there is none" onPointerDown={keep}
+        <button class="kbd-btn" tabindex={-1} title="Send the text; Enter when there is none" onPointerDown={keep}
           onClick={sendDraft}><Icon name="enter" /></button>
       </div>
       <div class="kbd-keys">

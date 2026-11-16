@@ -1,12 +1,12 @@
 // Line icons, drawn once in a sprite and referenced by id.
 export type IconName =
-  | 'moon' | 'play' | 'sliders' | 'chart' | 'expand' | 'shrink' | 'pin' | 'x' | 'chev' | 'shield'
+  | 'pause' | 'play' | 'sliders' | 'chart' | 'expand' | 'shrink' | 'pin' | 'x' | 'chev' | 'shield'
   | 'trackpad' | 'hand' | 'keyboard' | 'backspace' | 'enter' | 'monitor' | 'back' | 'plus' | 'qr' | 'copy' | 'check' | 'star';
 
 export function IconSprite() {
   return (
     <svg width="0" height="0" style={{ position: 'absolute' }}>
-      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 6v12M15 6v12" /></symbol>
       <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z" /></symbol>
       <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /></symbol>
       <symbol id="i-chart" viewBox="0 0 24 24"><path d="M5 20v-7M12 20V5M19 20v-10" /></symbol>

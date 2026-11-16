@@ -1,0 +1,176 @@
+<header>
+  <a class="home" href="/">peek</a>
+  <nav><a href="/">Your machines</a><a href="/docs/">Docs</a><a href="https://github.com/peculiarnewbie/peek">GitHub</a></nav>
+</header>
+
+<h1>Changelog</h1>
+<p class="lead">What changed in each version of peek. To update a machine, run
+<code>npm update -g @peculiarnewbie/peek</code> there, then <code>peek install</code> again.</p>
+
+<h2 id="0.3.1"><a href="#0.3.1">0.3.1</a><span class="date">16 November 2026</span><span class="latest">Latest</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>peek updates itself:</strong> from this version on, when a newer one is out, a machine's card and
+    its Settings say so and offer <strong>Update</strong>. The machine downloads it, checks it against the
+    release's checksums, and restarts on it. <code>peek update</code> does the same from a terminal there, and
+    <code>peek update --rollback</code> goes back. This update itself still goes through npm.</li>
+  <li><strong>Plugins on every machine, side by side:</strong> <strong>Plugins</strong>, beside
+    <strong>Machines</strong> at the top of your list, shows which plugins each machine has. Turn one on or off
+    anywhere, install one where another machine got it, and update an older copy. Each machine's card shows its
+    plugins and has a button straight to its Plugins page. A machine needs peek 0.3.1 to show up there.
+    <a href="/docs/#apps">Apps and plugins</a>.</li>
+  <li><strong>Processes:</strong> a fourth app that comes with peek, off by default. It lists what is running with
+    its processor and memory use, and ends a program after asking. By default it ends only your own programs.</li>
+  <li><strong>Images on the clipboard:</strong> Ctrl+V sends an image you copied to the machine, and an image
+    copied there reaches the browser, up to 8 MB each. Clipboard images in Settings turns it off. Over plain HTTP
+    it works for pasting only.</li>
+  <li><strong>Pair without Tailscale:</strong> <code>peek pair</code> on a machine with no Tailscale now gives a
+    link to the machine's own page at its addresses on your network, instead of failing.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+  <li><strong><code>peek install</code> keeps its flags.</strong> Run with no flags, it keeps those of the last
+    install, where before it dropped them, <code>--view-only</code> included. Flags after it replace them, and
+    <code>peek install --defaults</code> goes back to none. It says which flags are in effect.</li>
+  <li><strong>Losing the connection:</strong> the picture dims while it is not live, and a machine's own page says
+    when it cannot reach the machine. A message that will not go away by itself has a Retry button. Keys are left
+    to the browser meanwhile, so F5 and Ctrl+R reload.</li>
+  <li>When a machine runs a different version of peek than this site, the message links to the machine's own
+    page, which always matches it.</li>
+  <li>What a plugin writes as errors is kept in its log, and peek's log says when a plugin's output is not what
+    peek expects. A plugin cannot take the name of an app that comes with peek, and the error says so.</li>
+  <li>Power is off by default, like Files. An install that never changed it loses it on updating; turn it on
+    under Settings → Manage plugins.</li>
+  <li>The toolbar's <strong>Sleep</strong> is now <strong>Pause</strong>, and the status says Paused: it pauses the
+    picture in this browser, while Power's Sleep puts the machine to sleep.</li>
+  <li>Adding a machine by a short name or an address says what to type instead: its full Tailscale name, as
+    <code>peek pair</code> prints it, or for an address, the machine's own page at
+    <code>http://&lt;address&gt;:9182/</code>.</li>
+  <li>The addresses peek prints when it starts are labelled (this machine, your network, Tailscale), and leave
+    out the bridges of containers and virtual machines (Docker, libvirt, WSL and the like), as the pairing links
+    of <code>peek pair</code> do.</li>
+  <li><code>peek pair</code> says when it sets up Tailscale Serve, and the command that undoes it. Its QR code is
+    left out when the output goes to a pipe or a file; the link stays.</li>
+  <li>While a machine's screen shows, the tab's title is the machine's name, here and on the machine's own
+    page.</li>
+  <li><code>peek provider add</code> and <code>remove</code> start and stop the provider in the running peek,
+    as <code>peek plugin</code> does, with no restart.</li>
+  <li>A machine's card gives its name the card's whole width, and the full name shows on hovering it. An
+    offline machine's card and the Plugins overview show the plugins it had when last seen, faded and marked with
+    when that was, instead of only "offline".</li>
+  <li>The Plugins overview's By plugin layout can turn a plugin off on a machine, not only on.</li>
+  <li><code>peek -h</code> is short, a line for each command and flag; <code>peek --help</code> and
+    <code>peek &lt;command&gt; --help</code> give the detail.</li>
+  <li>The prompt for a pairing code names the machine, and a visitor refused with <code>--no-token</code> is told
+    why instead of getting an empty page.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+  <li>With a plugin's page open over a machine's screen, mouse, wheel and touch went to the frozen screen behind
+    it and clicked on the machine unseen. They are ignored now, as keys already were.</li>
+  <li>A plugin that names its page by a path relative to its folder (<code>{"page": "page"}</code>) gets it
+    served, where before it opened a 404. A page folder that is not there gives no button, and peek's log says
+    why.</li>
+  <li><code>peek uninstall</code> said it had removed peek when nothing was installed. It says so now, and if
+    Tailscale Serve still passes to peek, it prints the command that removes that.</li>
+  <li>A flag of peek's given after a command, like <code>peek pair --no-token</code>, failed with no hint. The
+    error now says the flag goes before the command, and shows the command line that works.</li>
+  <li>Starting peek a second time on the same port says that peek already runs there and how to pick another
+    port, before starting anything, instead of failing with "Address already in use".</li>
+  <li>The access token's file could be read by other users of the machine (Linux). It is private now, and an
+    existing one is made private when peek starts.</li>
+  <li>Pasting text could stop working until the page was reloaded.</li>
+  <li>The ✎ keyboard button on a phone pressed Enter on the machine.</li>
+  <li>With a Mac keyboard, Cmd with a letter typed that letter on the machine. Cmd+V now pastes there.</li>
+</ul>
+
+<h2 id="0.3.0"><a href="#0.3.0">0.3.0</a><span class="date">15 November 2026</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>More than the screen.</strong> Three apps come with peek:
+    <ul>
+      <li><strong>Vitals:</strong> processor, memory and storage, as a line on each machine's card and as figures in
+        the stats panel.</li>
+      <li><strong>Power</strong> (Windows): Sleep on a machine's card, and Wake while it is asleep, sent by another
+        paired machine on the same network. The first sleep is a test: the machine is woken 15 seconds later, and
+        the card says what to check if it was not.</li>
+      <li><strong>Files:</strong> browse folders you choose and download from them. Off by default; turn it on under
+        Settings → Manage plugins.</li>
+    </ul>
+    An app with a page of its own gets a button in the toolbar.</li>
+  <li><strong>Plugins:</strong> Settings → Manage plugins installs a plugin from a folder, a <code>.tgz</code>, a git
+    address or npm, and starts, stops, updates and removes it without restarting peek. A plugin runs with peek's
+    rights (SYSTEM under the Windows service), so install only ones you trust.
+    <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/plugin-release.md">How to write one</a>.</li>
+  <li><strong>Windows service: connections stay open through a sign-out</strong> and a switch of user. The picture
+    stops for a few seconds and comes back on the login screen, with nothing to reconnect. After updating, run
+    <code>peek install --service</code> again.</li>
+  <li><strong>Pair from a machine's own page:</strong> <code>peek pair</code> and Settings → Pair a device also give
+    a link to the page the machine serves itself, which asks for the code when it has no token. This works with
+    <code>--web none</code> too.</li>
+  <li><strong>A favorite machine:</strong> star a machine's card, and the installed app's Favorite shortcut opens
+    it directly.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+  <li>The installed app opens in a window of its own instead of full screen, so Android's system bars stay. The
+    toolbar's full-screen button still hides them.</li>
+</ul>
+
+<h2 id="0.2.2"><a href="#0.2.2">0.2.2</a><span class="date">12 November 2026</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>Share Tailscale Serve with another app:</strong> <code>peek pair --serve-port 8443</code> (or
+    <code>10000</code>) reaches peek on that HTTPS port when another app, like T3 Code, has 443. Pairing links
+    and codes name the port, and later <code>peek pair</code> runs find it by themselves. Without the flag
+    nothing changes.</li>
+</ul>
+
+<h2 id="0.2.1"><a href="#0.2.1">0.2.1</a><span class="date">12 November 2026</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>One command to try peek:</strong> <code>npx @peculiarnewbie/peek pair</code>. If peek is not running
+    yet, <code>peek pair</code> now starts it in that terminal and then shows the pairing link and QR code. peek
+    keeps running there until you close it; <code>peek install</code> still starts it at logon instead.
+    <a href="/docs/#pair">Pair a browser</a>.</li>
+</ul>
+
+<h2 id="0.2.0"><a href="#0.2.0">0.2.0</a><span class="date">12 November 2026</span></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>Windows: the login screen, the lock screen and UAC prompts.</strong>
+    <code>peek install --service</code> runs peek as a Windows service, which can also see and control these, and
+    keeps peek running while nobody is signed in. A paired browser can then do there whatever someone at the
+    keyboard could. <a href="/docs/#setup">How to set it up</a>.</li>
+  <li><strong>Lossless text</strong>, in Settings and on by default: text and flat parts of the screen arrive exact
+    the first time, instead of blurry and then sharp a moment later. Photos stay JPEG. Typing a character sends
+    238 bytes instead of 1.7 KB, and a full screen of code 84 KB instead of 219 KB. It needs peek 0.2.0 on the
+    machine.</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+  <li>When many scattered parts of the screen changed at once, some could stay blurry until they next changed.
+    They are now sharpened like the rest.</li>
+</ul>
+<h3>This site</h3>
+<ul>
+  <li>A machine's page is now at <code>/screen/&lt;name&gt;</code>. Old addresses and bookmarks still lead to
+    it.</li>
+  <li>This changelog.</li>
+</ul>
+
+<h2 id="0.1.0"><a href="#0.1.0">0.1.0</a><span class="date">11 November 2026</span></h2>
+<p>The first release on npm.</p>
+<ul>
+  <li>A host for Windows, and for Linux on Wayland (niri, sway, Hyprland, river), that stays idle until someone
+    looks. Any browser is the client.</li>
+  <li>This site: one page for all your machines, each paired once with <code>peek pair</code> and reached straight
+    over Tailscale.</li>
+  <li><code>peek install</code> starts peek at logon (Windows, as administrator, with a firewall rule) or with the
+    graphical session (Linux). <code>peek uninstall</code> removes it.</li>
+  <li><code>peek logs</code> shows what the running peek logged. <code>peek clients</code> and
+    <code>peek unpair</code> manage paired browsers.</li>
+  <li>On phones and tablets: trackpad and touch modes, and a keyboard bar with a PC keyboard.</li>
+  <li>Windows: capture comes back after the PC wakes from sleep, and <code>--keep-gpu</code> makes connecting
+    from idle faster.</li>
+</ul>

@@ -25,6 +25,9 @@ elevated PowerShell in a source checkout:
     .\scripts\install-autostart.ps1 -Remove      # uninstall either
     .\scripts\install-autostart.ps1 -PeekArgs '--port 9000 --no-clipboard'
     .\scripts\install-autostart.ps1 -PeekArgs '--no-token'   # Tailscale only, no token
+    .\scripts\install-autostart.ps1 -PeekArgs ''   # no flags
+Without -PeekArgs (and without -Service), installing again keeps the flags of
+the logon task or service installed now, and which of the two it is.
 #>
 #Requires -RunAsAdministrator
 param(
@@ -48,6 +51,29 @@ $serviceExe = Join-Path $env:ProgramFiles 'peek\peek.exe'
 $source = $null
 $callerPid = 0
 $output = $null
+$reuseArgs = -not ($PSBoundParameters.ContainsKey('PeekArgs') -or $PSBoundParameters.ContainsKey('Service'))
+
+# The flags of the peek installed now, from the service's or the logon task's
+# command line less what this script puts there itself; $null if neither is
+# installed. A command line this script did not write stops the install
+# rather than lose a flag like --view-only.
+function Get-InstalledArgs([bool]$service) {
+    if ($service) {
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$name'" -ErrorAction SilentlyContinue
+        if (-not $svc) { return $null }
+        $line = $svc.PathName
+        $pattern = '^\s*"[^"]*"\s+--service\s+--log\s+"[^"]*"\s*(.*)$'
+    } else {
+        $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+        if (-not $task) { return $null }
+        $line = $task.Actions[0].Arguments
+        $pattern = '^\s*--detach\s+--log\s+"[^"]*"\s*(.*)$'
+    }
+    if ($line -notmatch $pattern) {
+        throw "cannot read the flags of the peek installed now ($line). Give them after ``peek install``, or ``peek install --defaults`` for none."
+    }
+    $Matches[1].Trim()
+}
 
 if ($Config) {
     $c = Get-Content -Raw -LiteralPath $Config | ConvertFrom-Json
@@ -66,11 +92,19 @@ if ($Config) {
     $PeekArgs = (@($c.peekArgs) | Where-Object { $_ -ne $null } | ForEach-Object {
         if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
     }) -join ' '
-} elseif ($Service) {
-    # SYSTEM will run it: copy it where only administrators can replace it.
-    $source = $Exe
-    $Exe = $serviceExe
+    # `peek install` with no flags; it has already found whether the service
+    # is what is installed.
+    $reuseArgs = [bool]$c.reuseArgs
+} else {
+    # By hand with neither -PeekArgs nor -Service: stay what is installed.
+    if ($reuseArgs -and (Get-Service -Name $name -ErrorAction SilentlyContinue)) { $Service = $true }
+    if ($Service) {
+        # SYSTEM will run it: copy it where only administrators can replace it.
+        $source = $Exe
+        $Exe = $serviceExe
+    }
 }
+$keptArgs = $false
 $exePath = [System.IO.Path]::GetFullPath($Exe)
 $log = if ($Service) { Join-Path $machineConfig 'peek.log' } else { Join-Path $userConfig 'peek.log' }
 
@@ -169,6 +203,10 @@ function Protect-MachineConfig {
 
 try {
     $hadService = [bool](Get-Service -Name $name -ErrorAction SilentlyContinue)
+    if ($reuseArgs -and -not $Remove) {
+        $installed = Get-InstalledArgs $Service
+        if ($installed) { $PeekArgs = $installed; $keptArgs = $true }
+    }
 
     if ($Remove) {
         Remove-PeekService
@@ -251,6 +289,8 @@ try {
         Say "Installed the '$name' firewall rule and logon task for $user, and started peek."
         Say "  $exePath $arguments"
     }
+    $flags = if ($PeekArgs) { $PeekArgs } else { 'none' }
+    if ($keptArgs) { Say "Flags, kept from the last install: $flags" } else { Say "Flags: $flags" }
     if ($noToken) {
         Say "No access token: open http://<this machine's Tailscale IP or name>:<port>/ on any device on your tailnet."
     } else {

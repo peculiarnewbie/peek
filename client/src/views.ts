@@ -20,7 +20,7 @@ import { createSignal } from 'solid-js';
 // - Items about another machine. A view's item can name another machine,
 //   and is shown on that one's card. Pressing its button still asks the
 //   machine that sent it.
-import { createStore, reconcile } from 'solid-js/store';
+import { createStore, reconcile } from 'solid-js';
 import { machines, reach, updateMachine, type Machine } from './hosted';
 
 /** A line of text: plain, quieter (`hint`), or something that went wrong. */
@@ -61,7 +61,7 @@ export interface ProviderAbout {
 
 /** Descriptor for the client served by a machine itself. Refresh after a
  * management page changes providers, just as the hosted client does. */
-export const [own, setOwn] = createSignal<{ providers?: ProviderAbout[]; version?: string; update?: string | null } | null>(null);
+export const [own, setOwn] = createSignal<{ name?: string; providers?: ProviderAbout[]; version?: string; update?: string | null } | null>(null);
 export async function refreshOwn() {
   try { const r = await fetch('/.well-known/peek', { cache: 'no-store' }); if (r.ok) setOwn(await r.json()); }
   catch { /* the main connection reports availability */ }
@@ -133,8 +133,12 @@ function again(seconds: number | null | undefined) {
 }
 
 function keep(m: Machine, provider: string, answer: Answer) {
-  if (!cards[m.id]) setCards(m.id, {});
-  setCards(m.id, provider, reconcile(clean(answer.view)));
+  const view = clean(answer.view);
+  setCards(s => {
+    const views = (s[m.id] ??= {});
+    if (views[provider]) reconcile(view)(views[provider]);
+    else views[provider] = view;
+  });
   if (answer.record !== undefined) {
     const now = machines().find(x => x.id === m.id);
     if (now && JSON.stringify(now.records?.[provider]) !== JSON.stringify(answer.record)) {
@@ -151,13 +155,13 @@ export function refreshCards(m: Machine) {
   for (const p of withPlace(m, 'card')) {
     ask(m, p.name, { t: 'view', place: 'card', peers: peersOf(m, p) }, 6000)
       .then(answer => keep(m, p.name, answer))
-      .catch(() => { if (cards[m.id]) setCards(m.id, p.name, undefined!); });
+      .catch(() => { setCards(s => { if (s[m.id]) delete s[m.id][p.name]; }); });
   }
 }
 
 /** A machine went away: what it had on the cards goes with it. */
 export function dropCards(id: string) {
-  setCards(id, undefined!);
+  setCards(s => { delete s[id]; });
 }
 
 export interface Shown { item: Item; from: Machine; provider: string }
@@ -189,8 +193,8 @@ export async function press(on: Machine, shown: Shown) {
   const { from, provider } = shown;
   const item = shown.item as ButtonItem;
   if (pressing[on.id] || (item.confirm && !confirm(item.confirm))) return;
-  setCardError(on.id, undefined);
-  setPressing(on.id, true);
+  setCardError(s => { delete s[on.id]; });
+  setPressing(s => { s[on.id] = true; });
   try {
     if (item.first) {
       const peer = machines().find(o => o.id === item.first!.peer);
@@ -204,9 +208,9 @@ export async function press(on: Machine, shown: Shown) {
     const about = from.providers?.find(p => p.name === provider);
     keep(from, provider, await ask(from, provider, { t: 'do', do: item.do, peers: about && peersOf(from, about) }));
   } catch (e) {
-    setCardError(on.id, `${item.label}: ${(e as Error).message}`);
+    setCardError(s => { s[on.id] = `${item.label}: ${(e as Error).message}`; });
   } finally {
-    setPressing(on.id, false);
+    setPressing(s => { delete s[on.id]; });
   }
   // The others see what changed.
   again(1);
@@ -219,7 +223,9 @@ export const [pages, setPages] = createStore<Record<string, View>>({});
 
 /** A provider's message on the socket. */
 export function fromProvider(provider: string, m: Answer) {
-  if (m?.t === 'view' && m.place === 'page') setPages(provider, reconcile(clean(m.view)));
+  if (m?.t !== 'view' || m.place !== 'page') return;
+  const view = clean(m.view);
+  setPages(s => { if (s[provider]) reconcile(view)(s[provider]); else s[provider] = view; });
 }
 
 export function dropPages() {

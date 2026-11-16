@@ -1,5 +1,5 @@
 import { SCREEN_PLUGIN } from '../plugin-mode';
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, For, onSettled, Show, untrack } from 'solid-js';
 import { setStats, toggleStatsPin } from '../actions';
 import { cv, focusScreen } from '../screen';
 import { send } from '../connection';
@@ -76,17 +76,17 @@ export function Stats() {
     focusScreen();
   };
   const onResize = () => { place(); drawChart(); };
-  onMount(() => {
+  onSettled(() => {
     addEventListener('pointermove', moveDrag, true);
     addEventListener('pointerup', endDrag, true);
     addEventListener('pointercancel', endDrag, true);
     addEventListener('resize', onResize);
-  });
-  onCleanup(() => {
-    removeEventListener('pointermove', moveDrag, true);
-    removeEventListener('pointerup', endDrag, true);
-    removeEventListener('pointercancel', endDrag, true);
-    removeEventListener('resize', onResize);
+    return () => {
+      removeEventListener('pointermove', moveDrag, true);
+      removeEventListener('pointerup', endDrag, true);
+      removeEventListener('pointercancel', endDrag, true);
+      removeEventListener('resize', onResize);
+    };
   });
 
   // ---- figures ----
@@ -100,7 +100,7 @@ export function Stats() {
   const scale = () => niceScale(peak());
   const details = () => {
     const s = shown();
-    const state = !live() ? 'offline' : sleeping() ? 'asleep' : document.hidden ? 'tab hidden' : 'live';
+    const state = !live() ? 'offline' : sleeping() ? 'paused' : document.hidden ? 'tab hidden' : 'live';
     return [
       ['Frames', s.fps ? `${s.fps}/s, ${s.rects.toFixed(1)} rectangles each` : 'none, screen unchanged'],
       ['Last frame', S.lastSize ? `${bytes(S.lastSize)}, ${S.lastKind}` : '–'],
@@ -131,7 +131,7 @@ export function Stats() {
     return i >= 0 && i < rate.length ? i : -1;
   }
   function drawChart() {
-    if (statsMode() !== 'open') return;   // (and a hidden body draws nothing: its width is 0)
+    if (untrack(statsMode) !== 'open') return;   // (and a hidden body draws nothing: its width is 0)
     const { w, h, gutter, top, bottom, slot } = geometry();
     if (!w) return;
     const dpr = devicePixelRatio || 1;
@@ -185,35 +185,34 @@ export function Stats() {
   }
 
   // Redraw every second, on hover, and when the panel opens or is pinned.
-  createEffect(() => { shown(); hoverX(); statsPinned(); if (statsMode() === 'open') { place(); drawChart(); } });
+  createEffect(() => { shown(); hoverX(); statsPinned(); return statsMode() === 'open'; }, open => { if (open) { place(); drawChart(); } });
   // While the panel shows on a live connection, watch what the machine's
   // providers have for it: each sends its view now, and again as it changes.
   const watched = createMemo(
     () => !SCREEN_PLUGIN && live() && statsMode() !== 'off' ? pageProviders(HOSTED ? current() : own()) : [],
-    [], { equals: (a, b) => a.join() === b.join() });
-  createEffect(() => {
-    const names = watched();
+    { equals: (a, b) => a.join() === b.join() });
+  createEffect(watched, names => {
     for (const p of names) {
       send({ t: 'open', p });
       send({ t: 'to', p, m: { t: 'view', place: 'page' } });
     }
-    onCleanup(() => {
+    return () => {
       for (const p of names) send({ t: 'close', p });
       dropPages();
-    });
+    };
   });
 
   return (
-    <div id="stats" class="panel" ref={box}
-      classList={{ show: statsMode() !== 'off', pinned: statsPinned(), dragging: dragging() }}
+    <div id="stats" class={['panel', { show: statsMode() !== 'off', pinned: statsPinned(), dragging: dragging() }]} ref={box}
+
       // Opening on hover: draw at once rather than at the next one-second tick.
       onMouseEnter={drawChart}>
       <div id="stats-head" onPointerDown={startDrag}>
         <span id="stats-title">Stats</span>
         <span id="stats-sum">{`${shown().fps} fps · ${perSec(shown().kbIn)} · ${ms(total())}`}</span>
-        <button id="b-stats-pin" class="tb icon" tabIndex={-1} aria-pressed={statsPinned()}
+        <button id="b-stats-pin" class="tb icon" tabindex={-1} aria-pressed={statsPinned() ? 'true' : 'false'}
           title={statsPinned() ? 'Unpin' : 'Pin'} onClick={toggleStatsPin}><Icon name="pin" /></button>
-        <button id="b-close" class="tb icon" tabIndex={-1} title="Close"
+        <button id="b-close" class="tb icon" tabindex={-1} title="Close"
           onClick={() => { setStats('off'); focusScreen(); }}><Icon name="x" /></button>
       </div>
       <div id="stats-body">
@@ -278,7 +277,7 @@ export function Stats() {
         <details>
           <summary><Icon name="chev" />Details</summary>
           <table id="details"><tbody>
-            <For each={details()}>{([k, v]) => <tr><td>{k}</td><td>{v}</td></tr>}</For>
+            <For each={details()} keyed={false}>{row => <tr><td>{row()[0]}</td><td>{row()[1]}</td></tr>}</For>
           </tbody></table>
         </details>
       </div>

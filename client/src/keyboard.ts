@@ -2,7 +2,7 @@
 // on-screen PC keyboard. The layouts and the dock itself are in
 // components/Keyboard.tsx.
 import { createSignal } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore } from 'solid-js';
 import { send } from './connection';
 
 /** Which face of the dock is showing. The dock itself is always there on a
@@ -51,25 +51,25 @@ export const shifted = () => !!(mods.ShiftLeft || mods.ShiftRight);
 export function tapModifier(code: string) {
   if (mods[code]) {
     send({ t: 'k', c: code, d: 0 });
-    setMods(code, undefined);
+    setMods(s => { delete s[code]; });
   } else {
     send({ t: 'k', c: code, d: 1 });
-    setMods(code, 'latched');
+    setMods(s => { s[code] = 'latched'; });
   }
 }
 export function lockModifier(code: string) {
   if (!mods[code]) send({ t: 'k', c: code, d: 1 });
-  setMods(code, 'locked');
+  setMods(s => { s[code] = 'locked'; });
 }
 /** After a key: latched modifiers let go, locked ones stay. */
 function releaseLatched() {
   for (const [code, state] of Object.entries(mods)) {
-    if (state === 'latched') { send({ t: 'k', c: code, d: 0 }); setMods(code, undefined); }
+    if (state === 'latched') { send({ t: 'k', c: code, d: 0 }); setMods(s => { delete s[code]; }); }
   }
 }
 export function releaseModifiers() {
   for (const [code, state] of Object.entries(mods)) {
-    if (state) { send({ t: 'k', c: code, d: 0 }); setMods(code, undefined); }
+    if (state) { send({ t: 'k', c: code, d: 0 }); setMods(s => { delete s[code]; }); }
   }
 }
 

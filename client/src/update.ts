@@ -1,7 +1,7 @@
 // Updating a machine's peek from the client: the machine updates itself to
 // the newest build on its channel and restarts on it (POST /api/update), then
 // answers again on the new version.
-import { createStore } from 'solid-js/store';
+import { createStore } from 'solid-js';
 
 /** What an update is doing, by the machine's address, while it runs. */
 export const [updating, setUpdating] = createStore<Record<string, string | undefined>>({});
@@ -13,7 +13,7 @@ const BACK_WITHIN = 90_000;
  *  page) to update, and wait until it answers on the new version, which
  *  `seen` is given. Throws with what went wrong. */
 export async function upgrade(base: string, token: string, seen: (about: Record<string, unknown>) => void) {
-  setUpdating(base, 'Updating…');
+  setUpdating(s => { s[base] = 'Updating…'; });
   try {
     const r = await fetch(`${base}/api/update`, {
       method: 'POST',
@@ -26,7 +26,7 @@ export async function upgrade(base: string, token: string, seen: (about: Record<
     const answer = await r.json().catch(() => ({ t: 'error', why: `HTTP ${r.status}` }));
     if (answer.t === 'error') throw new Error(answer.why ?? 'it refused');
     if (answer.t !== 'updated') return;
-    setUpdating(base, `Restarting on ${answer.to}…`);
+    setUpdating(s => { s[base] = `Restarting on ${answer.to}…`; });
     const until = Date.now() + BACK_WITHIN;
     while (Date.now() < until) {
       await new Promise(done => setTimeout(done, 2000));
@@ -38,6 +38,6 @@ export async function upgrade(base: string, token: string, seen: (about: Record<
     }
     throw new Error(`it has not come back on ${answer.to} yet`);
   } finally {
-    setUpdating(base, undefined);
+    setUpdating(s => { delete s[base]; });
   }
 }

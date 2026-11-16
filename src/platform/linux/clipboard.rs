@@ -1,6 +1,7 @@
-//! Clipboard text through wlr-data-control, which lets a program without a
-//! window read and set the clipboard. A thread of its own keeps up with
-//! selection changes and serves the text we set.
+//! The clipboard through wlr-data-control, which lets a program without a
+//! window read and set it: text and PNG images, both ways.
+//! A thread of its own keeps up with selection changes and serves what we
+//! set.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
@@ -103,25 +104,44 @@ pub fn sequence() -> u64 {
 
 /// The clipboard as text, or `None` when it holds none (or did not answer).
 pub fn get_text() -> Option<String> {
+    let text = String::from_utf8(receive(TEXT_TYPES)?).ok()?;
+    (!text.is_empty()).then_some(text)
+}
+
+/// The clipboard's image as PNG, or `None` when it holds none (or did not answer).
+pub fn get_png() -> Option<Vec<u8>> {
+    receive(&["image/png"]).filter(|png| !png.is_empty())
+}
+
+/// The selection in the first of these types it is offered in.
+fn receive(types: &[&str]) -> Option<Vec<u8>> {
     let s = shared()?;
     let (offer, mimes) = s.offer.lock().unwrap().clone()?;
     let mime = {
         let mimes = mimes.lock().unwrap();
-        TEXT_TYPES.iter().find(|t| mimes.iter().any(|m| m == *t))?.to_string()
+        types.iter().find(|t| mimes.iter().any(|m| m == *t))?.to_string()
     };
     let (read, write) = super::pipe().ok()?;
     offer.receive(mime, write.as_fd());
     flush();
     drop(write);
-    let bytes = read_all(read)?;
-    let text = String::from_utf8(bytes).ok()?;
-    (!text.is_empty()).then_some(text)
+    read_all(read)
 }
 
 pub fn set_text(text: &str) -> bool {
+    offer(text.as_bytes(), TEXT_TYPES)
+}
+
+/// An image, as PNG.
+pub fn set_png(png: &[u8]) -> bool {
+    offer(png, &["image/png"])
+}
+
+/// Make these bytes the selection, offered as these types.
+fn offer(bytes: &[u8], mimes: &[&str]) -> bool {
     let Some(s) = shared() else { return false };
-    let source = s.manager.create_data_source(&s.qh, Arc::new(text.to_string()));
-    for mime in TEXT_TYPES {
+    let source = s.manager.create_data_source(&s.qh, Arc::new(bytes.to_vec()));
+    for mime in mimes {
         source.offer(mime.to_string());
     }
     s.device.set_selection(Some(&source));
@@ -206,14 +226,14 @@ impl Dispatch<ZwlrDataControlOfferV1, Mimes> for State {
     }
 }
 
-impl Dispatch<ZwlrDataControlSourceV1, Arc<String>> for State {
-    fn event(_: &mut Self, source: &ZwlrDataControlSourceV1, event: zwlr_data_control_source_v1::Event, text: &Arc<String>, _: &Connection, _: &QueueHandle<Self>) {
+impl Dispatch<ZwlrDataControlSourceV1, Arc<Vec<u8>>> for State {
+    fn event(_: &mut Self, source: &ZwlrDataControlSourceV1, event: zwlr_data_control_source_v1::Event, bytes: &Arc<Vec<u8>>, _: &Connection, _: &QueueHandle<Self>) {
         match event {
             zwlr_data_control_source_v1::Event::Send { fd, .. } => {
                 // A slow reader must not hold up this thread.
-                let text = text.clone();
+                let bytes = bytes.clone();
                 std::thread::spawn(move || {
-                    let _ = std::fs::File::from(fd).write_all(text.as_bytes());
+                    let _ = std::fs::File::from(fd).write_all(&bytes);
                 });
             }
             zwlr_data_control_source_v1::Event::Cancelled => source.destroy(),

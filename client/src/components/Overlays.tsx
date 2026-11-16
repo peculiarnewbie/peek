@@ -1,14 +1,14 @@
-import { createSignal, Show } from 'solid-js';
+import { createEffect, createSignal, Show } from 'solid-js';
 import { setSleep } from '../actions';
-import { pairError, pairHere, pairing, setPairError } from '../pair-here';
-import { autoSlept, blocked, message, sleeping } from '../state';
+import { hostName, learnHostName, pairError, pairHere, pairing, setPairError } from '../pair-here';
+import { autoSlept, blocked, message, messageAction, sleeping } from '../state';
 import { Icon } from './Icons';
 
 export function SleepCard() {
   return (
-    <div id="sleep" classList={{ show: sleeping() }} onClick={() => setSleep(false)}>
+    <div id="sleep" class={{ show: sleeping() }} onClick={() => setSleep(false)}>
       <div class="card panel">
-        <Icon name="moon" />
+        <Icon name="pause" />
         <div class="t">Paused</div>
         <div class="s">{autoSlept()
           ? 'Paused while this window is in the background. It resumes when you come back.'
@@ -21,8 +21,13 @@ export function SleepCard() {
 /** Connection status, centred over the screen. */
 export function Message() {
   return (
-    <div id="msg" classList={{ show: !!message() }}>
-      <div class="card panel"><div class="s">{message()}</div></div>
+    <div id="msg" class={{ show: !!message() }}>
+      <div class="card panel">
+        <div class="s">{message()}</div>
+        <Show when={messageAction()}>{a => a().href
+          ? <a class="btn" href={a().href} target="_blank" rel="noopener noreferrer">{a().label}</a>
+          : <button class="btn" tabindex={-1} onClick={() => a().run?.()}>{a().label}</button>}</Show>
+      </div>
     </div>
   );
 }
@@ -37,6 +42,7 @@ export function PairPrompt() {
     const why = await pairHere(code());
     if (why) { setPairError(why); setBusy(false); }
   };
+  createEffect(pairing, p => { if (p) learnHostName(); });
   return (
     <Show when={pairing()}>
       <div id="pairhere">
@@ -45,8 +51,8 @@ export function PairPrompt() {
           <div class="t">Pair this browser</div>
           <div class="s">
             {pairing() === 'wrong' ? 'This browser’s key no longer works here. ' : ''}
-            Run <code>peek pair</code> on this machine and enter the code it shows. A browser that is already
-            paired can show one too, under Settings.
+            Run <code>peek pair</code> on <strong>{hostName()}</strong>, the machine this page comes from, and
+            enter the code it shows. A browser already paired with it can show one too, under Settings.
           </div>
           <form class="mform-row" onSubmit={e => { e.preventDefault(); if (!busy() && code().trim()) void submit(); }}>
             <input class="field" placeholder="Code" autocomplete="one-time-code" autocapitalize="characters"
@@ -63,7 +69,7 @@ export function PairPrompt() {
 /** The host's foreground window is elevated, so our input does not reach it. */
 export function BlockedNote() {
   return (
-    <div id="note" class="panel" classList={{ show: blocked() }}>
+    <div id="note" class={['panel', { show: blocked() }]}>
       <Icon name="shield" />
       <span>The window in front on the host runs as administrator, so it ignores remote input.
         Start peek as administrator to control it.</span>

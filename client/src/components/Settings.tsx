@@ -2,7 +2,7 @@ import { SCREEN_PLUGIN } from '../plugin-mode';
 import { createSignal, For, Show } from 'solid-js';
 import { applyCfg, showSettings } from '../actions';
 import { focusScreen } from '../screen';
-import { cfg, FPS_STEPS, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
+import { cfg, clipboardOn, COPY_IMAGES, FPS_STEPS, MAX_CLIP_IMAGE, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
 import { machine } from '../connection';
 import { current, HOSTED, learn, type About } from '../hosted';
 import { upgrade, updating } from '../update';
@@ -41,13 +41,17 @@ const CONTROLS: Control[] = [
     value: () => { const m = monitors()[cfg.mon]; return m ? `${m.w} × ${m.h}` : ''; },
     hidden: () => monitors().length < 2 },
   { key: 'autoSleep', label: 'Pause when unfocused', options: () => [[false, 'Off'], [true, 'On']], value: () => '' },
+  { key: 'clipImages', label: 'Clipboard images', options: () => [[false, 'Off'], [true, 'On']],
+    // Over plain HTTP the browser lets no page put an image on its clipboard.
+    value: () => `up to ${MAX_CLIP_IMAGE >> 20} MB${COPY_IMAGES ? '' : ', paste only'}`,
+    hidden: () => !clipboardOn() },
 ];
 
 function Segmented<T>(props: { options: [T, string][]; selected: (v: T) => boolean; pick: (v: T) => void }) {
   return (
     <div class="seg" role="radiogroup">
       <For each={props.options}>{([value, text]) =>
-        <button tabIndex={-1} role="radio" aria-checked={props.selected(value)}
+        <button tabindex={-1} role="radio" aria-checked={props.selected(value) ? 'true' : 'false'}
           onClick={() => { props.pick(value); focusScreen(); }}>{text}</button>
       }</For>
     </div>
@@ -73,7 +77,7 @@ function Version() {
     <Show when={about()?.version}>
       <Group label="peek" value={about()!.version!}>
         <Show when={updating[base()] || (about()?.update && !viewOnly())}>
-          <button class="btn wide alt" tabIndex={-1} disabled={!!updating[base()]} onClick={go}>
+          <button class="btn wide alt" tabindex={-1} disabled={!!updating[base()]} onClick={go}>
             {updating[base()] ?? `Update to ${about()!.update}`}
           </button>
         </Show>
@@ -96,7 +100,7 @@ export function Settings() {
   const preset = () => PRESETS.find(([, p]) =>
     (Object.keys(p) as (keyof Cfg)[]).every(k => p[k] === cfg[k]));
   return (
-    <div id="settings" class="panel" classList={{ show: settingsOpen() }} role="dialog" aria-label="Stream settings">
+    <div id="settings" class={['panel', { show: settingsOpen() }]} role="dialog" aria-label="Stream settings">
       <Group label="Preset" value={preset() ? '' : 'custom'}>
         <Segmented options={PRESETS.map(([name]) => [name, name])}
           selected={name => preset()?.[0] === name}
@@ -112,7 +116,7 @@ export function Settings() {
       }</For>
       <Show when={!SCREEN_PLUGIN && hasPlugins()}>
         <Group label="Plugins" value="">
-          <button class="btn wide alt" tabIndex={-1} onClick={() => { showSettings(false); openPage(PLUGINS); }}>
+          <button class="btn wide alt" tabindex={-1} onClick={() => { showSettings(false); openPage(PLUGINS); }}>
             Manage plugins
           </button>
         </Group>

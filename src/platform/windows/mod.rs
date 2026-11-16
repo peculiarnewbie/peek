@@ -207,10 +207,200 @@ pub mod clipboard {
     pub fn set_text(text: &str) -> bool {
         clipboard_win::set_clipboard_string(text).is_ok()
     }
+
+    /// The most a pasted image may take once decoded, for the bitmap.
+    const MAX_DECODED: usize = 192 << 20;
+
+    /// Put an image on the clipboard: as PNG, which keeps transparency and
+    /// is what browsers, Office and chat programs read, and as a bitmap for
+    /// everything older (.NET's `Clipboard.GetImage`, and so PowerShell's
+    /// `Get-Clipboard -Format Image`, reads only that).
+    pub fn set_png(png: &[u8]) -> bool {
+        // Decoded before the clipboard is opened, so it is held briefly.
+        let dib = dib(png);
+        let Ok(_open) = clipboard_win::Clipboard::new_attempts(10) else { return false };
+        if clipboard_win::raw::empty().is_err() {
+            return false;
+        }
+        let mut set = false;
+        if let Some(format) = clipboard_win::raw::register_format("PNG") {
+            set |= clipboard_win::raw::set_without_clear(format.get(), png).is_ok();
+        }
+        if let Some(dib) = dib {
+            set |= clipboard_win::raw::set_without_clear(clipboard_win::formats::CF_DIB, &dib).is_ok();
+        }
+        set
+    }
+
+    /// The clipboard's image as PNG: the program's own PNG when it put one
+    /// there (browsers, Snipping Tool), or else its bitmap (Paint), encoded.
+    /// `None` when it holds no image, or is busy.
+    pub fn get_png() -> Option<Vec<u8>> {
+        let png_format = clipboard_win::raw::register_format("PNG");
+        let mut bytes = Vec::new();
+        {
+            let _open = clipboard_win::Clipboard::new_attempts(10).ok()?;
+            if let Some(format) = png_format.filter(|f| clipboard_win::raw::is_format_avail(f.get())) {
+                clipboard_win::raw::get_vec(format.get(), &mut bytes).ok()?;
+                return (!bytes.is_empty()).then_some(bytes);
+            }
+            // Windows makes CF_DIB from a CF_BITMAP, so this covers both.
+            if !clipboard_win::raw::is_format_avail(clipboard_win::formats::CF_DIB) {
+                return None;
+            }
+            clipboard_win::raw::get_vec(clipboard_win::formats::CF_DIB, &mut bytes).ok()?;
+        } // Closed before encoding, so it is held briefly.
+        png_from_dib(&bytes)
+    }
+
+    /// A `CF_DIB` as PNG. Takes the layouts programs put there: 24 or 32
+    /// bits a pixel, either row order, any header version. A 32-bit bitmap
+    /// whose alpha is all zero is opaque: most programs leave it unset.
+    pub(super) fn png_from_dib(dib: &[u8]) -> Option<Vec<u8>> {
+        let u32_at = |i: usize| Some(u32::from_le_bytes(dib.get(i..i + 4)?.try_into().ok()?));
+        let header = u32_at(0)? as usize;
+        let w = i32::from_le_bytes(dib.get(4..8)?.try_into().ok()?);
+        let h = i32::from_le_bytes(dib.get(8..12)?.try_into().ok()?);
+        let bits = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?) as usize;
+        let compression = u32_at(16)?;
+        let colours = u32_at(32)? as usize;
+        const BI_RGB: u32 = 0;
+        const BI_BITFIELDS: u32 = 3;
+        let (width, height) = (usize::try_from(w).ok().filter(|&w| w > 0)?, h.unsigned_abs() as usize);
+        if height == 0 || width.checked_mul(height)?.checked_mul(4)? > MAX_DECODED {
+            return None;
+        }
+        match (bits, compression) {
+            (24, BI_RGB) | (32, BI_RGB) => {}
+            // Masks right after a BITMAPINFOHEADER, or inside a later header:
+            // the same place either way. Only the usual BGRA order is read.
+            (32, BI_BITFIELDS) if (u32_at(40)?, u32_at(44)?, u32_at(48)?) == (0xFF0000, 0xFF00, 0xFF) => {}
+            _ => return None,
+        }
+        let masks = if compression == BI_BITFIELDS && header == 40 { 12 } else { 0 };
+        let start = header + masks + colours * 4;
+        let stride = (width * bits).div_ceil(32) * 4;
+        let pixels = dib.get(start..start.checked_add(stride.checked_mul(height)?)?)?;
+        let row = |y: usize| {
+            // A positive height means the bottom row comes first.
+            let y = if h > 0 { height - 1 - y } else { y };
+            &pixels[y * stride..y * stride + width * bits / 8]
+        };
+        let alpha = bits == 32 && (0..height).any(|y| row(y).chunks_exact(4).any(|px| px[3] != 0));
+        let mut out = Vec::with_capacity(width * height * if alpha { 4 } else { 3 });
+        for y in 0..height {
+            for px in row(y).chunks_exact(bits / 8) {
+                out.extend_from_slice(&[px[2], px[1], px[0]]);
+                if alpha {
+                    out.push(px[3]);
+                }
+            }
+        }
+        let mut png = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png, width as u32, height as u32);
+            enc.set_color(if alpha { png::ColorType::Rgba } else { png::ColorType::Rgb });
+            enc.set_depth(png::BitDepth::Eight);
+            enc.set_compression(png::Compression::Fast);
+            enc.write_header().ok()?.write_image_data(&out).ok()?;
+        }
+        Some(png)
+    }
+
+    /// A PNG as a device-independent bitmap (`CF_DIB`): a BITMAPINFOHEADER,
+    /// then 32-bit pixels, bottom row first. Few readers honour alpha in a
+    /// DIB, so transparent pixels are laid over white.
+    pub(super) fn dib(png: &[u8]) -> Option<Vec<u8>> {
+        let mut decoder = png::Decoder::new_with_limits(std::io::Cursor::new(png), png::Limits { bytes: MAX_DECODED });
+        decoder.set_transformations(png::Transformations::normalize_to_color8() | png::Transformations::ALPHA);
+        let mut reader = decoder.read_info().ok()?;
+        let mut buf = vec![0; reader.output_buffer_size()?];
+        let info = reader.next_frame(&mut buf).ok()?;
+        let (w, h) = (info.width as usize, info.height as usize);
+        let channels = match info.color_type {
+            png::ColorType::Rgba => 4,
+            png::ColorType::Rgb => 3,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::Grayscale => 1,
+            png::ColorType::Indexed => return None,
+        };
+        let size = w.checked_mul(h)?.checked_mul(4)?;
+        let mut out = Vec::with_capacity(40 + size);
+        out.extend_from_slice(&40u32.to_le_bytes()); // biSize
+        out.extend_from_slice(&i32::try_from(w).ok()?.to_le_bytes());
+        out.extend_from_slice(&i32::try_from(h).ok()?.to_le_bytes()); // positive: bottom-up
+        out.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+        out.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
+        out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+        out.extend_from_slice(&u32::try_from(size).ok()?.to_le_bytes());
+        out.extend_from_slice(&[0; 16]); // resolution, palette
+        let over_white = |c: u8, a: u8| ((c as u32 * a as u32 + 255 * (255 - a as u32) + 127) / 255) as u8;
+        for row in buf[..info.line_size * h].chunks_exact(info.line_size).rev() {
+            for px in row[..w * channels].chunks_exact(channels) {
+                let (r, g, b, a) = match channels {
+                    4 => (px[0], px[1], px[2], px[3]),
+                    3 => (px[0], px[1], px[2], 255),
+                    2 => (px[0], px[0], px[0], px[1]),
+                    _ => (px[0], px[0], px[0], 255),
+                };
+                out.extend_from_slice(&[over_white(b, a), over_white(g, a), over_white(r, a), 255]);
+            }
+        }
+        Some(out)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_png_becomes_a_bottom_up_bitmap_over_white() {
+        // Two rows: red, then green; then blue, then fully transparent.
+        let mut png = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut png, 2, 2);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 9, 9, 9, 0]).unwrap();
+        }
+        let dib = super::clipboard::dib(&png).unwrap();
+        assert_eq!(&dib[0..4], &40u32.to_le_bytes());
+        assert_eq!(&dib[4..8], &2i32.to_le_bytes());
+        assert_eq!(&dib[8..12], &2i32.to_le_bytes());
+        assert_eq!(&dib[14..16], &32u16.to_le_bytes());
+        // The bottom row first, each pixel as BGRX.
+        assert_eq!(&dib[40..], &[255, 0, 0, 255, 255, 255, 255, 255, 0, 0, 255, 255, 0, 255, 0, 255]);
+        assert!(super::clipboard::dib(b"not a png").is_none());
+
+        // And back: the bitmap's alpha is all set, so the PNG keeps it.
+        let back = super::clipboard::png_from_dib(&dib).unwrap();
+        assert_eq!(decode(&back), (png::ColorType::Rgba, vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]));
+    }
+
+    #[test]
+    fn a_24_bit_top_down_bitmap_becomes_an_opaque_png() {
+        // 1×2, top row first (negative height); rows padded to 4 bytes.
+        let mut dib = Vec::new();
+        for v in [40u32, 1, (-2i32) as u32] {
+            dib.extend_from_slice(&v.to_le_bytes());
+        }
+        dib.extend_from_slice(&1u16.to_le_bytes());
+        dib.extend_from_slice(&24u16.to_le_bytes());
+        dib.extend_from_slice(&[0; 24]);
+        dib.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]); // red, then blue, as BGR
+        let png = super::clipboard::png_from_dib(&dib).unwrap();
+        assert_eq!(decode(&png), (png::ColorType::Rgb, vec![255, 0, 0, 0, 0, 255]));
+        assert!(super::clipboard::png_from_dib(&dib[..45]).is_none());
+    }
+
+    fn decode(png: &[u8]) -> (png::ColorType, Vec<u8>) {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        buf.truncate(info.line_size * info.height as usize);
+        (info.color_type, buf)
+    }
+
     #[test]
     fn private_dir_shuts_out_users() {
         let dir = std::env::temp_dir().join(format!("peek-private-{}", std::process::id())).join("peek");

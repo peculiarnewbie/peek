@@ -14,7 +14,8 @@
 //!   (Linux)    cp target/release/peek-files bin/
 //!
 //! then `peek plugin add <this folder>`, and choose the folders to share in
-//! its settings, on the Plugins page.
+//! its settings, on the Plugins page. Its manifest names it `my-files`, as
+//! the built-in copy has the name `files`.
 //!
 //! Only those folders, and what is inside them, can be seen. A path is
 //! checked after links and junctions are followed, so one that leads out of

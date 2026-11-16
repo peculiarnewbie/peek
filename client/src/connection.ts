@@ -2,7 +2,7 @@ import { SCREEN_PLUGIN } from './plugin-mode';
 // The WebSocket to the host: connecting, reconnecting, decoding frames.
 import {
   active, cfg, setBlocked, setCfg, setClipboardOn, setLive, setMessage, setMonitors, setViewOnly,
-  statsMode, viewOnly, type Monitor,
+  statsMode, viewOnly, wantImages, type Monitor,
 } from './state';
 import { countIn, countOut, first, ping, S, tick } from './stats';
 import { cv, ctx, resizeScreen } from './screen';
@@ -57,6 +57,8 @@ export function machine(): { base: string; token: string; name: string } | null 
   return t && { base: t.url.replace(/^ws/, 'http').replace(/\/ws$/, ''), token: t.token, name: t.name };
 }
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+/** On a message that will not go away by itself: try again now. */
+const RETRY = { label: 'Retry', run: () => { setMessage('Reconnecting…'); connect(); } };
 /** Failed attempts in a row, to say so once a machine stays away. */
 let failures = 0;
 
@@ -76,6 +78,8 @@ let chain = Promise.resolve();
 /** Set by the input code: the host's clipboard changed / its pointer shape changed. */
 export const hooks = {
   clip: (_text: string) => {},
+  /** An image copied on the host, as PNG. */
+  clipImage: (_png: Blob) => {},
   cursor: (_css: string) => {},
   paircode: (_offer: PairOffer) => {},
 };
@@ -85,6 +89,20 @@ export function send(o: object) {
   const text = JSON.stringify(o);
   countOut(text.length);
   ws.send(text);
+}
+
+/** First byte of a binary message to the screen (screen.rs): an image pasted here, as PNG. */
+export const BIN_CLIPBOARD_PNG = 1;
+/** From it: an image copied on the host, as PNG. */
+const BIN_IN_CLIPBOARD_PNG = 2;
+
+export function sendBinary(kind: number, body: Uint8Array) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const msg = new Uint8Array(1 + body.length);
+  msg[0] = kind;
+  msg.set(body, 1);
+  countOut(msg.length);
+  ws.send(msg);
 }
 
 /** Drop the connection (to switch machines), without reconnecting. */
@@ -123,6 +141,7 @@ export function connect() {
     // arrives just after a reload) could not be sent; restate where we are now.
     if (SCREEN_PLUGIN) send({ t: 'cfg', q: cfg.quality, scale: cfg.scale, mon: cfg.mon, fps: cfg.fps, soft: cfg.soft, lossless: cfg.lossless });
     send({ t: 'vis', v: active() });
+    send({ t: 'clipimg', on: wantImages() });
   };
   sock.onmessage = e => {
     if (typeof e.data === 'string') {
@@ -131,6 +150,11 @@ export function connect() {
     } else {
       const buf = e.data as ArrayBuffer;
       countIn(buf.byteLength);
+      // The first byte says what it is: a frame (1), or the host's clipboard image (2).
+      if (buf.byteLength && new Uint8Array(buf, 0, 1)[0] === BIN_IN_CLIPBOARD_PNG) {
+        hooks.clipImage(new Blob([new Uint8Array(buf, 1)], { type: 'image/png' }));
+        return;
+      }
       const arrived = performance.now();
       chain = chain.then(() => onFrame(sock, buf, arrived)).catch(err => console.error(err));
     }
@@ -147,7 +171,7 @@ export function connect() {
         return;
       }
       if (HOSTED) {
-        setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`);
+        setMessage(`This browser is no longer paired with ${t.name}. Run \`peek pair\` there to pair it again.`, RETRY);
         return;
       }
       store.set('token', '');
@@ -158,7 +182,7 @@ export function connect() {
     if (e.code === CLOSE_BAD_ORIGIN) {
       setMessage(HOSTED
         ? `${t.name} does not accept this site. Start peek there with --web ${location.origin}.`
-        : 'The host refused this address. Open it by its IP address or Tailscale name.');
+        : 'The host refused this address. Open it by its IP address or Tailscale name.', RETRY);
       return;
     }
     if (e.code === CLOSE_OUTDATED) {
@@ -167,13 +191,18 @@ export function connect() {
       if (Date.now() - Number(sessionStorage.getItem('peek-reloaded') || 0) > 10000) {
         sessionStorage.setItem('peek-reloaded', String(Date.now()));
         location.reload();
-      } else setMessage(HOSTED
-        ? `${t.name} runs a different version of peek than this site. Update peek there.`
-        : 'This page does not match the host version. Reload it.');
+      } else if (HOSTED) {
+        // The machine serves a client of its own version, which takes this
+        // browser's paired token in the fragment like the host's own token.
+        const m = current();
+        setMessage(`${t.name} runs a different version of peek than this site. Update peek there, or open its own page meanwhile.`,
+          m && { label: `Open ${m.name}'s own page`, href: `https://${m.host}/#${m.token}` });
+      } else setMessage('This page does not match the host version. Reload it.', { label: 'Reload', run: () => location.reload() });
       return;
     }
     failures++;
-    setMessage(!HOSTED || failures <= 2 ? 'Reconnecting…'
+    setMessage(failures <= 2 ? 'Reconnecting…'
+      : !HOSTED ? `Cannot reach ${location.host}. Retrying… (Is peek running there, and this device on its network?)`
       : localAccess() === 'denied' ? BLOCKED_HELP
       : `Cannot reach ${t.name}. Retrying… (Is Tailscale connected on this device?)`);
     retryTimer = setTimeout(connect, retry);
@@ -194,7 +223,7 @@ type HostMsg =
 function onJson(m: HostMsg) {
   switch (m.t) {
     case 'hello':
-      setMonitors(m.monitors); setCfg('mon', m.mon); setViewOnly(m.viewOnly); setClipboardOn(m.clipboard);
+      setMonitors(m.monitors); setCfg(s => { s.mon = m.mon; }); setViewOnly(m.viewOnly); setClipboardOn(m.clipboard);
       break;
     case 'cur':
       cv.style.cursor = m.c;

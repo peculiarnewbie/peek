@@ -1,61 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#0d0d0d">
-<meta name="description" content="How to set up peek: a remote desktop for your own machines over Tailscale that connects instantly.">
-<meta property="og:type" content="website">
-<meta property="og:site_name" content="peek">
-<meta property="og:title" content="peek docs">
-<meta property="og:description" content="Set up peek: a small, fast remote desktop for your own machines over Tailscale, tailored for short sessions.">
-<meta property="og:url" content="https://peek.peculiarnewbie.com/docs/">
-<meta property="og:image" content="https://peek.peculiarnewbie.com/og.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image">
-<title>peek docs</title>
-<style>
-  :root { color-scheme: dark; --page: #0d0d0d; --surface: #1a1a19; --line: rgba(255, 255, 255, .10);
-    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781; --accent: #3987e5; }
-  html { background: var(--page); color: var(--ink-2); font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  body { margin: 0; padding: 32px 18px 64px; }
-  main { max-width: 720px; margin: 0 auto; }
-  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
-  header a.home { color: var(--ink); font-size: 22px; font-weight: 650; text-decoration: none; }
-  header nav a { margin-left: 16px; }
-  h1 { color: var(--ink); font-size: 28px; line-height: 1.2; margin: 28px 0 8px; letter-spacing: -.01em; }
-  h2 { color: var(--ink); font-size: 19px; margin: 40px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
-  h3 { color: var(--ink); font-size: 15px; margin: 24px 0 4px; }
-  a { color: var(--ink); text-underline-offset: 2px; }
-  a:hover { color: #fff; }
-  code { font: 13px ui-monospace, "Cascadia Code", Menlo, monospace; background: var(--surface);
-    border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: var(--ink); }
-  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
-    overflow-x: auto; }
-  pre code { background: none; border: 0; padding: 0; }
-  pre { position: relative; padding-right: 48px; }
-  pre button { position: absolute; top: 7px; right: 7px; display: flex; align-items: center; justify-content: center;
-    width: 30px; height: 30px; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
-  pre button:hover { background: rgba(255, 255, 255, .08); color: var(--ink); }
-  pre button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75;
-    stroke-linecap: round; stroke-linejoin: round; }
-  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 8px 0; }
-  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--ink); font-weight: 600; }
-  ol, ul { padding-left: 22px; }
-  li { margin: 4px 0; }
-  .lead { font-size: 16px; }
-  .note { border-left: 3px solid var(--accent); background: var(--surface); padding: 8px 14px;
-    border-radius: 0 8px 8px 0; }
-  .toc { columns: 2; column-gap: 32px; padding-left: 18px; }
-  .toc li { margin: 0 0 6px; break-inside: avoid; }
-  @media (max-width: 560px) { .toc { columns: 1; } header nav a { margin-left: 12px; } }
-</style>
-</head>
-<body>
-<main>
 <header>
   <a class="home" href="/">peek</a>
   <nav><a href="/">Your machines</a><a href="/changelog/">Changelog</a><a href="https://github.com/peculiarnewbie/peek">GitHub</a></nav>
@@ -72,6 +14,7 @@ computer's screen for a few seconds, where a five-second connect would be most o
   <li><a href="#setup">Set up a machine</a></li>
   <li><a href="#pair">Pair a browser</a></li>
   <li><a href="#use">Using it</a></li>
+  <li><a href="#apps">Apps and plugins</a></li>
   <li><a href="#phone">On a phone or tablet</a></li>
   <li><a href="#manage">Paired browsers</a></li>
   <li><a href="#security">Security</a></li>
@@ -93,29 +36,30 @@ computer's screen for a few seconds, where a five-second connect would be most o
 <p>What matters for a quick look is how long the screen takes to appear, so that is what peek is built around.
 All at medium quality.</p>
 <h3>Over Tailscale</h3>
-<p>From a Linux laptop to a Windows desktop (one 1920×1080 screen) on another network, connected directly with a
-ping of about 8 ms, peek started with <code>--keep-gpu</code>:</p>
+<p>From a Linux laptop to a Windows desktop (one 1920×1200 screen) on another network, connected directly with a
+ping of 8 to 16 ms, peek 0.3.0 started with <code>--keep-gpu</code>. Two passes of 20 connections from idle, and one
+straight after the last connection:</p>
 <table>
   <tr><th></th><th>Median</th><th>Slowest 10%</th></tr>
-  <tr><td>Connect to an idle machine, until the whole first frame (331 KB) has arrived</td><td>125 ms</td><td>157 ms</td></tr>
-  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>121 ms</td><td>157 ms</td></tr>
-  <tr><td>Of that, capturing and encoding the full screen</td><td>11 ms</td><td>15 ms</td></tr>
-  <tr><td>Socket open (WebSocket handshake answered)</td><td>15 ms</td><td>18 ms</td></tr>
+  <tr><td>Connect to an idle machine, until the whole first frame (304 KB) has arrived</td><td>135–151 ms</td><td>191–215 ms</td></tr>
+  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>125 ms</td><td>154 ms</td></tr>
+  <tr><td>Of that, capturing and encoding the full screen</td><td>6.2 ms</td><td>7.8 ms</td></tr>
+  <tr><td>Socket open (TLS and WebSocket handshakes answered)</td><td>41–55 ms</td><td>50–62 ms</td></tr>
 </table>
 <p>Most of the rest is carrying the frame: the more detail on the screen, the bigger it is and the longer it
-takes. Without <code>--keep-gpu</code>, starting from idle added about 200 ms on this machine.</p>
+takes. Without <code>--keep-gpu</code>, starting from idle took 191–210 ms on this machine.</p>
 <h3>On the machine itself</h3>
-<p>A Linux laptop (niri, one 1920×1080 screen) connecting to its own peek, so these are peek's own share of the
-wait:</p>
+<p>A Linux laptop (niri, one 1920×1080 screen) connecting to its own peek (0.3, with Vitals on and Power off, as
+installed), so these are peek's own share of the wait:</p>
 <table>
   <tr><th></th><th>Median</th><th>Slowest 10%</th></tr>
-  <tr><td>Connect to an idle machine, until the whole first frame (149 KB) has arrived</td><td>24 ms</td><td>26 ms</td></tr>
-  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>14 ms</td><td>18 ms</td></tr>
-  <tr><td>Of that, capturing and encoding the full screen</td><td>13 ms</td><td>14 ms</td></tr>
-  <tr><td>Socket open (WebSocket handshake answered)</td><td>1.3 ms</td><td>1.6 ms</td></tr>
+  <tr><td>Connect to an idle machine, until the whole first frame (198 KB) has arrived</td><td>22 ms</td><td>24 ms</td></tr>
+  <tr><td>The same within 5 seconds of the last connection, capture still set up</td><td>12 ms</td><td>15 ms</td></tr>
+  <tr><td>Of that, capturing and encoding the full screen</td><td>8.1 ms</td><td>11 ms</td></tr>
+  <tr><td>Socket open (WebSocket handshake answered)</td><td>1.3 ms</td><td>1.8 ms</td></tr>
 </table>
-<p>While nobody is looking, peek captures nothing: over two idle minutes it used 10 ms of CPU time (0.01% of a
-core) and held 17 MB of memory. The program is 3.6 MB.</p>
+<p>While nobody is looking, peek captures nothing: over two idle minutes, peek and its Vitals process used 20 ms of
+CPU time (0.02% of a core) and held 18 MB of memory between them. The program is 4.6 MB.</p>
 <p>The browser then takes a few milliseconds to decode and draw the frame. To see your own total, open <strong>Stats</strong>: <strong>First frame</strong> is the time from connecting to the screen drawn
 in your browser. To repeat these measurements, run <code>bun bench/first-frame.ts</code> from the repository
 (its header says how).</p>
@@ -155,8 +99,9 @@ way your paired browsers keep working.</p>
 with the graphical session. Keys are typed through <code>/dev/uinput</code>, which many distributions already let
 the logged-in user write; the <a href="https://github.com/peculiarnewbie/peek#install-on-linux-key-access-start-at-login-firewall">README</a>
 has the one-line udev rule if yours does not.</p>
-<p>After updating (<code>npm update -g @peculiarnewbie/peek</code>), run <code>peek install</code> again with the
-same flags. <code>peek uninstall</code> removes it. To build from source instead, see the
+<p>After updating (<code>npm update -g @peculiarnewbie/peek</code>), run <code>peek install</code> again: it
+keeps the flags of the last install. Flags after it replace them, and <code>peek install --defaults</code> goes back
+to none. <code>peek uninstall</code> removes it. To build from source instead, see the
 <a href="https://github.com/peculiarnewbie/peek#run">README</a>.</p>
 
 <h2 id="pair">Pair a browser</h2>
@@ -185,7 +130,7 @@ blocks the page from reaching your machines.</p>
 <code>/screen/my-pc</code>), so it can be bookmarked; the toolbar's back button returns to the list. Hover the dot at
 the top for the toolbar.</p>
 <ul>
-  <li><strong>Sleep</strong> stops the screen while keeping the connection; click the page or press Space to
+  <li><strong>Pause</strong> stops the screen while keeping the connection; click the page or press Space to
     resume. <strong>Pause when unfocused</strong> in Settings does this whenever the window is in the
     background.</li>
   <li><strong>Settings</strong> has presets (Saver, Balanced, Crisp), and quality, resolution, motion, frame rate
@@ -193,6 +138,47 @@ the top for the toolbar.</p>
   <li><strong>Stats</strong> shows frame rate, data rate and latency.</li>
   <li>Mouse, keyboard and clipboard go through as on the machine itself.</li>
 </ul>
+
+<h2 id="apps">Apps and plugins</h2>
+<p>A machine can offer more than its screen. Four apps come with peek; only Vitals is on from the start:</p>
+<ul>
+  <li><strong>Vitals</strong>: processor, memory and storage, as a line on the machine's card in
+    <a href="/">your list</a> and as figures in <strong>Stats</strong>.</li>
+  <li><strong>Power</strong> (Windows): <strong>Sleep</strong> on the machine's card, and <strong>Wake</strong> while
+    it is asleep. A sleeping machine runs nothing, so another paired machine on the same network sends the
+    Wake-on-LAN packet; Sleep is offered only while one is online and the machine has a wired card Windows lets
+    wake it. The first sleep is a test: the machine is woken 15 seconds later, and the card says what to check if it
+    was not. Off by default: turn it on under <strong>Settings → Manage plugins</strong> on the machine to sleep and
+    on the one that wakes it, which can be a Linux machine.</li>
+  <li><strong>Files</strong>: browse folders you choose on the machine and download from them. It is read-only and
+    off by default: turn it on and pick its folders under <strong>Settings → Manage plugins</strong>.</li>
+  <li><strong>Processes</strong>: what is running on the machine, with its processor and memory use, and ending a
+    program after asking. By default it ends only your own programs. Off by default: turn it on under
+    <strong>Settings → Manage plugins</strong>.</li>
+</ul>
+<p>An app with a page of its own, like Files, gets a button in the toolbar.</p>
+<p><strong>Plugins</strong> add apps of your own. <strong>Settings → Manage plugins</strong> installs one from a
+folder on the machine, a <code>.tgz</code>, an HTTPS git address or an npm name, and starts, stops, updates and
+removes it without restarting peek. The same can be done on the machine:</p>
+<pre><code>peek plugin add &lt;source&gt;     # a folder, an https git address, or an npm package
+peek plugin list             # everything beside the screen, and whether it is on
+peek plugin update &lt;name&gt;
+peek plugin remove &lt;name&gt;    # --purge also deletes what it kept</code></pre>
+<p>A plugin is a program that runs with peek's rights (SYSTEM under the Windows service), so install only ones you
+trust. To keep paired browsers from installing, removing or changing plugins, run
+<code>peek plugin remote-install off</code> on the machine; they can then still turn plugins on and off. To write
+one, see <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/plugin-release.md">the plugin contract</a>
+and <a href="https://github.com/peculiarnewbie/peek/blob/main/docs/frames.md">the page protocol</a>.</p>
+<h3>Every machine at once</h3>
+<p><strong>Plugins</strong>, beside <strong>Machines</strong> at the top of <a href="/">your list</a>, shows which
+plugins each machine has: <strong>By plugin</strong>, one row per plugin with the machines it is on, or
+<strong>Grid</strong>, machines by plugins. From there you can turn a plugin on or off on any machine, install one on
+a machine that lacks it from where another machine got it (an HTTPS git address or npm), and update an older copy.
+It asks before installing or updating, and says what the plugin will run. A machine's name opens its own Plugins
+page, for settings and for installing something new.</p>
+<p>On the list of machines, each card shows its plugins: solid when on, dashed when off. Pick a plugin above the list
+to compare: a card where it is off or missing offers to turn it on or install it. A machine needs peek 0.3.1 or
+newer to show up here.</p>
 
 <h2 id="phone">On a phone or tablet</h2>
 <p>Tap the dot for the toolbar. Its <strong>Trackpad / Touch</strong> button switches how a finger works:</p>
@@ -222,6 +208,9 @@ peek unpair &lt;id&gt;    # unpair one; it can no longer connect</code></pre>
   <li>From this site, a machine accepts only browsers paired with it. Each browser has its own key; the machine
     keeps only a hash of it.</li>
   <li>Pairing codes work once, for five minutes, and guessing is rate-limited.</li>
+  <li>A plugin runs with peek's rights on the machine. Install only ones you trust;
+    <code>peek plugin remote-install off</code> keeps browsers from installing them (see
+    <a href="#apps">Apps and plugins</a>).</li>
   <li>Never expose peek's port with <code>tailscale funnel</code>: that would put it on the internet.</li>
 </ul>
 
@@ -242,28 +231,3 @@ errors), even when it runs in the background; <code>peek logs -f</code> keeps fo
 
 <p style="margin-top: 40px">Everything else, including every option and how peek works inside, is in the
 <a href="https://github.com/peculiarnewbie/peek#readme">README on GitHub</a>.</p>
-</main>
-<script>
-// One copy button per command block; it copies every line, without trailing # comments.
-const ICON = {
-  copy: '<svg viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" /></svg>',
-  check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>',
-};
-for (const pre of document.querySelectorAll('pre')) {
-  const text = pre.textContent.split('\n').map(l => l.replace(/\s+#.*$/, '').trimEnd()).filter(Boolean).join('\n');
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.title = 'Copy';
-  btn.setAttribute('aria-label', 'Copy commands');
-  btn.innerHTML = ICON.copy;
-  let timer;
-  btn.onclick = () => navigator.clipboard.writeText(text).then(() => {
-    btn.innerHTML = ICON.check;
-    clearTimeout(timer);
-    timer = setTimeout(() => btn.innerHTML = ICON.copy, 1200);
-  }, () => {});
-  pre.append(btn);
-}
-</script>
-</body>
-</html>

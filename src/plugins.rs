@@ -34,7 +34,7 @@ const DATA_DIR: &str = "plugin-data";
 const STAGING_DIR: &str = ".staging";
 const MANIFEST: &str = "peek-plugin.json";
 /// Names that are peek's own, which nothing added may take.
-pub const OWN: [&str; 5] = ["screen", "vitals", "power", "plugins", "files"];
+pub const OWN: [&str; 6] = ["screen", "vitals", "power", "plugins", "files", "processes"];
 /// How long a plugin fetched to be looked at waits to be installed.
 const STAGED_FOR: Duration = Duration::from_secs(10 * 60);
 
@@ -754,6 +754,13 @@ fn parse_manifest(text: &str, own: bool) -> Result<Manifest, String> {
     if manifest.manifest_version != contract_version() || manifest.provider_protocol != contract_version() {
         return Err(format!("unsupported plugin contract: manifest {}, provider {}; this host supports version 1", manifest.manifest_version, manifest.provider_protocol));
     }
+    if !own && OWN.contains(&manifest.name.as_str()) {
+        return Err(format!(
+            "{} is the name of a plugin built into peek, so no other may take it: change \"name\" in {MANIFEST}. \
+             (The built-in one turns on in the Plugins page.)",
+            manifest.name
+        ));
+    }
     if !(name_ok(&manifest.name) || own && OWN.contains(&manifest.name.as_str())) || manifest.run.first().is_none_or(|p| p.trim().is_empty()) {
         return Err(format!("{MANIFEST} needs a valid name and a nonempty run command"));
     }
@@ -906,8 +913,9 @@ mod tests {
 
     #[test]
     fn built_in_manifests_and_state() {
-        for text in [include_str!("apps/vitals.json"), include_str!("apps/power.json")] {
-            assert!(parse_manifest(text, true).unwrap().on_by_default);
+        assert!(parse_manifest(include_str!("apps/vitals.json"), true).unwrap().on_by_default);
+        for text in [include_str!("apps/power.json"), include_str!("apps/files.json")] {
+            assert!(!parse_manifest(text, true).unwrap().on_by_default);
         }
         const APP: &str = r#"{"name":"sample","run":["peek"],"on_by_default":false,"settings":{"share":{"kind":"text","default":"hello","label":"Share"}}}"#;
         let root = std::env::temp_dir().join(format!("peek-own-{}", crate::pairing::random_hex(6).unwrap()));
@@ -947,7 +955,18 @@ mod tests {
         }
         fs::write(root.join(MANIFEST), r#"{"name":"sample","run":["node"]}"#).unwrap();
         assert_eq!(read_manifest(&root).unwrap().provider_protocol, 1);
+        fs::write(root.join(MANIFEST), r#"{"name":"files","run":["node"]}"#).unwrap();
+        assert!(read_manifest(&root).err().unwrap().contains("built into peek"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The examples in apps/ install as their READMEs say, beside the
+    /// built-in copies of themselves.
+    #[test]
+    fn example_apps_install_beside_the_built_in_ones() {
+        for text in [include_str!("../apps/files/peek-plugin.json"), include_str!("../apps/processes/peek-plugin.json")] {
+            parse_manifest(text, false).unwrap();
+        }
     }
 
     #[test]

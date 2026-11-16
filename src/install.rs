@@ -81,8 +81,12 @@ mod windows {
         }))
     }
 
-    pub fn install(service_args: &[String]) -> Result<(), String> {
-        let service = service_args.iter().any(|a| a == "--service");
+    /// With `None`, the script keeps the flags of the logon task or service
+    /// installed now, and the service stays a service.
+    pub fn install(service_args: Option<&[String]>) -> Result<(), String> {
+        let reuse = service_args.is_none();
+        let service_args = service_args.unwrap_or_default();
+        let service = if reuse { service_installed() } else { service_args.iter().any(|a| a == "--service") };
         let peek_args: Vec<&String> = service_args.iter().filter(|a| *a != "--service").collect();
         let source = std::env::current_exe().map_err(|e| e.to_string())?;
         let mut config = paths()?;
@@ -90,6 +94,7 @@ mod windows {
         config["user"] = serde_json::json!(current_user()?);
         config["peekArgs"] = serde_json::json!(peek_args);
         config["service"] = serde_json::json!(service);
+        config["reuseArgs"] = serde_json::json!(reuse);
         config["remove"] = serde_json::json!(false);
         run_script(&config)?;
         if service {
@@ -99,14 +104,38 @@ mod windows {
         } else {
             println!("peek now starts at logon from {}, as administrator.", installed_exe()?.display());
         }
-        println!("Run `peek install` again after updating peek, and `peek uninstall` to remove it.");
+        println!("Run `peek install` again after updating peek: it keeps these flags. Flags after it replace them,");
+        println!("`peek install --defaults` drops them, and `peek uninstall` removes peek.");
         Ok(())
     }
 
-    pub fn uninstall() -> Result<(), String> {
+    /// Whether the peek service is installed; installing the logon task
+    /// removes it, so then it is what runs. Any user may query a service.
+    fn service_installed() -> bool {
+        std::process::Command::new("sc.exe")
+            .args(["query", "peek"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// False when nothing was installed: then there is nothing to remove,
+    /// and no reason to ask for administrator rights.
+    pub fn uninstall() -> Result<bool, String> {
+        let task = std::process::Command::new("schtasks.exe")
+            .args(["/query", "/tn", "peek"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !task && !service_installed() && !installed_exe()?.exists() && !service_exe().exists() {
+            return Ok(false);
+        }
         let mut config = paths()?;
         config["remove"] = serde_json::json!(true);
-        run_script(&config)
+        run_script(&config)?;
+        Ok(true)
     }
 
     /// DOMAIN\user of whoever ran `peek install`. Taken here, not in the
@@ -243,7 +272,7 @@ mod linux {
     }
 
     /// One argument on a systemd ExecStart line.
-    fn quote(arg: &str) -> String {
+    pub(super) fn quote(arg: &str) -> String {
         if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@+".contains(c)) {
             arg.to_string()
         } else {
@@ -251,7 +280,61 @@ mod linux {
         }
     }
 
-    pub fn install(service_args: &[String]) -> Result<(), String> {
+    /// The words of a systemd ExecStart value, undoing `quote`.
+    fn unquote(line: &str) -> Vec<String> {
+        let (mut words, mut word, mut quoted, mut any) = (Vec::new(), String::new(), false, false);
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => (quoted, any) = (!quoted, true),
+                '\\' if quoted => word.extend(chars.next()),
+                '%' => {
+                    word.push('%');
+                    if chars.clone().next() == Some('%') {
+                        chars.next();
+                    }
+                }
+                c if c.is_whitespace() && !quoted => {
+                    if any || !word.is_empty() {
+                        words.push(std::mem::take(&mut word));
+                    }
+                    any = false;
+                }
+                c => word.push(c),
+            }
+        }
+        if any || !word.is_empty() {
+            words.push(word);
+        }
+        words
+    }
+
+    /// The flags on the ExecStart line of the unit installed now, if any.
+    pub(super) fn installed_flags(unit: &str) -> Vec<String> {
+        unit.lines()
+            .find_map(|l| l.strip_prefix("ExecStart="))
+            .map(|exec| unquote(exec).into_iter().skip(1).collect())
+            .unwrap_or_default()
+    }
+
+    /// With `None`, keeps the flags of the unit installed now.
+    pub fn install(service_args: Option<&[String]>) -> Result<(), String> {
+        let path = unit_path()?;
+        let kept = service_args.is_none();
+        let service_args = match service_args {
+            Some(flags) => flags.to_vec(),
+            None => {
+                let flags = installed_flags(&std::fs::read_to_string(&path).unwrap_or_default());
+                super::check_service_args(&flags).map_err(|e| {
+                    format!(
+                        "the flags of the last install ({}) no longer work: {e}.\n\
+                         Give new ones after `peek install`, or `peek install --defaults` for none",
+                        flags.join(" ")
+                    )
+                })?;
+                flags
+            }
+        };
         let source = std::env::current_exe().map_err(|e| e.to_string())?;
         let target = installed_exe()?;
         let dir = target.parent().unwrap();
@@ -277,7 +360,6 @@ mod linux {
             .collect::<Vec<_>>()
             .join("\n");
         let unit = format!("# Written by `peek install`; run it again to change, `peek uninstall` to remove.\n{}\n", unit.trim_start());
-        let path = unit_path()?;
         std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
         std::fs::write(&path, unit).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
 
@@ -285,24 +367,35 @@ mod linux {
         systemctl(&["enable", "peek"])?;
         systemctl(&["restart", "peek"])?;
         println!("peek now starts with the graphical session, from {}.", target.display());
-        println!("`journalctl --user -u peek` shows its output. Run `peek install` again after updating peek.");
+        let shown = service_args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ");
+        match (service_args.is_empty(), kept) {
+            (true, _) => println!("It runs with no flags."),
+            (false, true) => println!("It runs with the flags of the last install: {shown}"),
+            (false, false) => println!("It runs with: {shown}"),
+        }
+        println!("`journalctl --user -u peek` shows its output. Run `peek install` again after updating peek:");
+        println!("it keeps these flags. Flags after it replace them, and `peek install --defaults` drops them.");
         Ok(())
     }
 
-    pub fn uninstall() -> Result<(), String> {
+    /// False when nothing was installed.
+    pub fn uninstall() -> Result<bool, String> {
         let path = unit_path()?;
+        let target = installed_exe()?;
+        if !path.exists() && !target.exists() {
+            return Ok(false);
+        }
         if path.exists() {
             let _ = systemctl(&["disable", "--now", "peek"]);
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
             let _ = systemctl(&["daemon-reload"]);
         }
-        let target = installed_exe()?;
         if target.exists() {
             std::fs::remove_file(&target).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_dir(target.parent().unwrap());
         }
         println!("Removed the peek service and {}.", target.display());
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -339,7 +432,7 @@ mod tests {
         use clap::Parser;
         let parsed = crate::Args::try_parse_from(["peek", "install", "--no-token", "--fps", "30"]).unwrap();
         match parsed.command {
-            Some(crate::Command::Install { args }) => assert_eq!(args, ["--no-token", "--fps", "30"]),
+            Some(crate::Command::Install { args, .. }) => assert_eq!(args, ["--no-token", "--fps", "30"]),
             _ => panic!("expected install"),
         }
     }
@@ -350,7 +443,34 @@ mod tests {
     fn install_with_port_is_not_lost() {
         use clap::Parser;
         let parsed = crate::Args::try_parse_from(["peek", "install", "--port", "9000", "--no-token"]).unwrap();
-        let Some(crate::Command::Install { args }) = parsed.command else { panic!("expected install") };
+        let Some(crate::Command::Install { args, .. }) = parsed.command else { panic!("expected install") };
         assert!(parsed.port == 9000 || args.windows(2).any(|w| w == ["--port", "9000"]), "port lost: {args:?}");
+    }
+
+    #[test]
+    fn install_defaults_is_its_own_flag() {
+        use clap::Parser;
+        let parsed = crate::Args::try_parse_from(["peek", "install", "--defaults"]).unwrap();
+        let Some(crate::Command::Install { defaults, args }) = parsed.command else { panic!("expected install") };
+        assert!(defaults && args.is_empty());
+        let parsed = crate::Args::try_parse_from(["peek", "install", "--no-token"]).unwrap();
+        let Some(crate::Command::Install { defaults, .. }) = parsed.command else { panic!("expected install") };
+        assert!(!defaults);
+    }
+
+    /// A reinstall reads the last install's flags back from its unit.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unit_flags_survive_a_round_trip() {
+        let flags = ["--no-token", "--view-only", "--log", "/tmp/a b/peek.log", "--web", "100%\\\"x"];
+        let exec = std::iter::once("/home/u/.local/share/peek/peek")
+            .chain(flags)
+            .map(super::linux::quote)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let unit = format!("[Unit]\nDescription=peek\n\n[Service]\nExecStart={exec}\nRestart=on-failure\n");
+        assert_eq!(super::linux::installed_flags(&unit), flags);
+        assert!(super::linux::installed_flags("[Service]\nExecStart=%h/.local/bin/peek\n").is_empty());
+        assert!(super::linux::installed_flags("").is_empty());
     }
 }

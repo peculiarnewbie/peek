@@ -9,7 +9,7 @@ and automatic frame-ticket recovery after a host restart.
 
 ## How it works
 
-1. **The provider names a folder** in what it says of itself: `{"page": "C:\\…\\page"}`. The descriptor (`/.well-known/peek`) doesn't show the path, only `"frame": true`.
+1. **The provider names a folder** in what it says of itself: `{"page": "C:\\…\\page"}`, or a path relative to the folder it runs in (a plugin's own: `{"page": "page"}`). A folder that is not there gives no page, and peek's log says so. The descriptor (`/.well-known/peek`) doesn't show the path, only `"frame": true`.
 2. **Peek serves that folder** at `/p/<name>/` on the machine. Only plain file names are allowed, and nothing outside the folder is served. The page may be framed only by the hosted client and by the machine's own pages (`frame-ancestors`).
 3. **The client asks for a ticket**: `POST /api/frame/<name>`, with its token. A ticket works for that one provider only and lasts 12 hours. The token never enters the frame.
 4. **The client opens a frame** at `https://<machine>/p/<name>/#ticket=…`:
@@ -55,7 +55,7 @@ A plugin is a folder with a `peek-plugin.json`:
 
 ```json
 {
-  "name": "files",
+  "name": "my-files",
   "version": "1.0.0",
   "description": "Browse the folders you share, and download their files.",
   "run": ["bin/peek-files"],
@@ -63,6 +63,7 @@ A plugin is a folder with a `peek-plugin.json`:
 }
 ```
 
+- **Its name:** lowercase letters, digits and dashes, and none of peek's own (`screen`, `vitals`, `power`, `plugins`, `files`, `processes`): the example above is `my-files`, as `files` is built in.
 - **Where it lives:** `plugins/<name>/` in peek's config folder.
 - **How it starts:** `run` is started in that folder. Its first word is a program on the machine (`node`), or one the plugin brings (`bin/peek-files`, which is `bin\peek-files.exe` on Windows).
 - **What it's written in:** anything that reads and writes its stdin and stdout. The examples are one of each: `files` in Rust (a 213 KB program, which ran in about 4 MB, 0.6 MB of it its own), `frame` (notes) in Node (an idle Node is about 35 MB).
@@ -101,6 +102,8 @@ Peek can't hold a plugin to what it says it does; the page says so.
 - **npm names and git addresses** are checked before anything runs; nothing goes through a shell's parsing.
 
 ### The client
+
+A paired browser can send the Plugins page's requests without the page: `POST /api/plugins` with `{ "token": …, "t": "list" }`, or `on`, `inspect`, `install`, `update`, and so on, answered as on the page's socket and under the same rules above. The hosted client uses it to show every machine's plugins side by side and to turn them on and off there.
 
 A page can tell the client the machine's providers changed (`postMessage({t:"changed"})`). The client listens only to the machine's own origin, and re-reads the providers. That's how a plugin's tab appears as soon as it's installed.
 

@@ -1,10 +1,14 @@
-// The hosted client on Cloudflare: static files only, no Worker code.
-// Browsers connect from the page straight to each machine over Tailscale,
-// so nothing about the machines passes through Cloudflare.
+// The hosted site on Cloudflare: a TanStack Start app (site/). Its home, docs
+// and changelog are files, built ahead; the Worker only answers what is not a
+// file, which is a machine's page, pairing and /plugins: the page they load
+// in, with nothing in it but the app's code. Browsers connect from the page
+// straight to each machine over Tailscale, so nothing about the machines
+// passes through Cloudflare.
 //
 // Deploy (Node, not Bun: cf cannot load this file under Bun):
-//   cd client && npx cf deploy --mode hosted
-// The Vite build for --mode hosted supplies the files, _headers included.
+//   cd client && npx vite build --mode hosted && npx cf deploy --prebuilt
+// (`bun run deploy:hosted` does both.) The Vite build writes what is deployed,
+// _headers included.
 //
 // With PEEK_CHANNEL=next it is the nightly site instead, a Worker of its own
 // on next.peek.peculiarnewbie.com (scripts/nightly.mjs deploys it).
@@ -16,8 +20,8 @@ export default defineConfig({
   worker: {
     name: next ? 'peek-next' : 'peek',
     compatibilityDate: '2026-11-01',
-    // /pair and every machine's page load the client, which reads the URL itself.
-    assets: { notFoundHandling: 'single-page-application' },
+    compatibilityFlags: ['nodejs_compat'],
+    entrypoint: '@tanstack/solid-start/server-entry',
     domains: [next ? 'next.peek.peculiarnewbie.com' : 'peek.peculiarnewbie.com'],
     workersDev: false,
     previewUrls: false,
