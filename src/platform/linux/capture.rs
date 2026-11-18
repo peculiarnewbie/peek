@@ -271,7 +271,9 @@ impl Capture {
         if self.state.changed {
             return Err("monitors changed".into());
         }
-        let Some(&(monitor, output_index)) = self.order.get(index) else { return Ok(false) };
+        let Some(&(monitor, output_index)) = self.order.get(index) else {
+            return Err("no monitor attached".into());
+        };
         let fresh = !self.seen.contains(&index);
         let deadline = Instant::now() + if fresh { FIRST_IMAGE_WAIT.max(timeout) } else { timeout };
 
