@@ -7,7 +7,7 @@
 <p class="lead">What changed in each version of peek. To update a machine, run
 <code>npm update -g @peculiarnewbie/peek</code> there, then <code>peek install</code> again.</p>
 
-<h2 id="0.3.1"><a href="#0.3.1">0.3.1</a><span class="date">16 November 2026</span><span class="latest">Latest</span></h2>
+<h2 id="0.3.1"><a href="#0.3.1">0.3.1</a><span class="date">18 November 2026</span><span class="latest">Latest</span></h2>
 <h3>New</h3>
 <ul>
   <li><strong>peek updates itself:</strong> from this version on, when a newer one is out, a machine's card and
@@ -66,6 +66,8 @@
 </ul>
 <h3>Fixed</h3>
 <ul>
+  <li>The browser's pointer and clicks stay aligned with the remote screen after the display resolution changes.</li>
+  <li>On Linux, peek restarts on the version it just installed after a self-update.</li>
   <li>With a plugin's page open over a machine's screen, mouse, wheel and touch went to the frozen screen behind
     it and clicked on the machine unseen. They are ignored now, as keys already were.</li>
   <li>A plugin that names its page by a path relative to its folder (<code>{"page": "page"}</code>) gets it

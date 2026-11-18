@@ -22,8 +22,8 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap,
-    CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC,
-    SRCCOPY, SelectObject,
+    CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, GetMonitorInfoW,
+    HMONITOR, MONITORINFO, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
 use windows::Win32::System::Threading::GetCurrentProcess;
@@ -51,6 +51,7 @@ pub fn keep_device(keep: bool) {
 struct Output {
     adapter: IDXGIAdapter1,
     output: IDXGIOutput1,
+    handle: HMONITOR,
     monitor: Monitor,
 }
 
@@ -137,6 +138,11 @@ impl Capture {
         };
         if self.dups.get(&index).is_none_or(|d| d.dup.is_none()) {
             follow_desktop();
+            // A mode change while duplication was stopped cannot invalidate it.
+            // Check the live bounds before opening it or taking the GDI fallback.
+            if monitor_bounds(out.handle) != Some(out.monitor) {
+                return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "monitor bounds changed"));
+            }
         }
         match duplicate_and_grab(&mut self.dups, out, index, timeout, f) {
             Ok(Some(cost)) => {
@@ -208,16 +214,12 @@ fn enumerate() -> windows::core::Result<Vec<Output>> {
                 if !desc.AttachedToDesktop.as_bool() {
                     continue;
                 }
-                let r = desc.DesktopCoordinates;
+                let Some(monitor) = monitor_bounds(desc.Monitor) else { continue };
                 outputs.push(Output {
                     adapter: adapter.clone(),
                     output: output.cast()?,
-                    monitor: Monitor {
-                        x: r.left,
-                        y: r.top,
-                        width: (r.right - r.left) as u32,
-                        height: (r.bottom - r.top) as u32,
-                    },
+                    handle: desc.Monitor,
+                    monitor,
                 });
             }
         }
@@ -225,6 +227,20 @@ fn enumerate() -> windows::core::Result<Vec<Output>> {
     // Primary monitor (the one at the origin) first, then left to right.
     outputs.sort_by_key(|o| ((o.monitor.x, o.monitor.y) != (0, 0), o.monitor.x, o.monitor.y));
     Ok(outputs)
+}
+
+fn monitor_bounds(handle: HMONITOR) -> Option<Monitor> {
+    let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if !unsafe { GetMonitorInfoW(handle, &mut info) }.as_bool() {
+        return None;
+    }
+    let r = info.rcMonitor;
+    Some(Monitor {
+        x: r.left,
+        y: r.top,
+        width: (r.right - r.left) as u32,
+        height: (r.bottom - r.top) as u32,
+    })
 }
 
 fn open(out: &Output) -> windows::core::Result<Duplication> {
@@ -426,6 +442,21 @@ fn screenshot(m: Monitor) -> windows::core::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Simulate a resolution change while there is no active duplication.
+    #[test]
+    #[ignore = "needs a Windows desktop session"]
+    fn stale_monitor_bounds_are_rejected_on_capture_start() {
+        crate::platform::init();
+        let mut cap = Capture::new();
+        let monitor = cap.monitors()[0];
+        cap.outputs[0].monitor.width += 1;
+
+        let err = cap.acquire(0, Duration::ZERO, |_| panic!("captured with stale bounds")).unwrap_err();
+        assert_eq!(err.code(), DXGI_ERROR_NOT_FOUND);
+        cap.refresh();
+        assert_eq!(cap.monitors()[0], monitor);
+    }
 
     /// Needs a real desktop session, so it is not part of the default run:
     /// `cargo test -- --ignored`
