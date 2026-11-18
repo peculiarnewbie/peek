@@ -95,11 +95,8 @@ export function writeRelease(built, out, about) {
     sums.push(`${createHash('sha256').update(fs.readFileSync(file)).digest('hex')}  ${name}`);
     assets.push(file);
   }
-  fs.writeFileSync(path.join(out, 'SHA256SUMS'), `${sums.join('
-')}
-`);
-  fs.writeFileSync(path.join(out, 'version.json'), `${JSON.stringify(about, null, 2)}
-`);
+  fs.writeFileSync(path.join(out, 'SHA256SUMS'), `${sums.join('\n')}\n`);
+  fs.writeFileSync(path.join(out, 'version.json'), `${JSON.stringify(about, null, 2)}\n`);
   return [...assets, path.join(out, 'SHA256SUMS'), path.join(out, 'version.json')];
 }
 
