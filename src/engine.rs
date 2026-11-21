@@ -177,6 +177,8 @@ struct Session {
     id: u64,
     tx: Sink,
     view: View,
+    /// The requested monitor in `view` clamped to the current layout, as input is.
+    mon: usize,
     visible: bool,
     /// Screen size this session's tile state was built for; (0, 0) forces a
     /// full resend.
@@ -693,30 +695,37 @@ impl Engine {
         capture_interval(self.interval, self.sessions.iter().filter(|s| s.visible).map(|s| s.view.fps))
     }
 
-    fn publish_monitors(&mut self) {
+    /// Returns true when the layout changed and there is a display to capture.
+    fn publish_monitors(&mut self) -> bool {
         let monitors = self.cap.monitors();
         let mut shared = self.shared.monitors.write().unwrap();
-        if *shared != monitors {
-            crate::log!(
-                "monitors: {}",
-                monitors
-                    .iter()
-                    .map(|m| format!("{}x{}@{},{}", m.width, m.height, m.x, m.y))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            *shared = monitors;
-            drop(shared);
-            for i in 0..self.sessions.len() {
-                self.hello(i);
-            }
+        if *shared == monitors {
+            return false;
         }
+        crate::log!(
+            "monitors: {}",
+            monitors
+                .iter()
+                .map(|m| format!("{}x{}@{},{}", m.width, m.height, m.x, m.y))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let available = !monitors.is_empty();
+        *shared = monitors;
+        drop(shared);
+        // Cached frames belong to the old layout. An index may even refer to
+        // a different screen now, so wait for a new capture before flushing.
+        self.screens.clear();
+        for i in 0..self.sessions.len() {
+            self.hello(i);
+        }
+        available
     }
 
     fn hello(&mut self, index: usize) {
         let monitors = self.shared.monitors.read().unwrap().clone();
         let s = &mut self.sessions[index];
-        s.view.mon = s.view.mon.min(monitors.len().saturating_sub(1));
+        s.mon = s.view.mon.min(monitors.len().saturating_sub(1));
         s.dims = (0, 0);
         let list: Vec<_> = monitors
             .iter()
@@ -726,7 +735,7 @@ impl Engine {
             serde_json::json!({
                 "t": "hello",
                 "monitors": list,
-                "mon": s.view.mon,
+                "mon": s.mon,
                 "viewOnly": self.shared.view_only,
                 "clipboard": self.shared.clipboard,
             })
@@ -742,6 +751,7 @@ impl Engine {
                     id,
                     tx,
                     view,
+                    mon: 0,
                     visible,
                     dims: (0, 0),
                     tiles: Tiles::default(),
@@ -794,7 +804,7 @@ impl Engine {
     /// Capture every monitor a visible session is looking at.
     fn capture(&mut self) {
         let mut wanted: Vec<usize> =
-            self.sessions.iter().filter(|s| s.visible).map(|s| s.view.mon).collect();
+            self.sessions.iter().filter(|s| s.visible).map(|s| s.mon).collect();
         wanted.sort_unstable();
         wanted.dedup();
         // If a client is already owed something it has room for, don't sit
@@ -821,7 +831,7 @@ impl Engine {
                         crate::log!("capture recovered");
                     }
                     let changed = screen.changed.iter().any(|&c| c);
-                    for s in self.sessions.iter_mut().filter(|s| s.view.mon == mon) {
+                    for s in self.sessions.iter_mut().filter(|s| s.mon == mon) {
                         if s.dims == (screen.width, screen.height) {
                             for (d, c) in s.tiles.dirty.iter_mut().zip(&screen.changed) {
                                 *d |= *c;
@@ -839,8 +849,11 @@ impl Engine {
                         crate::log!("capture unavailable ({err}); retrying until it comes back");
                     }
                     self.cap.refresh();
-                    self.publish_monitors();
-                    self.retry_at = Some(Instant::now() + RETRY);
+                    // A new layout can be captured immediately. Back off if
+                    // re-enumerating found no change or no available display.
+                    if !self.publish_monitors() {
+                        self.retry_at = Some(Instant::now() + RETRY);
+                    }
                     return;
                 }
             }
@@ -872,7 +885,7 @@ impl Engine {
     /// Send session `index` whatever it is owed, if it has room for a frame.
     fn flush(&mut self, index: usize, now: Instant) {
         let s = &mut self.sessions[index];
-        let Some(screen) = self.screens.get(&s.view.mon) else { return };
+        let Some(screen) = self.screens.get(&s.mon) else { return };
         if !s.visible || screen.width == 0 {
             return;
         }
