@@ -233,11 +233,26 @@ enum Command {
 
 #[derive(Subcommand)]
 enum PluginCommand {
+    /// Create a plugin with a sample provider and page
+    Init {
+        name: String,
+        /// Where to create the plugin (defaults to its name)
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Provider language
+        #[arg(long, value_enum, default_value = "js")]
+        lang: plugins::Language,
+    },
     /// Install a plugin from a folder, a git repository or npm
     ///
     /// A folder on this machine, an https address of a git repository, or an
     /// npm package.
-    Add { source: String },
+    Add {
+        source: String,
+        /// Run the plugin in place from an existing local folder
+        #[arg(long)]
+        link: bool,
+    },
     /// Update a plugin, keeping its settings and data
     Update { name: String, source: Option<String> },
     /// Remove a plugin, or a command added with `peek provider add`
@@ -288,7 +303,12 @@ fn own_providers(args: &Args) -> Vec<(&'static str, provider::Start)> {
 }
 
 fn plugins(args: &Args) -> Arc<plugins::Plugins> {
-    plugins::Plugins::start(plugins::Catalog::new(config_dir(), own_providers(args)), args.view_only)
+    #[cfg(windows)]
+    let is_service = args.service;
+    #[cfg(not(windows))]
+    let is_service = false;
+    let catalog = plugins::Catalog::new(config_dir(), own_providers(args)).with_default_remote_install(!is_service);
+    plugins::Plugins::start(catalog, args.view_only)
 }
 
 /// The config folder of the peek installed here, for commands that change
@@ -303,7 +323,12 @@ fn installed_config_dir() -> PathBuf {
 }
 
 fn plugin_command(args: &Args, action: &PluginCommand) -> Result<(), String> {
-    let catalog = plugins::Catalog::new(installed_config_dir(), own_providers(args));
+    let dir = installed_config_dir();
+    #[cfg(windows)]
+    let is_service = dir == machine_config_dir();
+    #[cfg(not(windows))]
+    let is_service = false;
+    let catalog = plugins::Catalog::new(dir, own_providers(args)).with_default_remote_install(!is_service);
     // A running peek starts and stops providers to match; one that is not
     // running reads it all when it starts.
     let tell = || match local_request(args, "POST", "/api/plugins/reload", "") {
@@ -327,6 +352,12 @@ fn plugin_command(args: &Args, action: &PluginCommand) -> Result<(), String> {
         result
     };
     match action {
+        PluginCommand::Init { name, dir, lang } => {
+            let dir = plugins::init(name, dir.as_deref(), *lang)?;
+            println!("Created {name} in {}.", dir.display());
+            println!("Run `peek plugin add --link \"{}\"`, then open its page in peek.", dir.display());
+            Ok(())
+        }
         PluginCommand::List => {
             for (name, kind, runs, on) in catalog.list() {
                 println!("{name:<16} {:<4} {kind:<11} {runs}", if on { "on" } else { "off" });
@@ -342,14 +373,21 @@ A browser {} install, remove and change plugins here (`peek plugin remote-instal
             }
             Ok(())
         }
-        PluginCommand::Add { source } => {
-            let name = catalog.add(source, |line| println!("{line}"))?;
-            println!("Installed {name}.");
+        PluginCommand::Add { source, link } => {
+            let say = |line: &str| println!("{line}");
+            if *link {
+                let name = catalog.add_link(source, say)?;
+                println!("Linked {name}.");
+            } else {
+                let name = catalog.add(source, say)?;
+                println!("Installed {name}.");
+            }
             tell();
             Ok(())
         }
         PluginCommand::Update { name, source } => {
-            change(name, &|| catalog.update_from(name, source.as_deref(), |line| println!("{line}")).map(|_| ()))?;
+            let update = || catalog.update_from(name, source.as_deref(), |line| println!("{line}")).map(|_| ());
+            if catalog.is_linked(name) { update()?; } else { change(name, &update)?; }
             println!("Updated {name}.");
             Ok(())
         }

@@ -567,8 +567,9 @@ viability experiment.
   under the Windows service). A plugin's page is served by the machine
   itself, in a frame on the machine's own address, so in the hosted client it
   cannot reach the tokens of your other machines; what it can reach of this
-  machine, its program running there already could. A paired browser may install plugins unless `peek plugin remote-install off`
-  says otherwise; it can always turn them on and off. `--view-only` refuses
+  machine, its program running there already could. Plugin installation from
+  a paired browser defaults to off for a Windows service and on elsewhere.
+  `peek plugin remote-install on|off` overrides the default. `--view-only` refuses
   input, the clipboard and every provider's actions.
 
 With `--no-token`:

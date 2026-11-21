@@ -95,6 +95,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/api/frame/{name}", post(frame_ticket).options(preflight))
         .route("/api/frame/{name}/ws", get(frame_ws))
         .route("/api/frame/{name}/file/{id}", get(frame_file))
+        .route("/p/_sdk.js", get(page_sdk))
         .route("/p/{name}/", get(page_index))
         .route("/p/{name}/{*path}", get(page_file))
         .route("/api/pair-code", post(local_pair_code))
@@ -614,6 +615,14 @@ async fn frame_ticket(
     }
     let ticket = shared.pairing.frame_ticket(&name, TICKET_FOR);
     reply(StatusCode::OK, serde_json::json!({ "ticket": ticket, "path": format!("/p/{name}/") }))
+}
+
+async fn page_sdk() -> impl IntoResponse {
+    ([
+        (header::CONTENT_TYPE, content_type("sdk.js")),
+        (header::CACHE_CONTROL, "no-cache"),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+    ], include_str!("page_sdk.js"))
 }
 
 async fn page_index(state: State<Arc<Shared>>, Path(name): Path<String>) -> Response {

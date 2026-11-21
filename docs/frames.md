@@ -23,6 +23,26 @@ and automatic frame-ticket recovery after a host restart.
    - On a view-only host, `do` and `peer` are refused, and binary is refused too.
 6. **The client sends its colours** once the frame loads (`{"t":"theme","vars":{…}}`), only to the machine's origin.
 
+### Page SDK
+
+Import `connect` from `/p/_sdk.js` inside a plugin page. It uses the page's
+path and frame ticket, applies the client's theme variables, and reconnects
+after a drop. If the ticket is refused, it asks the parent for a fresh one.
+
+```js
+import { connect } from '/p/_sdk.js';
+
+const link = connect({
+  onOpen: () => link.send({ t: 'view', place: 'page' }),
+  onJson: message => console.log(message),
+});
+```
+
+`onBinary` receives an `ArrayBuffer`, `onFile` receives file offers, and
+`onClose` receives the WebSocket close event. `send` and `sendBinary` return
+whether the socket was open and the message was queued. Call `close()` to
+stop reconnecting, or `notifyChanged()` to ask the parent to refresh providers.
+
 ## Where a page shows
 
 - **In place of the screen,** at `/screen/<machine>/<provider>` on the hosted client.
@@ -64,7 +84,7 @@ A plugin is a folder with a `peek-plugin.json`:
 ```
 
 - **Its name:** lowercase letters, digits and dashes, and none of peek's own (`screen`, `vitals`, `power`, `plugins`, `files`, `processes`): the example above is `my-files`, as `files` is built in.
-- **Where it lives:** `plugins/<name>/` in peek's config folder.
+- **Where it lives:** `plugins/<name>/` in peek's config folder, or its source folder if linked.
 - **How it starts:** `run` is started in that folder. Its first word is a program on the machine (`node`), or one the plugin brings (`bin/peek-files`, which is `bin\peek-files.exe` on Windows).
 - **What it's written in:** anything that reads and writes its stdin and stdout. The examples are one of each: `files` in Rust (a 213 KB program, which ran in about 4 MB, 0.6 MB of it its own), `frame` (notes) in Node (an idle Node is about 35 MB).
 - **What isn't copied:** a folder's `.git`, and `target/`, where building a Rust plugin leaves its output.
@@ -91,13 +111,20 @@ From a folder on the machine, an https git address, or an npm package:
 
 Peek can't hold a plugin to what it says it does; the page says so.
 
+For local development, `peek plugin init my-plugin` generates a Node provider,
+a manifest and a page. Use `--lang py` for Python or `--dir <path>` to choose
+the target. Run `peek plugin add --link ./my-plugin` to use the folder in
+place, with its runtime and dependencies already available. Reload the page
+after editing its assets, and restart the provider after editing its code.
+Removing a link keeps the source folder.
+
 `peek plugin update <name> [source]` updates an installed plugin, using its recorded source if none is given. Settings that remain valid, its on/off state and its data are kept. Removing a plugin keeps its data; `peek plugin remove <name> --purge` deletes it, including data kept after an earlier removal.
 
 ### Who may change what
 
 - **Any paired browser:** can look.
 - **A view-only machine:** refuses everything else.
-- **Remote install** (`peek plugin remote-install on|off`): when off, a browser can only turn plugins on and off and restart them. Installing, removing and settings are refused.
+- **Remote install** (`peek plugin remote-install on|off`): when off, a browser can only turn plugins on and off and restart them. Installing, removing and settings are refused. It defaults to off for a Windows service and on for other hosts. An explicit setting takes precedence.
 - **Never possible:** turning off the screen, or removing peek's own providers.
 - **npm names and git addresses** are checked before anything runs; nothing goes through a shell's parsing.
 
