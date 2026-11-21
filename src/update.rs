@@ -206,19 +206,55 @@ struct Running {
     /// Its arguments, to start the same way.
     args: Vec<OsString>,
     /// The installed file, if this process runs it: only then can it
-    /// replace and restart itself. Found at start, since once the file is
+    /// replace itself. Found at start, since once the file is
     /// replaced Linux names this process's program "<path> (deleted)".
     own: Option<PathBuf>,
+    exe: Option<PathBuf>,
+    instance: Option<String>,
 }
+
+impl Running {
+    fn restart_exe(&self) -> Option<&Path> {
+        self.own.as_deref().or(self.exe.as_deref()).filter(|p| p.is_file())
+    }
+}
+
 static RUNNING: OnceLock<Running> = OnceLock::new();
+static BEFORE_RESTART: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 /// The newest version on this build's channel, from the last check.
 static LATEST: Mutex<Option<String>> = Mutex::new(None);
-/// One update at a time.
-static BUSY: Mutex<()> = Mutex::new(());
+/// Serialize changes to the executable. The flag means a restart is pending.
+static BUSY: Mutex<bool> = Mutex::new(false);
 
 /// Record how this peek runs. Call once, in the process that listens.
-pub fn started(service: bool) {
-    let _ = RUNNING.set(Running { service, args: std::env::args_os().skip(1).collect(), own: runs_install() });
+pub fn started(service: bool, pair_here: bool) {
+    let exe = std::env::current_exe().ok().and_then(|p| fs::canonicalize(p).ok());
+    let own = target().ok().filter(|p| exe.as_ref().is_some_and(|exe| fs::canonicalize(p).is_ok_and(|p| p == *exe)));
+    let _ = RUNNING.set(Running {
+        service, args: restart_args(std::env::args_os().skip(1).collect(), pair_here), own, exe,
+        instance: crate::pairing::random_hex(8).ok(),
+    });
+}
+
+fn restart_args(mut args: Vec<OsString>, pair_here: bool) -> Vec<OsString> {
+    // A host started by `peek pair` keeps its host flags without pairing again.
+    if pair_here && let Some(at) = args.iter().rposition(|arg| arg == "pair") {
+        args.remove(at);
+        if let Some(i) = args.iter().position(|arg| arg == "--serve-port") {
+            args.drain(i..i + 2);
+        } else {
+            args.retain(|arg| !arg.to_string_lossy().starts_with("--serve-port="));
+        }
+    }
+    args
+}
+
+pub fn instance() -> Option<&'static str> {
+    RUNNING.get()?.instance.as_deref()
+}
+
+pub fn set_before_restart(stop: impl Fn() + Send + Sync + 'static) {
+    let _ = BEFORE_RESTART.set(Box::new(stop));
 }
 
 /// The installed file, if this process runs it, as found at start.
@@ -226,16 +262,29 @@ fn own_install() -> Option<PathBuf> {
     RUNNING.get()?.own.clone()
 }
 
-fn runs_install() -> Option<PathBuf> {
-    let target = target().ok()?;
-    let exe = std::env::current_exe().ok()?;
-    let same = |a: &Path, b: &Path| fs::canonicalize(a).ok().zip(fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b);
-    same(&exe, &target).then_some(target)
+pub struct Checked {
+    pub version: &'static str,
+    pub latest: String,
+    pub update: Option<String>,
+}
+
+fn update_to(latest: String) -> Option<String> {
+    Some(latest).filter(|v| v != env!("PEEK_VERSION"))
 }
 
 /// A newer version this peek can update itself to, as of the last check.
 pub fn available() -> Option<String> {
-    LATEST.lock().unwrap().clone().filter(|v| v != env!("PEEK_VERSION"))
+    LATEST.lock().unwrap().clone().and_then(update_to)
+}
+
+pub fn check_self() -> Result<Checked, String> {
+    own_install().ok_or(NOT_SELF)?;
+    Ok(record_latest(published(env!("PEEK_CHANNEL"))?.version))
+}
+
+fn record_latest(latest: String) -> Checked {
+    *LATEST.lock().unwrap() = Some(latest.clone());
+    Checked { version: env!("PEEK_VERSION"), update: update_to(latest.clone()), latest }
 }
 
 /// Look for a new version now and then, if this peek can update itself.
@@ -245,11 +294,10 @@ pub fn watch() {
         std::thread::sleep(FIRST_CHECK);
         let mut said = String::new();
         loop {
-            match published(env!("PEEK_CHANNEL")) {
-                Ok(p) => {
-                    if p.version != env!("PEEK_VERSION") && p.version != said { crate::log!("update: peek {} is available", p.version); }
-                    said = p.version.clone();
-                    *LATEST.lock().unwrap() = Some(p.version);
+            match check_self() {
+                Ok(checked) => {
+                    if let Some(v) = checked.update.filter(|v| *v != said) { crate::log!("update: peek {v} is available"); }
+                    said = checked.latest;
                 }
                 Err(e) if e != said => { crate::log!("update: cannot check for a new version: {e}"); said = e; }
                 Err(_) => {}
@@ -268,9 +316,9 @@ pub enum Outcome {
 }
 
 /// Update the installed peek that this process runs, from `channel` (this
-/// build's own if `None`). On `Changed`, call `restart_soon`.
+/// build's own if `None`), and schedule a restart if it changed.
 pub fn update_self(channel: Option<&str>) -> Result<Outcome, String> {
-    let _busy = BUSY.try_lock().map_err(|_| "an update is under way already")?;
+    let mut busy = change_lock()?;
     let target = own_install().ok_or(NOT_SELF)?;
     let p = published(channel.unwrap_or(env!("PEEK_CHANNEL")))?;
     let running = env!("PEEK_VERSION").to_string();
@@ -278,52 +326,74 @@ pub fn update_self(channel: Option<&str>) -> Result<Outcome, String> {
         // Installed but not yet running (a restart that did not happen):
         // restarting is all there is to do.
         if p.version == running { return Ok(Outcome::Current(running)); }
-        return Ok(Outcome::Changed { from: running, to: p.version });
+    } else {
+        p.install(&target, |step| crate::log!("update: {step}"))?;
+        *LATEST.lock().unwrap() = Some(p.version.clone()).filter(|_| p.channel == env!("PEEK_CHANNEL"));
     }
-    p.install(&target, |step| crate::log!("update: {step}"))?;
-    *LATEST.lock().unwrap() = Some(p.version.clone()).filter(|_| p.channel == env!("PEEK_CHANNEL"));
+    schedule_restart(&mut busy)?;
     Ok(Outcome::Changed { from: running, to: p.version })
 }
 
-/// Go back to the version the last update replaced. Call `restart_soon` after.
+/// Go back to the version the last update replaced and schedule a restart.
 pub fn rollback_self() -> Result<Outcome, String> {
-    let _busy = BUSY.try_lock().map_err(|_| "an update is under way already")?;
+    let mut busy = change_lock()?;
     let target = own_install().ok_or(NOT_SELF)?;
     rollback(&target)?;
     let to = version(&target).and_then(|v| v.strip_prefix("peek ").map(str::to_owned)).unwrap_or_else(|| "unknown".into());
+    schedule_restart(&mut busy)?;
     Ok(Outcome::Changed { from: env!("PEEK_VERSION").into(), to })
 }
 
-/// Start again on the installed file, in a moment: after the answer to
-/// whoever asked for the update has gone out.
-pub fn restart_soon() {
-    std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_millis(800));
-        if let Err(e) = restart_self() { crate::log!("update: cannot restart: {e}; the new version takes effect at the next start"); }
-    });
+fn change_lock() -> Result<std::sync::MutexGuard<'static, bool>, String> {
+    let busy = BUSY.try_lock().map_err(|_| "an update or restart is under way already")?;
+    if *busy { return Err("peek is already restarting".into()); }
+    Ok(busy)
 }
 
-fn restart_self() -> Result<(), String> {
+/// Start again in a moment, after the HTTP response has gone out.
+pub fn restart_soon() -> Result<(), String> {
+    let mut busy = change_lock()?;
+    schedule_restart(&mut busy)
+}
+
+fn schedule_restart(pending: &mut bool) -> Result<(), String> {
     let running = RUNNING.get().ok_or("peek did not record how it was started")?;
-    let exe = own_install().ok_or(NOT_SELF)?;
+    let exe = running.restart_exe().ok_or("cannot find the running peek executable")?;
+    std::thread::Builder::new().name("restart".into()).spawn(|| {
+        std::thread::sleep(Duration::from_millis(800));
+        if let Err(e) = restart_self(running, exe) {
+            *BUSY.lock().unwrap() = false;
+            crate::log!("cannot restart peek: {e}");
+        }
+    }).map_err(|e| format!("cannot schedule a restart: {e}"))?;
+    *pending = true;
+    Ok(())
+}
+
+fn restart_self(running: &Running, exe: &Path) -> Result<(), String> {
+    let stop_providers = || {
+        if let Some(stop) = BEFORE_RESTART.get() { stop(); }
+    };
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut command = Command::new(&exe);
+        let mut command = Command::new(exe);
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
         if running.service {
             // Only Windows can start the service again, and only once it has
             // stopped: a peek of its own asks it to, from outside it.
+            stop_providers();
             command.args(["update", "--restart-service"]).spawn().map_err(|e| e.to_string())?;
-            crate::log!("update: the service restarts on the new version");
+            crate::log!("restarting the peek service");
             return Ok(());
         }
         // The new version, started as this one was, takes over the port once
         // this one has exited.
         command.args(&running.args).env("PEEK_REPLACES", std::process::id().to_string()).spawn().map_err(|e| e.to_string())?;
-        crate::log!("update: restarting on the new version");
+        crate::log!("restarting peek");
+        stop_providers();
         std::process::exit(0);
     }
     #[cfg(unix)]
@@ -333,8 +403,9 @@ fn restart_self() -> Result<(), String> {
         // and the providers' pipes among them, and the new peek opens its own.
         use std::os::unix::process::CommandExt;
         let _ = running.service;
-        crate::log!("update: restarting on the new version");
-        Err(Command::new(&exe).args(&running.args).exec().to_string())
+        crate::log!("restarting peek");
+        stop_providers();
+        Err(Command::new(exe).args(&running.args).exec().to_string())
     }
 }
 
@@ -414,10 +485,49 @@ mod tests {
     #[test] fn assets() { assert_eq!(asset("windows", "x86_64").unwrap(), "peek-win32-x64.exe"); assert_eq!(asset("linux", "x86_64").unwrap(), "peek-linux-x64"); assert_eq!(asset("linux", "aarch64").unwrap(), "peek-linux-arm64"); assert!(asset("macos", "aarch64").is_err()); }
     #[test] fn urls() { for s in ["https://example.com/", "http://localhost:1234/", "http://127.0.0.1:3"] { assert!(base_url(s).is_ok()); } for s in ["http://example.com/", "http://localhost/", "http://localhost:3@evil/", "file:///x"] { assert!(base_url(s).is_err()); } }
     #[test] fn swaps() { let t = Temp::new().unwrap(); let p = t.0.join("peek"); let d = t.0.join("download"); fs::write(&p, "old").unwrap(); fs::write(&d, "new").unwrap(); replace(&p, &d).unwrap(); assert_eq!(fs::read(&p).unwrap(), b"new"); rollback(&p).unwrap(); assert_eq!(fs::read(&p).unwrap(), b"old"); rollback(&p).unwrap(); assert_eq!(fs::read(&p).unwrap(), b"new"); }
-    #[test] fn no_newer_version_is_offered_until_a_check_finds_one() {
-        *LATEST.lock().unwrap() = None; assert_eq!(available(), None);
-        *LATEST.lock().unwrap() = Some(env!("PEEK_VERSION").into()); assert_eq!(available(), None);
-        *LATEST.lock().unwrap() = Some("99.0.0".into()); assert_eq!(available().as_deref(), Some("99.0.0"));
+    #[test]
+    fn checking_publishes_and_clears_the_available_update() {
+        assert_eq!(available(), None);
+        let newer = record_latest("99.0.0".into());
+        assert_eq!(newer.version, env!("PEEK_VERSION"));
+        assert_eq!(newer.latest, "99.0.0");
+        assert_eq!(newer.update.as_deref(), Some("99.0.0"));
+        assert_eq!(available(), newer.update);
+        let current = record_latest(env!("PEEK_VERSION").into());
+        assert_eq!(current.latest, current.version);
+        assert_eq!(current.update, None);
+        assert_eq!(available(), None);
         *LATEST.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn checking_requires_the_installed_host() {
+        assert_eq!(check_self().err().as_deref(), Some(NOT_SELF));
+    }
+
+    #[test]
+    fn restart_uses_the_running_executable_without_an_install() {
+        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let mut running = Running { service: false, args: vec![], own: None, exe: Some(exe.clone()), instance: None };
+        assert_eq!(running.restart_exe(), Some(exe.as_path()));
+
+        let temp = Temp::new().unwrap();
+        let installed = temp.0.join("peek");
+        fs::write(&installed, "").unwrap();
+        running.own = Some(installed.clone());
+        assert_eq!(running.restart_exe(), Some(installed.as_path()));
+        fs::remove_file(&installed).unwrap();
+        assert_eq!(running.restart_exe(), None);
+    }
+
+    #[test]
+    fn restart_keeps_host_flags_from_pair() {
+        let flags = |args: &[&str]| args.iter().map(OsString::from).collect::<Vec<_>>();
+        for input in [
+            flags(&["--view-only", "pair", "--serve-port", "8443", "--port", "9320"]),
+            flags(&["--view-only", "pair", "--serve-port=8443", "--port", "9320"]),
+        ] {
+            assert_eq!(restart_args(input, true), flags(&["--view-only", "--port", "9320"]));
+        }
     }
 }

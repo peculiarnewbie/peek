@@ -545,8 +545,8 @@ pub struct Plugins {
     view_only: bool,
     running: RwLock<BTreeMap<String, Arc<Link>>>,
     staged: Mutex<HashMap<String, Staged>>,
-    /// One change at a time.
-    changing: Mutex<()>,
+    /// One change at a time. Set to true during shutdown.
+    changing: Mutex<bool>,
 }
 
 impl Plugins {
@@ -571,10 +571,21 @@ impl Plugins {
         self.running.read().unwrap().iter().map(|(n, l)| (n.clone(), l.clone())).collect()
     }
 
+    /// Stop every running provider and prevent reconciliation from starting them again.
+    pub fn stop_all(&self) {
+        let mut stopped = self.changing.lock().unwrap();
+        *stopped = true;
+        let running = std::mem::take(&mut *self.running.write().unwrap());
+        for link in running.into_values() {
+            link.stop();
+        }
+    }
+
     /// Start what should run and is not; stop what runs and should not.
     /// `again`: stop and start this one whatever it is doing.
     fn apply(&self, again: Option<&str>) {
-        let _one = self.changing.lock().unwrap();
+        let stopped = self.changing.lock().unwrap();
+        if *stopped { return; }
         let state = self.catalog.state();
         let wanted: Vec<Spec> = self.catalog.specs().into_iter().filter(|s| is_on(&state, s)).collect();
         let mut running = self.running.write().unwrap();
@@ -910,6 +921,27 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_all_stops_providers_and_blocks_reconcile() {
+        let root = std::env::temp_dir().join(format!("peek-stop-{}", crate::pairing::random_hex(6).unwrap()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(PROVIDERS_FILE), r#"{"sample":["/bin/sleep","60"]}"#).unwrap();
+        let plugins = Plugins::start(Catalog::new(root.clone(), vec![]), false);
+        let link = plugins.get("sample").unwrap();
+        let until = Instant::now() + Duration::from_secs(3);
+        while link.status()["running"] == false && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(link.status()["running"], true);
+        plugins.stop_all();
+        assert_eq!(link.status()["running"], false);
+        assert_eq!(link.status()["ended"], "stopped");
+        plugins.reconcile();
+        assert!(plugins.running().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn built_in_manifests_and_state() {

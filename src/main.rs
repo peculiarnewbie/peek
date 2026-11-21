@@ -210,6 +210,8 @@ enum Command {
         #[arg(long, hide = true)]
         restart_service: bool,
     },
+    /// Restart the running peek on this machine
+    Restart,
     /// Undo `peek install`
     Uninstall,
     /// Add, remove and list programs started beside peek
@@ -288,7 +290,10 @@ fn own_providers(args: &Args) -> Vec<(&'static str, provider::Start)> {
 }
 
 fn plugins(args: &Args) -> Arc<plugins::Plugins> {
-    plugins::Plugins::start(plugins::Catalog::new(config_dir(), own_providers(args)), args.view_only)
+    let plugins = plugins::Plugins::start(plugins::Catalog::new(config_dir(), own_providers(args)), args.view_only);
+    let running = plugins.clone();
+    update::set_before_restart(move || running.stop_all());
+    plugins
 }
 
 /// The config folder of the peek installed here, for commands that change
@@ -961,6 +966,19 @@ fn run_command(args: &Args, command: &Command) -> Result<(), String> {
         Command::Update { channel, check, no_restart, rollback, restart_service } => {
             update_command(args, channel.as_deref(), *check, *no_restart, *rollback, *restart_service)
         }
+        Command::Restart => {
+            if !host_running(args) {
+                return Err(format!("peek is not running on port {}. Start it first.", args.port));
+            }
+            let (status, body) = local_request(args, "POST", "/api/restart", "{}")?;
+            let reply: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            match (status, reply["t"].as_str()) {
+                (200, Some("restarting")) => println!("peek is restarting."),
+                (404, _) => return Err("the running peek does not support restart".into()),
+                _ => return Err(reply["why"].as_str().map_or_else(|| format!("the running peek answered {status}"), str::to_owned)),
+            }
+            Ok(())
+        }
         Command::Provider { action } => provider_command(args, action),
         Command::Plugin { action } => plugin_command(args, action),
     }
@@ -1010,7 +1028,7 @@ fn core_in_service() -> Arc<provider::Link> {
         tickets: Default::default(),
     });
     log!("service: listening on {addr}");
-    update::started(true);
+    update::started(true, false);
     update::watch();
     std::thread::Builder::new()
         .name("core".into())
@@ -1272,7 +1290,7 @@ fn main() {
         println!("To start peek at logon instead, run `peek install`.");
     }
 
-    update::started(false);
+    update::started(false, pair_here);
     update::watch();
     if let Err(e) = runtime.block_on(server::serve(shared, listener)) {
         log!("cannot listen on {addr}: {e}");

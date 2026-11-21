@@ -93,6 +93,7 @@ pub async fn serve(shared: Arc<Shared>, listener: TcpListener) -> std::io::Resul
         .route("/api/pair", post(pair).options(preflight))
         .route("/api/provider/{name}", post(provider).options(preflight))
         .route("/api/update", post(update).options(preflight))
+        .route("/api/restart", post(restart).options(preflight))
         .route("/api/plugins", post(plugins_api).options(preflight))
         .route("/api/frame/{name}", post(frame_ticket).options(preflight))
         .route("/api/frame/{name}/ws", get(frame_ws))
@@ -326,6 +327,8 @@ async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Respons
         "protocol": PROTOCOL.parse::<u32>().unwrap_or(0),
         "providers": providers,
         "version": env!("PEEK_VERSION"),
+        "instance": crate::update::instance(),
+        "update_check": true,
         // A newer version it can update itself to, when there is one: a
         // view-only host takes no such request.
         "update": if shared.view_only { None } else { crate::update::available() },
@@ -452,36 +455,51 @@ async fn provider(
     }
 }
 
-/// Update this peek to the newest build on its channel, and restart on it.
-/// Whoever may use the machine may ask (the hosted client, with a paired
-/// token): it installs only what was published, checked against its
-/// SHA256SUMS. `peek update` on this machine may also pick the channel, or
-/// go back to the version before.
+fn host_reply(shared: &Shared, headers: &HeaderMap, status: StatusCode, body: serde_json::Value) -> Response {
+    (status, cors(shared, headers), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
+        .into_response()
+}
+
+fn host_request(shared: &Shared, headers: &HeaderMap, body: &[u8]) -> Result<(bool, serde_json::Map<String, serde_json::Value>), Response> {
+    let error = |status, why| host_reply(shared, headers, status, serde_json::json!({ "t": "error", "why": why }));
+    let local = local_ok(shared, headers);
+    let web = from_web(shared, headers);
+    if !local && headers.contains_key(header::ORIGIN) && !web && !origin_ok(headers, shared.token.is_none()) {
+        return Err(error(StatusCode::FORBIDDEN, "origin"));
+    }
+    let Ok(serde_json::Value::Object(req)) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return Err(error(StatusCode::BAD_REQUEST, "request"));
+    };
+    if !local && !token_ok(shared, req.get("token").and_then(|t| t.as_str()).unwrap_or_default(), web) {
+        return Err(error(StatusCode::FORBIDDEN, "token"));
+    }
+    if shared.view_only && !local {
+        return Err(error(StatusCode::FORBIDDEN, VIEW_ONLY));
+    }
+    Ok((local, req))
+}
+
+/// Check or update this peek from its release channel. The owner may also
+/// choose another channel or roll back.
 async fn update(
     State(shared): State<Arc<Shared>>,
     ConnectInfo(peer): ConnectInfo<Peer>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let cors = cors(&shared, &headers);
-    let reply = |status: StatusCode, body: serde_json::Value| {
-        (status, cors.clone(), [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], body.to_string())
-            .into_response()
+    let (local, req) = match host_request(&shared, &headers, &body) {
+        Ok(request) => request,
+        Err(response) => return response,
     };
-    let error = |status: StatusCode, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }));
-    let local = local_ok(&shared, &headers);
-    let web = from_web(&shared, &headers);
-    if !local && headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
-        return error(StatusCode::FORBIDDEN, "origin");
-    }
-    let Ok(serde_json::Value::Object(req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return error(StatusCode::BAD_REQUEST, "request");
-    };
-    if !local && !token_ok(&shared, req.get("token").and_then(|t| t.as_str()).unwrap_or_default(), web) {
-        return error(StatusCode::FORBIDDEN, "token");
-    }
-    if shared.view_only && !local {
-        return error(StatusCode::FORBIDDEN, VIEW_ONLY);
+    let reply = |status, body| host_reply(&shared, &headers, status, body);
+    let error = |status, why: &str| reply(status, serde_json::json!({ "t": "error", "why": why }));
+    if req.get("check").and_then(|v| v.as_bool()) == Some(true) {
+        return match tokio::task::spawn_blocking(crate::update::check_self).await.unwrap_or_else(|e| Err(e.to_string())) {
+            Ok(checked) => reply(StatusCode::OK, serde_json::json!({
+                "t": "checked", "version": checked.version, "latest": checked.latest, "update": checked.update,
+            })),
+            Err(why) => error(StatusCode::CONFLICT, &why),
+        };
     }
     // Only from this machine: another channel, or the version before.
     let channel = req.get("channel").and_then(|c| c.as_str()).filter(|_| local).map(str::to_owned);
@@ -500,14 +518,24 @@ async fn update(
         Ok(crate::update::Outcome::Current(version)) => reply(StatusCode::OK, serde_json::json!({ "t": "current", "version": version })),
         Ok(crate::update::Outcome::Changed { from, to }) => {
             crate::log!("update: {from} to {to}; restarting");
-            crate::update::restart_soon();
-            reply(StatusCode::OK, serde_json::json!({ "t": "updated", "from": from, "to": to }))
+            reply(StatusCode::OK, serde_json::json!({ "t": "updated", "from": from, "to": to, "instance": crate::update::instance() }))
         }
         Err(why) => {
             crate::log!("update: {why}");
             error(StatusCode::CONFLICT, &why)
         }
     }
+}
+
+async fn restart(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Err(response) = host_request(&shared, &headers, &body) {
+        return response;
+    }
+    let (status, answer) = match crate::update::restart_soon() {
+        Ok(()) => (StatusCode::OK, serde_json::json!({ "t": "restarting", "instance": crate::update::instance() })),
+        Err(why) => (StatusCode::CONFLICT, serde_json::json!({ "t": "error", "why": why })),
+    };
+    host_reply(&shared, &headers, status, answer)
 }
 
 /// The plugins page's requests (`list`, `on`, `inspect`, `install`, …) from

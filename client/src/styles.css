@@ -64,6 +64,8 @@ body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 #settings.show { display: block; }
 .group { padding-top: 12px; }
 .group + .group { border-top: 1px solid var(--line); margin-top: 12px; }
+.host-actions { display: grid; gap: 8px; }
+.host-actions + .vtext { margin-top: 8px; }
 .label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px;
   color: var(--ink-2); }
 .label .val { color: var(--muted); font-size: 12px; }
@@ -294,6 +296,8 @@ body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility:
 /* ---- plugins on every machine (Plugins.tsx, and the cards in Devices.tsx) ---- */
 /* (In a row of its own: the column's margins do not apply to an inline box.) */
 .dtabs-row { margin-bottom: 14px; }
+.fleet-updates { display: grid; gap: 8px; margin-bottom: 14px; }
+.fleet-updates > .vrow { flex-wrap: wrap; }
 .dtabs { display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--surface);
   border: 1px solid var(--line); }
 .pseg { flex: none; }
