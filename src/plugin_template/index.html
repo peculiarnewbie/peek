@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Counter</title>
+<style>
+  body { margin: 0; padding: 24px; background: var(--page, #fafafa); color: var(--ink, #222); font: 16px var(--sans, system-ui); }
+  form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  input, button { padding: 6px 10px; font: inherit; color: inherit; background: var(--surface, white); border: 1px solid var(--line, #888); border-radius: 6px; }
+  #reply { overflow-wrap: anywhere; }
+  #status { color: var(--muted, #666); }
+</style>
+
+<h1 id="counter">Count: —</h1>
+<button id="increment" type="button" disabled>Increment</button>
+<p id="status" role="status">Connecting…</p>
+<form id="echo">
+  <label for="message">Message</label>
+  <input id="message" maxlength="500" required>
+  <button id="send" disabled>Send</button>
+</form>
+<p id="reply" role="status"></p>
+
+<script type="module">
+  import { connect } from '/p/_sdk.js';
+
+  const counter = document.getElementById('counter');
+  const increment = document.getElementById('increment');
+  const status = document.getElementById('status');
+  const form = document.getElementById('echo');
+  const input = document.getElementById('message');
+  const send = document.getElementById('send');
+  const reply = document.getElementById('reply');
+
+  const link = connect({
+    onOpen() {
+      status.textContent = 'Connected';
+      increment.disabled = send.disabled = false;
+    },
+    onClose({ code }) {
+      status.textContent = code === 4403 ? 'Waiting for a fresh ticket…' : 'Reconnecting…';
+      increment.disabled = send.disabled = true;
+    },
+    onJson(message) {
+      if (message.t === 'counter') counter.textContent = `${message.label}: ${message.count}`;
+      if (message.t === 'echo') reply.textContent = message.text;
+      if (message.t === 'error') reply.textContent = message.why;
+    },
+  });
+  increment.onclick = () => link.send({ t: 'do', do: { t: 'increment' } });
+  form.onsubmit = event => {
+    event.preventDefault();
+    if (link.send({ t: 'do', do: { echo: input.value } })) input.value = '';
+  };
+</script>
+</html>

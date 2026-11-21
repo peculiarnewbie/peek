@@ -5,7 +5,7 @@
 //!
 //! - peek's own (`vitals`, `power`);
 //! - commands added with `peek provider add` (`providers.json`);
-//! - plugins: folders in `plugins/`, each with a `peek-plugin.json` that
+//! - plugins: folders in `plugins/` or linked in place, each with a `peek-plugin.json` that
 //!   says what it is, the command that runs it, what it needs on the
 //!   machine, and its settings.
 //!
@@ -79,11 +79,11 @@ pub struct Manifest {
     pub on_by_default: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct State {
     /// A browser may install, remove and change plugins (`peek plugin remote-install`).
-    #[serde(default = "yes")]
-    remote_install: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote_install: Option<bool>,
     /// Turned off: not started.
     #[serde(default)]
     off: BTreeSet<String>,
@@ -94,18 +94,14 @@ struct State {
     settings: BTreeMap<String, Map<String, Value>>,
     #[serde(default)]
     sources: BTreeMap<String, String>,
+    #[serde(default)]
+    links: BTreeMap<String, String>,
 }
 
 fn contract_version() -> u32 { 1 }
 
 fn yes() -> bool {
     true
-}
-
-impl Default for State {
-    fn default() -> Self {
-        State { remote_install: true, off: BTreeSet::new(), on: BTreeSet::new(), settings: BTreeMap::new(), sources: BTreeMap::new() }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -135,6 +131,7 @@ struct Spec {
     runs: String,
     manifest: Option<Manifest>,
     dir: Option<PathBuf>,
+    linked: bool,
 }
 
 /// A plugin fetched to be looked at, before it is installed.
@@ -152,13 +149,19 @@ struct Staged {
 pub struct Catalog {
     dir: PathBuf,
     own: Vec<(&'static str, Start)>,
+    default_remote_install: bool,
 }
 
 impl Catalog {
     /// `dir`: peek's config folder. `own`: peek's own providers, with what
     /// each is and how it starts.
     pub fn new(dir: PathBuf, own: Vec<(&'static str, Start)>) -> Catalog {
-        Catalog { dir, own }
+        Catalog { dir, own, default_remote_install: true }
+    }
+
+    pub fn with_default_remote_install(mut self, on: bool) -> Self {
+        self.default_remote_install = on;
+        self
     }
 
     fn plugins_dir(&self) -> PathBuf {
@@ -176,9 +179,11 @@ impl Catalog {
 
     pub fn kept_data(&self) -> Vec<String> {
         let specs = self.specs();
+        let state = self.state();
         let mut names: Vec<String> = fs::read_dir(self.dir.join(DATA_DIR)).into_iter().flatten().flatten()
             .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|n| name_ok(n) && self.has_data(n) && !specs.iter().any(|s| s.name == *n && s.kind == Kind::Plugin)).collect();
+            .filter(|n| name_ok(n) && self.has_data(n) && !state.links.contains_key(n)
+                && !specs.iter().any(|s| s.name == *n && s.kind == Kind::Plugin)).collect();
         names.sort();
         names
     }
@@ -195,13 +200,17 @@ impl Catalog {
     }
 
     pub fn remote_install(&self) -> bool {
-        self.state().remote_install
+        self.state().remote_install.unwrap_or(self.default_remote_install)
     }
 
     pub fn set_remote_install(&self, on: bool) -> Result<(), String> {
         let mut state = self.state();
-        state.remote_install = on;
+        state.remote_install = Some(on);
         self.save(&state)
+    }
+
+    pub fn is_linked(&self, name: &str) -> bool {
+        self.state().links.contains_key(name)
     }
 
     /// Everything there is, on or off.
@@ -218,7 +227,7 @@ impl Catalog {
                 ("PEEK_DATA_DIR".into(), self.data_dir(&name).to_string_lossy().into_owned())];
             let start = match start { Start::Own { flags, .. } => Start::Own { flags: flags.clone(), env }, _ => start.clone() };
             Some(Spec { name, kind: Kind::Own, start, description: manifest.description.clone(),
-                runs: format!("peek --provider {}", manifest.name), manifest: Some(manifest), dir: None })
+                runs: format!("peek --provider {}", manifest.name), manifest: Some(manifest), dir: None, linked: false })
         }).collect();
         for (name, words) in read_commands(&self.dir) {
             if !name_ok(&name) || words.is_empty() || all.iter().any(|s| s.name == name) {
@@ -233,13 +242,18 @@ impl Catalog {
                 description: String::new(),
                 manifest: None,
                 dir: None,
+                linked: false,
             });
         }
-        let Ok(entries) = fs::read_dir(self.plugins_dir()) else { return all };
-        for entry in entries.flatten() {
+        let installed = fs::read_dir(self.plugins_dir()).into_iter().flatten().flatten().filter_map(|entry| {
             let dir = entry.path();
             let folder = entry.file_name().to_string_lossy().into_owned();
-            if folder.starts_with('.') || !dir.is_dir() {
+            (!folder.starts_with('.') && dir.is_dir()).then_some((folder, dir, false))
+        });
+        let linked = state.links.iter().map(|(name, path)| (name.clone(), PathBuf::from(path), true));
+        for (folder, dir, linked) in installed.chain(linked) {
+            if linked && !dir.is_absolute() {
+                crate::log!("plugins: {folder}: linked folder needs an absolute path; skipped");
                 continue;
             }
             let manifest = match read_manifest(&dir) {
@@ -257,11 +271,18 @@ impl Catalog {
                 crate::log!("plugins: {folder} has the name of another provider; skipped");
                 continue;
             }
+            if linked && let Err(e) = check_needs(&manifest.needs) {
+                crate::log!("plugins: {folder}: {e}");
+                continue;
+            }
             let settings = settings_of(&manifest, state.settings.get(&manifest.name));
             let mut words = manifest.run.clone();
             // The command itself, found where the machine keeps programs.
-            if let Some(found) = words.first().and_then(|w| find_program(w, Some(&dir))) {
+            if let Some(found) = find_program(&words[0], Some(&dir)) {
                 words[0] = found.to_string_lossy().into_owned();
+            } else if linked {
+                crate::log!("plugins: {folder}: plugin program not found: {}", words[0]);
+                continue;
             }
             all.push(Spec {
                 name: manifest.name.clone(),
@@ -276,6 +297,7 @@ impl Catalog {
                 description: manifest.description.clone(),
                 manifest: Some(manifest),
                 dir: Some(dir),
+                linked,
             });
         }
         all
@@ -283,36 +305,56 @@ impl Catalog {
 
     /// Remove a plugin or an added command; peek's own cannot be.
     pub fn remove(&self, name: &str, purge: bool) -> Result<(), String> {
-        let spec = self.specs().into_iter().find(|s| s.name == name);
-        let Some(spec) = spec else {
-            if purge && name_ok(name) && self.has_data(name) {
-                return fs::remove_dir_all(self.data_dir(name)).map_err(|e| format!("cannot remove data for {name}: {e}"));
-            }
-            return Err(format!("nothing here is called {name}"));
-        };
-        match spec.kind {
-            Kind::Own => return Err(format!("{name} is part of peek: it can be turned off, and it updates with peek")),
-            Kind::Command => {
-                let mut all = read_commands(&self.dir);
-                all.remove(name);
-                let path = self.dir.join(PROVIDERS_FILE);
-                fs::write(&path, serde_json::to_string_pretty(&all).unwrap_or_default())
-                    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-            }
-            Kind::Plugin => {
-                if let Some(dir) = spec.dir {
-                    fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
+        let mut state = self.state();
+        if let Some(source) = state.links.remove(name).filter(|_| name_ok(name)) {
+            if purge {
+                let data = fs::canonicalize(self.data_dir(name));
+                if let (Ok(data), Ok(source)) = (data, fs::canonicalize(source))
+                    && source.starts_with(data)
+                {
+                    return Err(format!("cannot purge data for {name}: it contains the linked source folder"));
                 }
-                if purge && self.data_dir(name).exists() {
-                    fs::remove_dir_all(self.data_dir(name)).map_err(|e| format!("cannot remove data for {name}: {e}"))?;
+                self.purge_data(name)?;
+            }
+        } else {
+            let Some(spec) = self.specs().into_iter().find(|s| s.name == name) else {
+                if purge && name_ok(name) && self.has_data(name) {
+                    return self.purge_data(name);
+                }
+                return Err(format!("nothing here is called {name}"));
+            };
+            match spec.kind {
+                Kind::Own => return Err(format!("{name} is part of peek: it can be turned off, and it updates with peek")),
+                Kind::Command => {
+                    let mut all = read_commands(&self.dir);
+                    all.remove(name);
+                    let path = self.dir.join(PROVIDERS_FILE);
+                    fs::write(&path, serde_json::to_string_pretty(&all).unwrap_or_default())
+                        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                }
+                Kind::Plugin => {
+                    if let Some(dir) = spec.dir {
+                        fs::remove_dir_all(&dir).map_err(|e| format!("cannot remove {}: {e}", dir.display()))?;
+                    }
+                    if purge {
+                        self.purge_data(name)?;
+                    }
                 }
             }
         }
-        let mut state = self.state();
         state.off.remove(name);
+        state.on.remove(name);
         state.settings.remove(name);
         state.sources.remove(name);
         self.save(&state)
+    }
+
+    fn purge_data(&self, name: &str) -> Result<(), String> {
+        match fs::remove_dir_all(self.data_dir(name)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("cannot remove data for {name}: {e}")),
+        }
     }
 
     pub fn set_on(&self, name: &str, on: bool) -> Result<(), String> {
@@ -397,7 +439,7 @@ impl Catalog {
         let m = &staged.manifest;
         let missing: Vec<&String> = m.needs.iter().filter(|n| find_program(n, None).is_none()).collect();
         let specs = self.specs();
-        let taken = specs.iter().any(|s| s.name == m.name);
+        let taken = self.is_linked(&m.name) || specs.iter().any(|s| s.name == m.name);
         let installed = specs.iter().find(|s| s.name == m.name && s.kind == Kind::Plugin).and_then(|s| s.manifest.as_ref());
         let deps = has_dependencies(&staged.root);
         let mut out = Map::new();
@@ -423,7 +465,7 @@ impl Catalog {
             if staged.until <= Instant::now() {
                 return Err("look at it again first: the staged plugin expired".into());
             }
-            if self.specs().iter().any(|s| s.name == name) {
+            if self.is_linked(&name) || self.specs().iter().any(|s| s.name == name) {
                 return Err(format!("{name} is installed already: remove it first"));
             }
             self.prepare(&staged)?;
@@ -440,26 +482,27 @@ impl Catalog {
     }
 
     fn prepare(&self, staged: &Staged) -> Result<(), String> {
-            let missing: Vec<_> = staged.manifest.needs.iter().filter(|n| find_program(n, None).is_none()).collect();
-            if !missing.is_empty() {
-                return Err(format!("missing required programs: {}", missing.into_iter().cloned().collect::<Vec<_>>().join(", ")));
-            }
-            if has_dependencies(&staged.root) && !staged.root.join("node_modules").is_dir() {
-                let npm = find_program("npm", None).ok_or("it has npm dependencies, and npm is not installed here")?;
-                run(
-                    std::process::Command::new(npm).args(["install", "--omit=dev", "--ignore-scripts"]).current_dir(&staged.root),
-                    "npm install",
-                )?;
-            }
-            if find_program(&staged.manifest.run[0], Some(&staged.root)).is_none() {
-                return Err(format!("plugin program not found: {}", staged.manifest.run[0]));
-            }
+        check_needs(&staged.manifest.needs)?;
+        if has_dependencies(&staged.root) && !staged.root.join("node_modules").is_dir() {
+            let npm = find_program("npm", None).ok_or("it has npm dependencies, and npm is not installed here")?;
+            run(
+                std::process::Command::new(npm).args(["install", "--omit=dev", "--ignore-scripts"]).current_dir(&staged.root),
+                "npm install",
+            )?;
+        }
+        let program = &staged.manifest.run[0];
+        if find_program(program, Some(&staged.root)).is_none() {
+            return Err(format!("plugin program not found: {program}"));
+        }
         Ok(())
     }
 
     fn update(&self, staged: Staged) -> Result<String, String> {
         let name = staged.manifest.name.clone();
         let result = (|| {
+            if self.is_linked(&name) {
+                return Err(linked_update_error(&name));
+            }
             if staged.until <= Instant::now() { return Err("look at it again first: the staged plugin expired".into()); }
             if !self.specs().iter().any(|s| s.name == name && s.kind == Kind::Plugin) {
                 return Err(format!("{name} is not installed: install it instead"));
@@ -494,12 +537,16 @@ impl Catalog {
     }
 
     pub fn update_from(&self, name: &str, source: Option<&str>, say: impl Fn(&str)) -> Result<String, String> {
+        let state = self.state();
+        if state.links.contains_key(name) {
+            return Err(linked_update_error(name));
+        }
         if self.specs().iter().any(|s| s.name == name && s.kind == Kind::Own) {
             return Err(format!("{name} is part of peek: it can be turned off, and it updates with peek"));
         }
-        let source = source.map(str::to_owned).or_else(|| self.state().sources.get(name).cloned())
+        let source = source.or_else(|| state.sources.get(name).map(String::as_str))
             .ok_or_else(|| format!("give a source for {name}"))?;
-        let staged = self.fetch(&source)?;
+        let staged = self.fetch(source)?;
         if staged.manifest.name != name {
             let other = staged.manifest.name.clone();
             let _ = fs::remove_dir_all(&staged.dir);
@@ -528,9 +575,49 @@ impl Catalog {
         self.install(staged)
     }
 
+    /// Run a plugin directly from its development folder.
+    pub fn add_link(&self, source: &str, say: impl Fn(&str)) -> Result<String, String> {
+        let dir = Path::new(source);
+        if !dir.is_dir() {
+            return Err(format!("give an existing local directory to link: {source:?}"));
+        }
+        let dir = std::path::absolute(dir).map_err(|e| format!("cannot find {source}: {e}"))?;
+        let manifest = read_manifest(&dir)?;
+        let name = manifest.name;
+        let mut state = self.state();
+        if state.links.contains_key(&name) || self.plugins_dir().join(&name).exists() || self.specs().iter().any(|s| s.name == name) {
+            return Err(format!("{name} is installed already: remove it first"));
+        }
+        if let Ok(data) = fs::canonicalize(self.data_dir(&name))
+            && dir.canonicalize().is_ok_and(|path| path.starts_with(data))
+        {
+            return Err(format!("the source folder for {name} is inside its plugin data folder"));
+        }
+        check_needs(&manifest.needs)?;
+        let program = &manifest.run[0];
+        if find_program(program, Some(&dir)).is_none() {
+            return Err(format!("plugin program not found: {program}"));
+        }
+        let path = dir.into_os_string().into_string().map_err(|_| format!("cannot store the path to {source:?} as text"))?;
+        say(&format!("{name}: {}", manifest.description));
+        say(&format!("  runs:  {} (as this machine's peek user, with its full rights)", manifest.run.join(" ")));
+        state.off.remove(&name);
+        state.on.remove(&name);
+        state.links.insert(name.clone(), path.clone());
+        state.sources.insert(name.clone(), path);
+        self.save(&state)?;
+        Ok(name)
+    }
+
     pub fn list(&self) -> Vec<(String, &'static str, String, bool)> {
         let state = self.state();
-        self.specs().into_iter().map(|s| { let on = is_on(&state, &s); (s.name, s.kind.word(), s.runs, on) }).collect()
+        self.specs().into_iter().map(|mut s| {
+            let on = is_on(&state, &s);
+            if s.linked {
+                s.runs.push_str(" (linked)");
+            }
+            (s.name, s.kind.word(), s.runs, on)
+        }).collect()
     }
 
     pub fn clear_staging(&self) {
@@ -664,6 +751,10 @@ impl Plugins {
                 let staged = self.staged.lock().unwrap().remove(ask["id"].as_str().unwrap_or(""));
                 let Some(staged) = staged else { return done(Err("look at it again first: that was a while ago".into())) };
                 let name = staged.manifest.name.clone();
+                if self.catalog.is_linked(&name) {
+                    let _ = fs::remove_dir_all(staged.dir);
+                    return done(Err(linked_update_error(&name)));
+                }
                 match self.stop_then(&name, || self.catalog.update(staged).map(|_| ())) {
                     Ok(()) => {
                         crate::log!("plugins: updated {name} from a browser");
@@ -701,7 +792,7 @@ impl Plugins {
     fn list(&self) -> Value {
         let state = self.catalog.state();
         let items: Vec<Value> = std::iter::once(json!({
-            "name": "screen", "kind": Kind::Own.word(), "on": true, "fixed": true,
+            "name": "screen", "kind": Kind::Own.word(), "on": true, "fixed": true, "linked": false,
             "description": "The screen, keyboard and mouse.", "runs": "peek",
         }))
         .chain(self.catalog.specs().into_iter().map(|s| {
@@ -713,6 +804,7 @@ impl Plugins {
                 "runs": s.runs,
                 "on": is_on(&state, &s),
                 "removable": s.kind != Kind::Own,
+                "linked": s.linked,
                 "status": link.as_ref().map(|l| l.status()),
                 "page": link.as_ref().is_some_and(|l| l.about().contains_key("page")),
             });
@@ -733,13 +825,72 @@ impl Plugins {
             "machine": crate::pairing::machine_name(),
             "items": items,
             "kept_data": self.catalog.kept_data(),
-            "remote_install": state.remote_install,
+            "remote_install": state.remote_install.unwrap_or(self.catalog.default_remote_install),
             "view_only": self.view_only,
         })
     }
 }
 
 // ---- helpers ----
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum Language {
+    Js,
+    Py,
+}
+
+pub fn init(name: &str, dir: Option<&Path>, lang: Language) -> Result<PathBuf, String> {
+    if !name_ok(name) {
+        return Err(format!("{name:?} cannot name a plugin: use up to 32 lowercase letters, digits and dashes, and no built-in name"));
+    }
+    let dir = std::path::absolute(dir.unwrap_or_else(|| Path::new(name))).map_err(|e| format!("cannot find target directory: {e}"))?;
+    let (runtime, script, template) = match lang {
+        Language::Js => ("node", "provider.mjs", include_str!("plugin_template/provider.mjs")),
+        Language::Py => (if cfg!(windows) { "python" } else { "python3" }, "provider.py", include_str!("plugin_template/provider.py")),
+    };
+    let manifest = json!({
+        "manifest_version": contract_version(),
+        "provider_protocol": contract_version(),
+        "name": name,
+        "version": "0.1.0",
+        "description": "A counter with a peek page.",
+        "run": [runtime, script],
+        "needs": [runtime],
+        "settings": { "label": { "kind": "text", "label": "Counter label", "default": "Count" } },
+    });
+    let create = || -> std::io::Result<()> {
+        use std::io::Write;
+        fs::create_dir_all(&dir)?;
+        if fs::read_dir(&dir)?.next().transpose()?.is_some() {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "directory is not empty"));
+        }
+        fs::create_dir(dir.join("page"))?;
+        let manifest = format!("{manifest:#}\n");
+        for (path, body) in [
+            (MANIFEST, manifest.as_str()),
+            (script, template),
+            ("page/index.html", include_str!("plugin_template/index.html")),
+        ] {
+            fs::File::create_new(dir.join(path))?.write_all(body.as_bytes())?;
+        }
+        Ok(())
+    };
+    create().map_err(|e| format!("cannot create plugin in {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+fn linked_update_error(name: &str) -> String {
+    format!("{name} is linked and runs directly from its folder. Edit it there, then restart the plugin to pick up changes.")
+}
+
+fn check_needs(needs: &[String]) -> Result<(), String> {
+    let missing: Vec<_> = needs.iter().map(String::as_str).filter(|n| find_program(n, None).is_none()).collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("missing required programs: {}", missing.join(", ")))
+    }
+}
 
 fn read_manifest(dir: &Path) -> Result<Manifest, String> {
     let text = fs::read_to_string(dir.join(MANIFEST)).map_err(|_| format!("there is no {MANIFEST} in it"))?;
@@ -910,6 +1061,141 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_scaffolds_js_and_python_plugins_without_overwriting() {
+        let root = std::env::temp_dir().join(format!("peek-init-{}", crate::pairing::random_hex(6).unwrap()));
+        for (name, lang, runtime, script) in [
+            ("hello-js", Language::Js, "node", "provider.mjs"),
+            ("hello-py", Language::Py, if cfg!(windows) { "python" } else { "python3" }, "provider.py"),
+        ] {
+            let dir = root.join(name);
+            // Also exercise an existing, empty target directory.
+            if name == "hello-py" {
+                fs::create_dir_all(&dir).unwrap();
+            }
+            assert_eq!(init(name, Some(&dir), lang).unwrap(), std::path::absolute(&dir).unwrap());
+            let manifest = read_manifest(&dir).unwrap();
+            assert_eq!((manifest.manifest_version, manifest.provider_protocol), (1, 1));
+            assert_eq!(manifest.name, name);
+            assert_eq!(manifest.run, [runtime, script]);
+            assert_eq!(manifest.needs, [runtime]);
+            assert_eq!(manifest.settings["label"]["default"], "Count");
+            assert!(dir.join(script).is_file());
+            assert!(fs::read_to_string(dir.join("page/index.html")).unwrap().contains("from '/p/_sdk.js'"));
+            let original = fs::read(dir.join(MANIFEST)).unwrap();
+            assert!(init("another", Some(&dir), lang).unwrap_err().contains("not empty"));
+            assert_eq!(fs::read(dir.join(MANIFEST)).unwrap(), original);
+        }
+        for name in ["", "../escape", "Not-Lowercase", "files"] {
+            let dir = root.join("invalid");
+            assert!(init(name, Some(&dir), Language::Js).unwrap_err().contains("cannot name a plugin"));
+            assert!(!dir.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linked_plugins_run_in_place_and_removal_keeps_the_source() {
+        let root = std::env::temp_dir().join(format!("peek-link-{}", crate::pairing::random_hex(6).unwrap()));
+        let source = root.join("development folder");
+        fs::create_dir_all(source.join("bin")).unwrap();
+        let program = if cfg!(windows) { "app.exe" } else { "app" };
+        fs::write(source.join("bin").join(program), "program").unwrap();
+        fs::write(source.join(MANIFEST), r#"{"name":"sample","run":["bin/app"],"needs":[],"on_by_default":false,"settings":{"flag":{"kind":"switch","default":false}}}"#).unwrap();
+        let catalog = Catalog::new(root.join("config"), Vec::new());
+        let path = source.to_str().unwrap();
+        assert_eq!(catalog.add_link(path, |_| {}).unwrap(), "sample");
+        assert!(!catalog.plugins_dir().exists());
+        let absolute = std::path::absolute(&source).unwrap();
+        let state = catalog.state();
+        assert_eq!(Path::new(&state.links["sample"]), absolute);
+        assert_eq!(state.sources["sample"], state.links["sample"]);
+        assert!(!state.links["sample"].starts_with(r"\\?\"));
+        assert!(catalog.add_link(path, |_| {}).unwrap_err().contains("installed already"));
+        let spec = catalog.specs().pop().unwrap();
+        assert!(spec.kind == Kind::Plugin && spec.linked);
+        assert_eq!(spec.dir.as_deref(), Some(absolute.as_path()));
+        let Start::Program(start) = spec.start else { panic!("not a program") };
+        assert_eq!(start.dir.as_deref(), Some(absolute.as_path()));
+        assert_eq!(Path::new(&start.words[0]), absolute.join("bin").join(program));
+        assert!(catalog.list()[0].2.ends_with(" (linked)"));
+        assert!(catalog.update_from("sample", None, |_| {}).unwrap_err().contains("runs directly from its folder"));
+
+        let plugins = Plugins::start(catalog, false);
+        let list = plugins.answer(&json!({"t":"list"}));
+        assert_eq!(list["items"][0]["linked"], false);
+        assert_eq!(list["items"][1]["linked"], true);
+        let catalog = &plugins.catalog;
+        let staged = catalog.fetch(path).unwrap();
+        let staged_dir = staged.dir.clone();
+        assert!(catalog.update(staged).unwrap_err().contains("restart the plugin"));
+        assert!(!staged_dir.exists());
+        let data = catalog.data_dir("sample");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(data.join("kept"), "data").unwrap();
+        catalog.set_on("sample", true).unwrap();
+        catalog.set_settings("sample", json!({"flag":true}).as_object().unwrap()).unwrap();
+        catalog.remove("sample", false).unwrap();
+        assert!(data.join("kept").exists());
+        assert!(source.join(MANIFEST).exists());
+        assert_eq!(catalog.kept_data(), ["sample"]);
+        let state = catalog.state();
+        assert!(state.links.is_empty() && state.sources.is_empty() && state.settings.is_empty());
+        assert!(state.on.is_empty() && state.off.is_empty());
+
+        catalog.add_link(path, |_| {}).unwrap();
+        catalog.set_on("sample", false).unwrap();
+        catalog.remove("sample", true).unwrap();
+        assert!(!data.exists());
+        assert!(source.join("bin").join(program).exists());
+        assert!(catalog.state().off.is_empty());
+        assert!(catalog.specs().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn links_validate_local_sources_and_can_be_removed_when_broken() {
+        let root = std::env::temp_dir().join(format!("peek-broken-link-{}", crate::pairing::random_hex(6).unwrap()));
+        let source = root.join("source");
+        let path = source.to_str().unwrap();
+        let catalog = Catalog::new(root.join("config"), Vec::new());
+        assert!(catalog.add_link(path, |_| {}).unwrap_err().contains("existing local directory"));
+        fs::create_dir_all(&source).unwrap();
+        assert!(catalog.add_link(path, |_| {}).unwrap_err().contains(MANIFEST));
+        fs::write(source.join(MANIFEST), r#"{"name":"sample","run":["./missing"],"needs":["peek-definitely-absent-runtime"]}"#).unwrap();
+        assert!(catalog.add_link(path, |_| {}).unwrap_err().contains("missing required programs"));
+        fs::write(source.join(MANIFEST), r#"{"name":"sample","run":["./missing"],"needs":[]}"#).unwrap();
+        assert!(catalog.add_link(path, |_| {}).unwrap_err().contains("program not found"));
+        fs::write(source.join("missing"), "").unwrap();
+        catalog.add_link(path, |_| {}).unwrap();
+        fs::remove_dir_all(&source).unwrap();
+        assert!(catalog.specs().is_empty());
+        assert!(catalog.update_from("sample", Some(path), |_| {}).unwrap_err().contains("linked"));
+        catalog.remove("sample", false).unwrap();
+        assert!(catalog.state().links.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_install_uses_the_catalog_default_and_preserves_explicit_values() {
+        let root = std::env::temp_dir().join(format!("peek-remote-{}", crate::pairing::random_hex(6).unwrap()));
+        let service = Catalog::new(root.clone(), Vec::new()).with_default_remote_install(false);
+        let desktop = Catalog::new(root.clone(), Vec::new());
+        assert!(!service.remote_install());
+        assert!(desktop.remote_install());
+        service.save(&State::default()).unwrap();
+        assert!(!fs::read_to_string(root.join(STATE_FILE)).unwrap().contains("remote_install"));
+        assert_eq!(Plugins::start(service, false).answer(&json!({"t":"list"}))["remote_install"], false);
+        let service = Catalog::new(root.clone(), Vec::new()).with_default_remote_install(false);
+        service.set_remote_install(true).unwrap();
+        assert!(service.remote_install());
+        fs::write(root.join(STATE_FILE), r#"{"remote_install": true}"#).unwrap();
+        assert!(service.remote_install());
+        fs::write(root.join(STATE_FILE), r#"{"remote_install": false}"#).unwrap();
+        assert!(!desktop.remote_install());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn built_in_manifests_and_state() {
