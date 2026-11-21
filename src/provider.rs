@@ -214,15 +214,7 @@ impl Link {
             loop {
                 let since = Instant::now();
                 let ended = match keep.start_child(&start, view_only) {
-                    Ok(child) => {
-                        keep.note(|s| { s.running = true; s.starts += 1; });
-                        *keep.child.lock().unwrap() = Some(child);
-                        // Stopped while it was starting.
-                        if keep.stopped.load(std::sync::atomic::Ordering::SeqCst) {
-                            if let Some(c) = keep.child.lock().unwrap().as_mut() {
-                                let _ = c.kill();
-                            }
-                        }
+                    Ok(()) => {
                         let ended = keep.wait_child();
                         keep.note(|s| s.running = false);
                         ended
@@ -282,15 +274,15 @@ impl Link {
     /// End the provider for good: its process, and the restarts.
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(mut child) = self.child.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         self.to.lock().unwrap().1 = None;
         // End page sockets too. Otherwise a restarted plugin leaves its pages
         // attached to this stopped link instead of reconnecting to the new one.
         self.channels.lock().unwrap().clear();
         self.note(|s| { s.running = false; s.ended = Some("stopped".into()); });
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 
     /// Whether it runs, how often it started, how it last ended, and its
@@ -300,7 +292,7 @@ impl Link {
         serde_json::json!({ "running": s.running, "starts": s.starts, "ended": s.ended, "log": s.log })
     }
 
-    fn start_child(self: &Arc<Self>, start: &Start, view_only: bool) -> io::Result<std::process::Child> {
+    fn start_child(self: &Arc<Self>, start: &Start, view_only: bool) -> io::Result<()> {
         use std::process::{Command, Stdio};
         let mut command = match start {
             Start::Own { flags, env } => {
@@ -328,15 +320,26 @@ impl Link {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = command.spawn()?;
-        let (to, from) = (child.stdin.take(), child.stdout.take());
+        let (to, from, err) = {
+            // Publish the child before releasing the lock so stop() can
+            // reap it even when shutdown overlaps a spawn.
+            let mut running = self.child.lock().unwrap();
+            if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            let mut child = command.spawn()?;
+            let pipes = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+            *running = Some(child);
+            self.note(|s| { s.running = true; s.starts += 1; });
+            pipes
+        };
         if let (Some(to), Some(from)) = (to, from) {
             self.attach(to, from);
         }
-        if let Some(err) = child.stderr.take() {
+        if let Some(err) = err {
             self.read_stderr(err);
         }
-        Ok(child)
+        Ok(())
     }
 
     /// The provider's stderr, a line at a time into its recent log (the
@@ -386,6 +389,9 @@ impl Link {
     pub fn attach(self: &Arc<Self>, to: impl Write + Send + 'static, from: impl Read + Send + 'static) {
         let generation = {
             let mut pipe = self.to.lock().unwrap();
+            if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
             pipe.0 += 1;
             let mut to: Box<dyn Write + Send> = Box::new(to);
             let channels = self.channels.lock().unwrap();

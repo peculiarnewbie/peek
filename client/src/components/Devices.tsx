@@ -5,10 +5,10 @@
 import { createSignal, For, onSettled, Show } from 'solid-js';
 import {
   BLOCKED_HELP, cleanHost, favorite, forget, learn, localAccess, machines, navigate, openMachine, pagePath, pair,
-  parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, type About, type Machine,
+  parseLink, PLUGINS_PATH, probeAll, reach, screenPath, setFavorite, updateMachine, type Machine,
 } from '../hosted';
 import { ago, changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
-import { upgrade, updating } from '../update';
+import { checkUpdate, upgrade, updating } from '../update';
 import { cardError, cardItems, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { AddForm, Foot, Header, Intro } from './Intro';
@@ -51,6 +51,8 @@ export function pairFromUrl() {
 }
 
 const STATUS = { up: 'Online', down: 'Offline', checking: 'Checking…' } as const;
+const baseFor = (m: Machine) => `https://${m.host}`;
+const upgradeMachine = (m: Machine) => upgrade(baseFor(m), m.token, a => learn(m, a));
 
 function Card(props: { m: Machine }) {
   const state = () => reach[props.m.id] ?? 'checking';
@@ -68,7 +70,7 @@ function Card(props: { m: Machine }) {
           {STATUS[state()]}</span>
       </a>
       <CardViews m={props.m} />
-      <Show when={state() === 'up'}><CardUpdate m={props.m} /></Show>
+      <CardUpdate m={props.m} />
       <CardPlugins m={props.m} />
       <button class={['dfav tb icon', { on: favorite() === props.m.id }]} tabindex={-1}
         title={favorite() === props.m.id ? 'Favorite: the app icon’s shortcut opens it (tap to unset)'
@@ -86,26 +88,71 @@ function Card(props: { m: Machine }) {
 
 /** A newer peek the machine can update itself to, and the update under way. */
 function CardUpdate(props: { m: Machine }) {
-  const base = () => `https://${props.m.host}`;
   const [error, setError] = createSignal('');
-  const busy = () => updating[base()];
+  const busy = () => updating[baseFor(props.m)];
+  const online = () => reach[props.m.id] === 'up';
   const go = () => {
     setError('');
-    upgrade(base(), props.m.token, a => learn(props.m, a as unknown as About)).catch(e => setError(`Not updated: ${e?.message ?? e}`));
+    upgradeMachine(props.m).catch(e => setError(`Not updated: ${e?.message ?? e}`));
   };
   return (
-    <Show when={busy() || props.m.update || error()}>
+    <Show when={busy() || error() || (online() && props.m.update)}>
       <div class="dviews">
         <div class="vrow">
           <p class={['vtext', { busy: !!busy(), wrong: !busy() && !!error() }]} style={{ flex: 1 }}>
             {busy() ?? (error() || `peek ${props.m.update} is available`)}
           </p>
-          <Show when={!busy() && props.m.update}>
+          <Show when={!busy() && online() && props.m.update}>
             <button class="btn small" tabindex={-1} onClick={go}>Update</button>
           </Show>
         </div>
       </div>
     </Show>
+  );
+}
+
+function FleetUpdates() {
+  const online = () => machines().filter(m => reach[m.id] === 'up');
+  const updates = () => online().filter(m => m.update);
+  const [working, setWorking] = createSignal(false);
+  const [message, setMessage] = createSignal('');
+  const [errors, setErrors] = createSignal<string[]>([]);
+  const disabled = () => working() || online().some(m => updating[baseFor(m)]);
+  const check = (m: Machine) => checkUpdate(baseFor(m), m.token, ({ version, update }) => {
+    updateMachine(m.id, { version, update });
+  });
+  const run = async (checking: boolean) => {
+    if (disabled()) return;
+    const targets = checking ? online() : updates();
+    setWorking(true);
+    setMessage('');
+    setErrors([]);
+    try {
+      const action = checking ? check : upgradeMachine;
+      const failures = (await Promise.all(targets.map(async m => {
+        try { await action(m); }
+        catch (e) { return `${m.name}: ${(e as Error).message}`; }
+      }))).filter((e): e is string => e !== undefined);
+      setErrors(failures);
+      setMessage(checking ? 'Checked online machines' : 'Finished updating online machines');
+    } finally {
+      setWorking(false);
+    }
+  };
+  return (
+    <div class="fleet-updates">
+      <div class="vrow">
+        <button class="btn small alt" disabled={disabled() || !online().length} onClick={() => void run(true)}>Check for updates</button>
+        <Show when={updates().length}>
+          <button class="btn small" disabled={disabled()} onClick={() => void run(false)}>Update all ({updates().length})</button>
+        </Show>
+      </div>
+      <Show when={errors().length} fallback={
+        <Show when={message()}><p class="vtext" role="status">{message()}</p></Show>
+      }>
+        <div role="status"><For each={errors()}>{why => <p class="vtext wrong">{why}</p>}</For></div>
+      </Show>
+    </div>
   );
 }
 
@@ -225,6 +272,7 @@ export function MachinesPage(props: { plugins?: boolean }) {
       </Show>
       <Show when={!onPlugins()} fallback={<PluginsOverview />}>
         <Show when={machines().length} fallback={<Intro />}>
+          <FleetUpdates />
           <PluginFilter />
           <div class="dgrid">
             <For each={machines()}>{m => <Card m={m} />}</For>

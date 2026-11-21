@@ -7,6 +7,29 @@
 <p class="lead">What changed in each version of peek. To update a machine, run
 <code>npm update -g @peculiarnewbie/peek</code> there, then <code>peek install</code> again.</p>
 
+<h2 id="unreleased"><a href="#unreleased">Unreleased</a></h2>
+<h3>New</h3>
+<ul>
+  <li><strong>Check for updates and restart on demand:</strong> Settings now offers <strong>Check for updates</strong>
+    and <strong>Restart peek</strong>, and the Machines page offers <strong>Check for updates</strong> and
+    <strong>Update all</strong> across online machines. <code>peek restart</code> restarts the running host from a
+    terminal.</li>
+  <li><strong>Plugin scaffolding, page SDK, and linked installs:</strong> <code>peek plugin init &lt;name&gt;</code>
+    creates a runnable JS or Python starter plugin with a page powered by the built-in <code>/p/_sdk.js</code>
+    helper, and <code>peek plugin add --link &lt;dir&gt;</code> runs a local plugin folder in place without copying it.</li>
+  <li><strong>Bearer auth on HTTP APIs:</strong> provider, plugin, frame-ticket, update, and restart endpoints now
+    accept <code>Authorization: Bearer &lt;token&gt;</code> in addition to a JSON body token.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+  <li><strong>Stateless frame tickets:</strong> plugin page tickets are now signed with HMAC-SHA256 using the host's
+    local secret, so open pages survive host restarts and self-updates.</li>
+  <li><strong>Safer Windows service default:</strong> when peek runs as the Windows <code>SYSTEM</code> service,
+    browser-driven plugin installs default to off (<code>peek plugin remote-install on</code> turns them back on).</li>
+  <li>The direct machine-served page now reloads automatically after a self-update completes, and restarting stops
+    running provider processes cleanly before handing off.</li>
+</ul>
+
 <h2 id="0.3.1"><a href="#0.3.1">0.3.1</a><span class="date">16 November 2026</span><span class="latest">Latest</span></h2>
 <h3>New</h3>
 <ul>

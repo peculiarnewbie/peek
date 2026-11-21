@@ -4,8 +4,8 @@ import { applyCfg, showSettings } from '../actions';
 import { focusScreen } from '../screen';
 import { cfg, clipboardOn, COPY_IMAGES, FPS_STEPS, MAX_CLIP_IMAGE, monitors, QUALITY, settingsOpen, viewOnly, type Cfg } from '../state';
 import { machine } from '../connection';
-import { current, HOSTED, learn, type About } from '../hosted';
-import { upgrade, updating } from '../update';
+import { current, HOSTED, learn, updateMachine } from '../hosted';
+import { checkUpdate, restartHost, upgrade, updating } from '../update';
 import { own, setOwn } from '../views';
 import { hasPlugins, openPage, PLUGINS } from './Frame';
 import { PairDevice } from './PairDevice';
@@ -58,28 +58,52 @@ function Segmented<T>(props: { options: [T, string][]; selected: (v: T) => boole
   );
 }
 
-/** The peek this machine runs, and an update to a newer one. */
+/** The peek this machine runs, and controls for updating or restarting it. */
 function Version() {
   const about = () => HOSTED ? current() : own();
   const base = () => machine()?.base ?? '';
   const [error, setError] = createSignal('');
+  const [checked, setChecked] = createSignal<string | null>(null);
+  const check = () => {
+    const m = machine();
+    if (!m) return;
+    const shown = HOSTED ? current() : null;
+    setError('');
+    setChecked(null);
+    checkUpdate(m.base, m.token, ({ version, update }) => {
+      if (shown) updateMachine(shown.id, { version, update });
+      if (!HOSTED) setOwn(a => ({ ...a, version, update }));
+      if (!update) setChecked(m.base);
+    }).catch(e => setError(`Could not check for updates: ${e?.message ?? e}`));
+  };
   const go = () => {
     const m = machine();
     if (!m) return;
+    const shown = HOSTED ? current() : null;
     setError('');
+    setChecked(null);
     upgrade(m.base, m.token, a => {
-      const shown = current();
-      if (HOSTED && shown) learn(shown, a as unknown as About);
-      else setOwn(a as ReturnType<typeof own>);
+      if (shown) learn(shown, a);
+      if (!HOSTED) location.reload();
     }).catch(e => setError(`Not updated: ${e?.message ?? e}`));
+  };
+  const restart = () => {
+    const m = machine();
+    if (!m) return;
+    setError('');
+    restartHost(m.base, m.token).catch(e => setError(`Could not restart: ${e?.message ?? e}`));
   };
   return (
     <Show when={about()?.version}>
       <Group label="peek" value={about()!.version!}>
-        <Show when={updating[base()] || (about()?.update && !viewOnly())}>
-          <button class="btn wide alt" tabindex={-1} disabled={!!updating[base()]} onClick={go}>
-            {updating[base()] ?? `Update to ${about()!.update}`}
-          </button>
+        <Show when={!viewOnly()}>
+          <div class="host-actions">
+            <button class="btn wide alt" tabindex={-1} disabled={!!updating[base()]} onClick={() => about()?.update ? go() : check()}>
+              {updating[base()] ?? (about()?.update ? `Update to ${about()!.update}` : 'Check for updates')}
+            </button>
+            <button class="btn wide alt" tabindex={-1} disabled={!!updating[base()]} onClick={restart}>Restart peek</button>
+          </div>
+          <Show when={!updating[base()] && !about()?.update && checked() === base()}><p class="vtext" role="status">Up to date</p></Show>
         </Show>
         <Show when={error()}><p class="vtext wrong" style={{ 'margin-top': '8px' }}>{error()}</p></Show>
       </Group>
