@@ -11,7 +11,7 @@ and automatic frame-ticket recovery after a host restart.
 
 1. **The provider names a folder** in what it says of itself: `{"page": "C:\\…\\page"}`, or a path relative to the folder it runs in (a plugin's own: `{"page": "page"}`). A folder that is not there gives no page, and peek's log says so. The descriptor (`/.well-known/peek`) doesn't show the path, only `"frame": true`.
 2. **Peek serves that folder** at `/p/<name>/` on the machine. Only plain file names are allowed, and nothing outside the folder is served. The page may be framed only by the hosted client and by the machine's own pages (`frame-ancestors`).
-3. **The client asks for a ticket**: `POST /api/frame/<name>`, with its token. A ticket works for that one provider only and lasts 12 hours. The token never enters the frame.
+3. **The client asks for a ticket**: `POST /api/frame/<name>`, with its token in the JSON body or `Authorization: Bearer <token>`. A ticket works for that one provider only and lasts 12 hours across host restarts. The token never enters the frame.
 4. **The client opens a frame** at `https://<machine>/p/<name>/#ticket=…`:
    - sandbox: `allow-scripts allow-same-origin allow-forms`;
    - no top navigation, no pop-ups, no dialogs;

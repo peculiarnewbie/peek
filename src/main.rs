@@ -1007,7 +1007,6 @@ fn core_in_service() -> Arc<provider::Link> {
         serve_target: pairing::serve_target(args.bind, args.port),
         listen: SocketAddr::new(args.bind, args.port),
         next_id: AtomicU64::new(1),
-        tickets: Default::default(),
     });
     log!("service: listening on {addr}");
     update::started(true);
@@ -1221,7 +1220,6 @@ fn main() {
         plugins: plugins(&args),
         view_only: args.view_only,
         next_id: AtomicU64::new(1),
-        tickets: Default::default(),
     });
 
     let hosts: Vec<IpAddr> = if args.bind.is_unspecified() {

@@ -67,8 +67,6 @@ pub struct Shared {
     /// The host ignores what clients do: nothing that acts is passed on.
     pub view_only: bool,
     pub next_id: AtomicU64,
-    /// Tickets for providers' own pages: ticket → (provider, until when).
-    pub tickets: std::sync::Mutex<HashMap<String, (String, std::time::Instant)>>,
 }
 
 /// Where the engine, input and the clipboard are.
@@ -274,6 +272,12 @@ fn header_str<'a>(headers: &'a HeaderMap, name: header::HeaderName) -> Option<&'
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let (scheme, token) = header_str(headers, header::AUTHORIZATION)?.trim().split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+}
+
 /// The request comes from a page of the hosted client.
 fn from_web(shared: &Shared, headers: &HeaderMap) -> bool {
     header_str(headers, header::ORIGIN).is_some_and(|origin| shared.web.iter().any(|web| web == origin))
@@ -289,7 +293,7 @@ fn cors(shared: &Shared, req: &HeaderMap) -> HeaderMap {
             h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
         }
         h.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("GET, POST"));
-        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type"));
+        h.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type, authorization"));
         h.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
         if req.contains_key("access-control-request-private-network") {
             h.insert("access-control-allow-private-network", HeaderValue::from_static("true"));
@@ -411,8 +415,8 @@ fn acts(message: &serde_json::Value) -> bool {
 
 const VIEW_ONLY: &str = "this machine is view-only";
 
-/// One request to a provider: the request's JSON, with the token beside
-/// its fields, and the provider's answer as it gave it.
+/// One request to a provider, with a token in the Authorization header or
+/// the JSON body, and the provider's answer as it gave it.
 async fn provider(
     State(shared): State<Arc<Shared>>,
     Path(name): Path<String>,
@@ -434,8 +438,9 @@ async fn provider(
     let Ok(serde_json::Value::Object(mut req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return error(StatusCode::BAD_REQUEST, "request");
     };
-    let given = req.remove("token").and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default();
-    if !token_ok(&shared, &given, web) {
+    let body_token = req.remove("token");
+    let given = bearer_token(&headers).or_else(|| body_token.as_ref().and_then(|t| t.as_str())).unwrap_or_default();
+    if !token_ok(&shared, given, web) {
         return error(StatusCode::FORBIDDEN, "token");
     }
     let Some(link) = shared.plugins.get(&name) else {
@@ -474,10 +479,13 @@ async fn update(
     if !local && headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
         return error(StatusCode::FORBIDDEN, "origin");
     }
-    let Ok(serde_json::Value::Object(req)) = serde_json::from_slice::<serde_json::Value>(&body) else {
+    let bearer = bearer_token(&headers);
+    let body = if body.is_empty() && bearer.is_some() { b"{}" } else { body.as_ref() };
+    let Ok(serde_json::Value::Object(req)) = serde_json::from_slice::<serde_json::Value>(body) else {
         return error(StatusCode::BAD_REQUEST, "request");
     };
-    if !local && !token_ok(&shared, req.get("token").and_then(|t| t.as_str()).unwrap_or_default(), web) {
+    let given = bearer.or_else(|| req.get("token").and_then(|t| t.as_str())).unwrap_or_default();
+    if !local && !token_ok(&shared, given, web) {
         return error(StatusCode::FORBIDDEN, "token");
     }
     if shared.view_only && !local {
@@ -529,8 +537,9 @@ async fn plugins_api(State(shared): State<Arc<Shared>>, headers: HeaderMap, body
     let Ok(serde_json::Value::Object(mut ask)) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return error(StatusCode::BAD_REQUEST, "request");
     };
-    let given = ask.remove("token").and_then(|t| t.as_str().map(str::to_string)).unwrap_or_default();
-    if !token_ok(&shared, &given, web) {
+    let body_token = ask.remove("token");
+    let given = bearer_token(&headers).or_else(|| body_token.as_ref().and_then(|t| t.as_str())).unwrap_or_default();
+    if !token_ok(&shared, given, web) {
         return error(StatusCode::FORBIDDEN, "token");
     }
     let plugins = shared.plugins.clone();
@@ -572,13 +581,6 @@ fn page_available(shared: &Shared, name: &str) -> bool {
     provider_page(name, shared.plugins.get(name).as_deref()).is_some()
 }
 
-fn ticket_ok(shared: &Shared, ticket: &str, name: &str) -> bool {
-    let now = std::time::Instant::now();
-    let mut tickets = shared.tickets.lock().unwrap();
-    tickets.retain(|_, (_, until)| *until > now);
-    tickets.iter().any(|(t, (p, _))| p == name && token_matches(ticket, t))
-}
-
 /// A ticket for a provider's page: asked for with a token, as a request to
 /// the provider is.
 async fn frame_ticket(
@@ -596,23 +598,21 @@ async fn frame_ticket(
     if headers.contains_key(header::ORIGIN) && !web && !origin_ok(&headers, shared.token.is_none()) {
         return reply(StatusCode::FORBIDDEN, serde_json::json!({ "error": "origin" }));
     }
-    let given = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v["token"].as_str().map(str::to_string))
-        .unwrap_or_default();
-    if !token_ok(&shared, &given, web) {
+    let req;
+    let given = match bearer_token(&headers) {
+        Some(token) => token,
+        None => {
+            req = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
+            req["token"].as_str().unwrap_or_default()
+        }
+    };
+    if !token_ok(&shared, given, web) {
         return reply(StatusCode::FORBIDDEN, serde_json::json!({ "error": "token" }));
     }
     if !page_available(&shared, &name) {
         return reply(StatusCode::NOT_FOUND, serde_json::json!({ "error": "no page" }));
     }
-    let Ok(ticket) = pairing::random_hex(24) else {
-        return reply(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({ "error": "random" }));
-    };
-    let now = std::time::Instant::now();
-    let mut tickets = shared.tickets.lock().unwrap();
-    tickets.retain(|_, (_, until)| *until > now);
-    tickets.insert(ticket.clone(), (name.clone(), now + TICKET_FOR));
+    let ticket = shared.pairing.frame_ticket(&name, TICKET_FOR);
     reply(StatusCode::OK, serde_json::json!({ "ticket": ticket, "path": format!("/p/{name}/") }))
 }
 
@@ -760,7 +760,7 @@ async fn frame_ws(
     upgrade: WebSocketUpgrade,
 ) -> Response {
     let ticket = query.get("ticket").map_or("", String::as_str);
-    if !origin_ok(&headers, shared.token.is_none()) || !ticket_ok(&shared, ticket, &name) {
+    if !origin_ok(&headers, shared.token.is_none()) || !shared.pairing.frame_ticket_ok(ticket, &name) {
         return upgrade.on_upgrade(|mut socket| async move {
             let _ = socket
                 .send(Message::Close(Some(CloseFrame { code: CLOSE_BAD_TOKEN, reason: "bad ticket".into() })))
@@ -1309,6 +1309,73 @@ mod tests {
         assert!(!token_matches("abd", "abc"));
         assert!(!token_matches("ab", "abc"));
         assert!(!token_matches("", "abc"));
+    }
+
+    #[test]
+    fn bearer_token_parsing() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(bearer_token(&headers), None);
+        for value in ["Bearer abc", "bEaReR abc", "  Bearer   abc  "] {
+            headers.insert(header::AUTHORIZATION, HeaderValue::from_static(value));
+            assert_eq!(bearer_token(&headers), Some("abc"), "{value:?}");
+        }
+        for value in ["Basic abc", "Bearer", "Bearer   ", "Bearerabc", ""] {
+            headers.insert(header::AUTHORIZATION, HeaderValue::from_static(value));
+            assert_eq!(bearer_token(&headers), None, "{value:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn http_api_accepts_bearer_and_body_tokens() {
+        let dir = std::env::temp_dir().join(format!("peek-http-{}", pairing::random_hex(6).unwrap()));
+        let listen: SocketAddr = "127.0.0.1:9182".parse().unwrap();
+        let shared = Arc::new(Shared {
+            token: Some("test-token".into()),
+            web: vec!["https://peek.example.com".into()],
+            serve_target: pairing::serve_target(listen.ip(), listen.port()),
+            listen,
+            pairing: Pairing::load(&dir).unwrap(),
+            screen: Screen::Provider(Link::new("screen")),
+            plugins: crate::plugins::Plugins::start(crate::plugins::Catalog::new(dir.clone(), vec![]), true),
+            view_only: true,
+            next_id: AtomicU64::new(1),
+        });
+        let state = State(shared.clone());
+        let mut web = HeaderMap::new();
+        web.insert(header::ORIGIN, HeaderValue::from_static("https://peek.example.com"));
+        let allowed = preflight(state.clone(), web.clone()).await;
+        assert_eq!(allowed.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS], "content-type, authorization");
+
+        let mut bearer = web.clone();
+        bearer.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer test-token"));
+        let with_body = Bytes::from_static(br#"{"t":"list","token":"test-token"}"#);
+        let no_token = Bytes::from_static(br#"{"t":"list"}"#);
+        for (headers, body) in [(web.clone(), with_body.clone()), (bearer.clone(), no_token)] {
+            let res = provider(state.clone(), Path("missing".into()), headers.clone(), body.clone()).await;
+            assert_eq!(res.status(), StatusCode::NOT_FOUND);
+            let res = plugins_api(state.clone(), headers, body).await;
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+        let peer = ConnectInfo(Peer { remote: listen, local: Some(listen) });
+        for (headers, body) in [(web, with_body.clone()), (bearer.clone(), Bytes::new())] {
+            let res = frame_ticket(state.clone(), Path(PLUGINS.into()), headers.clone(), body.clone()).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let res = update(state.clone(), peer, headers, body).await;
+            assert_eq!(res.status(), StatusCode::FORBIDDEN);
+            let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["why"], VIEW_ONLY);
+        }
+        bearer.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer wrong-token"));
+        let res = frame_ticket(state.clone(), Path(PLUGINS.into()), bearer, with_body).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        let mut local = HeaderMap::new();
+        local.insert(header::AUTHORIZATION, format!("Bearer {}", shared.pairing.local_secret).parse().unwrap());
+        let res = update(state, peer, local, Bytes::from_static(br#"{"channel":"invalid"}"#)).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["why"], "no such channel");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

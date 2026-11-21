@@ -8,6 +8,7 @@
 //! label, so a browser can be unpaired on its own.
 
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -66,7 +67,15 @@ pub struct Pairing {
 pub fn random_hex(bytes: usize) -> std::io::Result<String> {
     let mut buf = vec![0u8; bytes];
     getrandom::fill(&mut buf).map_err(std::io::Error::other)?;
-    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(hex(&buf))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(text, "{byte:02x}").unwrap();
+    }
+    text
 }
 
 fn now_secs() -> u64 {
@@ -74,7 +83,27 @@ fn now_secs() -> u64 {
 }
 
 fn hash(token: &str) -> String {
-    Sha256::digest(token.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    hex(&Sha256::digest(token.as_bytes()))
+}
+
+/// HMAC-SHA256 (RFC 2104), using SHA-256's 64-byte block size.
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let hashed;
+    let key = if key.len() > BLOCK {
+        hashed = Sha256::digest(key);
+        hashed.as_slice()
+    } else {
+        key
+    };
+    let mut inner = [0x36; BLOCK];
+    let mut outer = [0x5c; BLOCK];
+    for (i, byte) in key.iter().enumerate() {
+        inner[i] ^= byte;
+        outer[i] ^= byte;
+    }
+    let digest = Sha256::new().chain_update(inner).chain_update(message).finalize();
+    Sha256::new().chain_update(outer).chain_update(digest).finalize().into()
 }
 
 /// Write a file other users cannot read, replacing it in one step.
@@ -140,6 +169,26 @@ impl Pairing {
             codes: Mutex::new(Vec::new()),
             failures: Mutex::new(VecDeque::new()),
         })
+    }
+
+    /// A provider's ticket stays valid across restarts using this config.
+    pub fn frame_ticket(&self, name: &str, lifetime: Duration) -> String {
+        let expiry = now_secs() + lifetime.as_secs();
+        format!("{expiry:x}.{}", self.frame_signature(name, expiry))
+    }
+
+    pub fn frame_ticket_ok(&self, ticket: &str, name: &str) -> bool {
+        let Some((expiry, signature)) = ticket.split_once('.') else { return false };
+        if expiry.len() > 16 || !expiry.bytes().all(|b| b.is_ascii_hexdigit()) || signature.len() != 64 {
+            return false;
+        }
+        let Ok(expiry) = u64::from_str_radix(expiry, 16) else { return false };
+        now_secs() < expiry && same(signature, &self.frame_signature(name, expiry))
+    }
+
+    fn frame_signature(&self, name: &str, expiry: u64) -> String {
+        let message = format!("peek-frame-ticket-v1\0{name}\0{expiry}");
+        hex(&hmac_sha256(self.local_secret.as_bytes(), message.as_bytes()))
     }
 
     fn save(&self, clients: &[Client]) {
@@ -355,6 +404,56 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("peek-pairing-{}", random_hex(6).unwrap()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc_4231() {
+        assert_eq!(
+            hex(&hmac_sha256(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+        );
+        assert_eq!(
+            hex(&hmac_sha256(&[0xaa; 131], b"Test Using Larger Than Block-Size Key - Hash Key First")),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+        );
+    }
+
+    #[test]
+    fn frame_tickets_verify_until_expiry_and_only_for_their_provider() {
+        let dir = temp_dir();
+        let p = Pairing::load(&dir).unwrap();
+        let ticket = p.frame_ticket("files", Duration::from_secs(60));
+        assert!(p.frame_ticket_ok(&ticket, "files"));
+        assert!(!p.frame_ticket_ok(&ticket, "processes"));
+
+        let (expiry, signature) = ticket.split_once('.').unwrap();
+        let changed = if signature.starts_with('0') { '1' } else { '0' };
+        let later = u64::from_str_radix(expiry, 16).unwrap() + 1;
+        for invalid in [
+            format!("{expiry}.{changed}{}", &signature[1..]),
+            format!("{later:x}.{signature}"),
+            format!("+{expiry}.{signature}"),
+            format!("10000000000000000.{signature}"),
+            format!("no-expiry.{signature}"),
+            format!("{ticket}.extra"),
+            expiry.to_owned(),
+            p.frame_ticket("files", Duration::ZERO),
+        ] {
+            assert!(!p.frame_ticket_ok(&invalid, "files"), "{invalid}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn frame_tickets_survive_reloading_the_same_config() {
+        let dir = temp_dir();
+        let ticket = Pairing::load(&dir).unwrap().frame_ticket("files", Duration::from_secs(60));
+        let reloaded = Pairing::load(&dir).unwrap();
+        assert!(reloaded.frame_ticket_ok(&ticket, "files"));
+        let other_dir = temp_dir();
+        assert!(!Pairing::load(&other_dir).unwrap().frame_ticket_ok(&ticket, "files"));
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(other_dir).unwrap();
     }
 
     #[test]
