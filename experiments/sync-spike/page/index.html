@@ -1,0 +1,5 @@
+<!doctype html><meta charset="utf-8"><title>Sync spike</title><pre id="status"></pre><script>
+const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket');
+const ws = new WebSocket(`${location.origin.replace(/^http/, 'ws')}/api/frame/sync-spike/ws?ticket=${encodeURIComponent(ticket)}`);
+ws.onmessage = e => { if (typeof e.data === 'string') { try { const m = JSON.parse(e.data); if (m.t === 'status') document.querySelector('#status').textContent += e.data + '\n'; } catch {} } };
+</script>
