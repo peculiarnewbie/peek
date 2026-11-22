@@ -28,8 +28,23 @@ use crate::webp;
 pub const TILE: usize = 64;
 /// Frames sent but not yet drawn by the client. Bounds latency on slow links.
 const MAX_INFLIGHT: u32 = 2;
+/// Excess send-to-ack delay above the session's baseline RTT that signals TCP
+/// queueing (drops to 1 in-flight frame and steps down moving JPEG quality)
+/// and the threshold where the pipe is clear again.
+const CONGESTED_EXCESS: Duration = Duration::from_millis(100);
+const CLEAR_EXCESS: Duration = Duration::from_millis(50);
+/// Consecutive congested acks needed before shrinking in-flight / quality.
+const CONGESTED_STREAK: u8 = 2;
+/// Healthy time required before stepping backed-off moving quality back up.
+const BACKOFF_RECOVER: Duration = Duration::from_millis(1500);
+/// Minimum moving frame size considered a bandwidth burst for quality backoff.
+const LARGE_FRAME_BYTES: usize = 32 * 1024;
 /// Stillness needed before blurry regions are re-sent sharply.
-const REFINE_AFTER: Duration = Duration::from_millis(250);
+const REFINE_AFTER: Duration = Duration::from_millis(100);
+/// Hold off sharpening background tiles while full-screen motion (video,
+/// full-screen scroll) is actively arriving, so Refine never causes mid-video
+/// dips yet still snaps sharp right after pausing.
+const LARGE_MOTION_REFINE_HOLD: Duration = Duration::from_millis(120);
 /// Short capture wait when there is no way to interrupt the OS call.
 const ACQUIRE_WAIT: Duration = Duration::from_millis(10);
 #[cfg(target_os = "linux")]
@@ -64,6 +79,27 @@ impl Quality {
             "med" => Some(Self::Med),
             "high" => Some(Self::High),
             _ => None,
+        }
+    }
+
+    /// Quality index (0 = Lowest .. 3 = High).
+    fn level(self) -> u8 {
+        match self {
+            Self::Lowest => 0,
+            Self::Low => 1,
+            Self::Med => 2,
+            Self::High => 3,
+        }
+    }
+
+    /// Step down by `steps` levels for moving-frame congestion backoff,
+    /// clamping at `Lowest` (still/refine quality is never reduced).
+    fn backoff(self, steps: u8) -> Self {
+        match self.level().saturating_sub(steps) {
+            0 => Self::Lowest,
+            1 => Self::Low,
+            2 => Self::Med,
+            _ => Self::High,
         }
     }
 
@@ -265,8 +301,24 @@ struct Session {
     pending_since: Option<Instant>,
     seq: u32,
     acked: u32,
+    /// Dynamic in-flight frame limit (2 normally, 1 while congested to avoid TCP queue bloat).
+    max_inflight: u32,
+    /// Lowest send-to-ack round-trip seen in this session (baseline RTT).
+    min_rtt: Option<Duration>,
+    /// Consecutive acks above `CONGESTED_EXCESS` before backing off.
+    slow_acks: u8,
+    /// Temporary quality reduction steps applied only to `Pass::Moving` under
+    /// sustained queueing delay; recovers gradually once ACKs are clean.
+    quality_backoff: u8,
+    /// When ACKs last became consistently clean while backed off.
+    clear_since: Option<Instant>,
+    /// Send metadata of recent frames (`seq`, sent time, large moving burst),
+    /// indexed by `seq & 3`, for excess-delay congestion pacing.
+    sent_at: [Option<(u32, Instant, bool)>; 4],
     last_send: Instant,
     last_moving: Option<Instant>,
+    /// When the last full-screen (>50% tiles) moving frame was sent.
+    last_large_motion: Option<Instant>,
     cursor: &'static str,
     blocked: bool,
 }
@@ -277,7 +329,7 @@ impl Session {
     }
 
     fn send_ready_at(&self) -> Option<Instant> {
-        (self.in_flight() >= MAX_INFLIGHT).then_some(self.last_send + STALL)
+        (self.in_flight() >= self.max_inflight).then_some(self.last_send + STALL)
     }
 
     fn can_capture(&self, now: Instant) -> bool {
@@ -287,6 +339,66 @@ impl Session {
     fn moving_ready_at(&self) -> Option<Instant> {
         self.last_moving.filter(|_| self.view.fps > 0)
             .map(|last| last + Duration::from_secs_f64(1.0 / self.view.fps as f64))
+    }
+
+    /// Wait at least `REFINE_AFTER` (100 ms), or two frame intervals when the
+    /// client explicitly capped FPS low (e.g. 10 fps -> 200 ms) so motion does
+    /// not prematurely refine between slow frames.
+    fn refine_after(&self) -> Duration {
+        if self.view.fps == 0 {
+            return REFINE_AFTER;
+        }
+        let two_frames = Duration::from_secs_f64(2.0 / self.view.fps as f64);
+        REFINE_AFTER.max(two_frames)
+    }
+
+    fn large_motion_hold_until(&self) -> Option<Instant> {
+        self.last_large_motion.map(|at| at + LARGE_MOTION_REFINE_HOLD.max(self.refine_after()))
+    }
+
+    fn record_sent(&mut self, seq: u32, at: Instant, large_moving: bool) {
+        self.sent_at[(seq as usize) & 3] = Some((seq, at, large_moving));
+    }
+
+    fn note_ack(&mut self, seq: u32, now: Instant) {
+        if let Some((s, at, large_moving)) = self.sent_at[(seq as usize) & 3]
+            && s == seq
+        {
+            let rtt = now.duration_since(at);
+            let min_rtt = match self.min_rtt {
+                Some(min) if min <= rtt => min,
+                _ => {
+                    self.min_rtt = Some(rtt);
+                    rtt
+                }
+            };
+            let excess = rtt.saturating_sub(min_rtt);
+            if excess >= CONGESTED_EXCESS {
+                self.clear_since = None;
+                self.slow_acks = self.slow_acks.saturating_add(1);
+                if self.slow_acks >= CONGESTED_STREAK {
+                    self.max_inflight = 1;
+                    if large_moving && self.quality_backoff < self.view.quality.level() {
+                        self.quality_backoff += 1;
+                        self.slow_acks = 0;
+                    }
+                }
+            } else {
+                self.slow_acks = 0;
+                if excess <= CLEAR_EXCESS {
+                    self.max_inflight = MAX_INFLIGHT;
+                    if self.quality_backoff > 0 {
+                        let since = *self.clear_since.get_or_insert(now);
+                        if now.duration_since(since) >= BACKOFF_RECOVER {
+                            self.quality_backoff -= 1;
+                            self.clear_since = (self.quality_backoff > 0).then_some(now);
+                        }
+                    }
+                } else {
+                    self.clear_since = None;
+                }
+            }
+        }
     }
 
     fn send_text(&self, text: String) {
@@ -322,38 +434,27 @@ impl Tiles {
         self.changed_at = vec![now; count];
     }
 
-    fn refine_deadlines(&self) -> impl Iterator<Item = (usize, Instant)> + '_ {
+    fn refine_deadlines(&self, refine_after: Duration) -> impl Iterator<Item = (usize, Instant)> + '_ {
         self.lossy.iter().zip(&self.dirty).zip(&self.changed_at).enumerate()
             .filter(|&(_, ((lossy, dirty), _))| *lossy && !*dirty)
-            .map(|(t, (_, changed_at))| (t, *changed_at + REFINE_AFTER))
+            .map(move |(t, (_, changed_at))| (t, *changed_at + refine_after))
     }
 
-    /// Pick the next frame's tiles. Stillness is judged per tile, so a small
-    /// animation somewhere does not keep the rest of the screen blurry.
-    fn next(&mut self, now: Instant, fresh: bool, moving_ready: bool) -> Option<(Vec<bool>, Pass)> {
+    /// Pick the next frame's tiles. Live motion always takes priority over
+    /// sharpening, and sharpening only runs when `refine_ready` (pipe idle)
+    /// so heavy motion never triggers a large-refine congestion spiral.
+    fn next(
+        &mut self,
+        now: Instant,
+        fresh: bool,
+        moving_ready: bool,
+        refine_ready: bool,
+        refine_after: Duration,
+    ) -> Option<(Vec<bool>, Pass)> {
         if fresh {
             self.lossy.fill(false);
             let blank = vec![false; self.dirty.len()];
             return Some((std::mem::replace(&mut self.dirty, blank), Pass::Fresh));
-        }
-        // Settled tiles go first: a one-off frame, and the moving regions
-        // can be sent immediately after it if there is room.
-        let settled = {
-            let mut ready = self.refine_deadlines().filter(|&(_, at)| at <= now);
-            ready.next().map(|(first, _)| {
-                let mut settled = vec![false; self.dirty.len()];
-                settled[first] = true;
-                for (t, _) in ready {
-                    settled[t] = true;
-                }
-                settled
-            })
-        };
-        if let Some(settled) = settled {
-            for (lossy, &refined) in self.lossy.iter_mut().zip(&settled) {
-                *lossy &= !refined;
-            }
-            return Some((settled, Pass::Refine));
         }
         if moving_ready && self.dirty.contains(&true) {
             for t in 0..self.dirty.len() {
@@ -364,6 +465,25 @@ impl Tiles {
             }
             let blank = vec![false; self.dirty.len()];
             return Some((std::mem::replace(&mut self.dirty, blank), Pass::Moving));
+        }
+        if refine_ready {
+            let settled = {
+                let mut ready = self.refine_deadlines(refine_after).filter(|&(_, at)| at <= now);
+                ready.next().map(|(first, _)| {
+                    let mut settled = vec![false; self.dirty.len()];
+                    settled[first] = true;
+                    for (t, _) in ready {
+                        settled[t] = true;
+                    }
+                    settled
+                })
+            };
+            if let Some(settled) = settled {
+                for (lossy, &refined) in self.lossy.iter_mut().zip(&settled) {
+                    *lossy &= !refined;
+                }
+                return Some((settled, Pass::Refine));
+            }
         }
         None
     }
@@ -390,17 +510,106 @@ struct Rect {
     h: usize,
 }
 
+/// A rectangle in tile coordinates (half-open `[c0, c1) x [r0, r1)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TileRect {
+    c0: usize,
+    r0: usize,
+    c1: usize,
+    r1: usize,
+}
+
+impl TileRect {
+    fn area(self) -> usize {
+        (self.c1 - self.c0) * (self.r1 - self.r0)
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            c0: self.c0.min(other.c0),
+            r0: self.r0.min(other.r0),
+            c1: self.c1.max(other.c1),
+            r1: self.r1.max(other.r1),
+        }
+    }
+
+    fn extra_tiles(self, other: Self) -> usize {
+        let u = self.union(other);
+        let iw = self.c1.min(other.c1).saturating_sub(self.c0.max(other.c0));
+        let ih = self.r1.min(other.r1).saturating_sub(self.r0.max(other.r0));
+        u.area() - (self.area() + other.area() - iw * ih)
+    }
+
+    fn to_pixels(self, width: usize, height: usize) -> Rect {
+        let (x, y) = (self.c0 * TILE, self.r0 * TILE);
+        Rect {
+            x,
+            y,
+            w: (self.c1 * TILE).min(width) - x,
+            h: (self.r1 * TILE).min(height) - y,
+        }
+    }
+}
+
 /// Merge flagged tiles into rectangles: horizontal runs per tile row, then
 /// runs with identical extents on consecutive rows are stacked.
+#[cfg(test)]
 fn merge(tiles: &[bool], cols: usize, rows: usize, width: usize, height: usize) -> Vec<Rect> {
-    let rects = stack(tiles, cols, rows, width, height, false);
-    if rects.len() > MAX_RECTS { stack(tiles, cols, rows, width, height, true) } else { rects }
+    merge_with_coalesce(tiles, cols, rows, width, height, false)
+}
+
+/// Like [`merge`], optionally coalescing nearby fragmented rectangles so
+/// video/scrolling does not send dozens of tiny JPEGs with repeated headers.
+fn merge_with_coalesce(tiles: &[bool], cols: usize, rows: usize, width: usize, height: usize, do_coalesce: bool) -> Vec<Rect> {
+    let mut rects = stack_tiles(tiles, cols, rows, false);
+    if rects.len() > MAX_RECTS {
+        rects = stack_tiles(tiles, cols, rows, true);
+    }
+    if do_coalesce && rects.len() > 1 {
+        coalesce(&mut rects);
+    }
+    rects.into_iter().map(|r| r.to_pixels(width, height)).collect()
+}
+
+/// Merge nearby tile rectangles when dropping an extra JPEG header (~630 B),
+/// seam, and browser decode call costs less than encoding a few unchanged tiles.
+fn coalesce(rects: &mut Vec<TileRect>) {
+    loop {
+        let mut best: Option<(usize, usize, usize)> = None;
+        for i in 0..rects.len() {
+            for j in (i + 1)..rects.len() {
+                let u = rects[i].union(rects[j]);
+                let extra = rects[i].extra_tiles(rects[j]);
+                if extra <= 4 || (extra <= 24 && extra * 5 <= u.area()) {
+                    if best.is_none_or(|(b_extra, _, _)| extra < b_extra) {
+                        best = Some((extra, i, j));
+                        if extra == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if best.is_some_and(|(e, _, _)| e == 0) {
+                break;
+            }
+        }
+        let Some((_, i, j)) = best else { break };
+        rects[i] = rects[i].union(rects[j]);
+        rects.swap_remove(j);
+    }
 }
 
 /// Rectangles of flagged tiles: runs per tile row (`coarse`: one run from the
 /// first flagged tile to the last), stacked while consecutive rows match.
 fn stack(tiles: &[bool], cols: usize, rows: usize, width: usize, height: usize, coarse: bool) -> Vec<Rect> {
-    let mut done: Vec<Rect> = Vec::new();
+    stack_tiles(tiles, cols, rows, coarse)
+        .into_iter()
+        .map(|r| r.to_pixels(width, height))
+        .collect()
+}
+
+fn stack_tiles(tiles: &[bool], cols: usize, rows: usize, coarse: bool) -> Vec<TileRect> {
+    let mut done: Vec<TileRect> = Vec::new();
     let mut open: Vec<(usize, usize, usize)> = Vec::new(); // (col0, col1, row0)
     for r in 0..=rows {
         let mut runs: Vec<(usize, usize)> = Vec::new();
@@ -432,13 +641,7 @@ fn stack(tiles: &[bool], cols: usize, rows: usize, width: usize, height: usize, 
             if runs.contains(&(c0, c1)) {
                 next.push((c0, c1, r0));
             } else {
-                let (x, y) = (c0 * TILE, r0 * TILE);
-                done.push(Rect {
-                    x,
-                    y,
-                    w: (c1 * TILE).min(width) - x,
-                    h: (r * TILE).min(height) - y,
-                });
+                done.push(TileRect { c0, r0, c1, r1: r });
             }
         }
         for &(c0, c1) in &runs {
@@ -688,13 +891,13 @@ fn cover(rects: &[Rect], cols: usize, tiles: &mut [bool]) {
     }
 }
 
-/// Cut rectangles into pieces at most CHUNK_ROWS high, to encode in parallel.
-fn chunks(rects: Vec<Rect>) -> Vec<Rect> {
+/// Cut rectangles into pieces at most `max_rows` high, to encode in parallel.
+fn chunks(rects: Vec<Rect>, max_rows: usize) -> Vec<Rect> {
     let mut pieces = Vec::new();
     for r in rects {
         let mut y = r.y;
         while y < r.y + r.h {
-            let h = CHUNK_ROWS.min(r.y + r.h - y);
+            let h = max_rows.min(r.y + r.h - y);
             pieces.push(Rect { y, h, ..r });
             y += h;
         }
@@ -737,10 +940,12 @@ struct Frame {
 fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, flags: u8, seq: u32) -> Frame {
     let full_chroma = flags & FLAG_FULL_CHROMA != 0;
     let factor = if flags & FLAG_SOFT != 0 { scale * 2 } else { scale };
-    let rects = merge(tiles, screen.cols, screen.rows, screen.width, screen.height);
+    let jpeg_only = flags & FLAG_LOSSLESS == 0;
+    let rects = merge_with_coalesce(tiles, screen.cols, screen.rows, screen.width, screen.height, jpeg_only);
     let mut covered = vec![false; tiles.len()];
     cover(&rects, screen.cols, &mut covered);
-    let (lossless, jpeg, exact) = if flags & FLAG_LOSSLESS != 0 {
+    let jpeg_chunk_rows = CHUNK_ROWS * factor;
+    let (lossless, jpeg, exact) = if !jpeg_only {
         let mut exact: Vec<bool> = (0..tiles.len()).into_par_iter().map(|t| covered[t] && looks_flat(screen, t)).collect();
         let photo: Vec<bool> = covered.iter().zip(&exact).map(|(&c, &e)| c && !e).collect();
         // Many small JPEGs would cost more in headers and seams than drawing
@@ -750,10 +955,10 @@ fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, fla
         for (e, &d) in exact.iter_mut().zip(&spans) {
             *e &= !d;
         }
-        let lossless: Vec<Rect> = chunks(rects).into_iter().filter_map(|r| exact_bounds(r, &exact, screen.cols)).collect();
-        (lossless, chunks(jpeg), exact)
+        let lossless: Vec<Rect> = chunks(rects, CHUNK_ROWS).into_iter().filter_map(|r| exact_bounds(r, &exact, screen.cols)).collect();
+        (lossless, chunks(jpeg, jpeg_chunk_rows), exact)
     } else {
-        (Vec::new(), chunks(rects), Vec::new())
+        (Vec::new(), chunks(rects, jpeg_chunk_rows), Vec::new())
     };
     let jobs: Vec<(Rect, bool)> = lossless.iter().map(|&r| (r, true)).chain(jpeg.iter().map(|&r| (r, false))).collect();
     let parts: Vec<(Rect, bool, Vec<u8>)> = jobs
@@ -870,16 +1075,25 @@ pub fn run(rx: Receiver<Cmd>, shared: Arc<Shared>, fps: u32) {
         }
 
         let mut now = Instant::now();
+        let room = e.sessions.iter().any(|s| s.can_capture(now));
         let mut send_at = e.send_deadline(now);
         if send_at.is_some_and(|at| at <= now) {
-            e.flush_all(false);
+            // Always poll live capture before flushing a due refine or
+            // backlog so we never mistake an un-polled video for a still screen.
+            let captured = if room && e.retry_at.is_none_or(|at| at <= now) {
+                e.capture(Duration::ZERO, now)
+            } else {
+                false
+            };
+            e.flush_all(captured);
             now = Instant::now();
             send_at = e.send_deadline(now);
         }
         let room = e.sessions.iter().any(|s| s.can_capture(now));
         let first = e.sessions.iter().any(|s| s.visible && s.dims == (0, 0) && !e.has_pixels(s.mon));
+        let poll_capture = e.poll_capture;
         let ready_at = e.retry_at.or_else(|| {
-            e.last_capture.filter(|_| !first).map(|last| last + e.capture_interval())
+            e.last_capture.filter(|_| !first && !poll_capture).map(|last| last + e.capture_interval())
         });
         if !room || ready_at.is_some_and(|at| at > now) {
             // Acknowledgements can wake this wait immediately when all
@@ -908,8 +1122,8 @@ pub fn run(rx: Receiver<Cmd>, shared: Arc<Shared>, fps: u32) {
             wait = wait.min(at.saturating_duration_since(now));
         }
         let captured = e.capture(wait, now);
-        if captured {
-            e.flush_all(true);
+        if captured || poll_capture {
+            e.flush_all(captured);
         }
         #[cfg(windows)]
         if !captured {
@@ -953,7 +1167,13 @@ impl Engine {
                 now
             } else {
                 let moving = s.tiles.dirty.contains(&true).then(|| s.moving_ready_at().unwrap_or(now));
-                s.tiles.refine_deadlines().map(|(_, at)| at).chain(moving).min()?
+                let refine = (s.in_flight() == 0)
+                    .then(|| {
+                        let due = s.tiles.refine_deadlines(s.refine_after()).map(|(_, at)| at).min()?;
+                        Some(s.large_motion_hold_until().map_or(due, |hold| due.max(hold)))
+                    })
+                    .flatten();
+                moving.into_iter().chain(refine).min()?
             };
             Some(pending.max(s.send_ready_at().unwrap_or(now)))
         }).min()
@@ -1039,8 +1259,15 @@ impl Engine {
                     pending_since: None,
                     seq: 0,
                     acked: 0,
+                    max_inflight: MAX_INFLIGHT,
+                    min_rtt: None,
+                    slow_acks: 0,
+                    quality_backoff: 0,
+                    clear_since: None,
+                    sent_at: [None; 4],
                     last_send: now,
                     last_moving: None,
+                    last_large_motion: None,
                     cursor: "",
                     blocked: false,
                 });
@@ -1053,14 +1280,22 @@ impl Engine {
             Cmd::Remove { id } => self.sessions.retain(|s| s.id != id),
             Cmd::Ack { id, seq } => {
                 if let Some(i) = self.sessions.iter().position(|s| s.id == id) {
+                    let now = Instant::now();
                     let s = &mut self.sessions[i];
                     // Acks can only move forward (seq wraps after 4 billion frames).
+                    let mut unblocked = false;
                     if (seq.wrapping_sub(s.acked) as i32) > 0 && (s.seq.wrapping_sub(seq) as i32) >= 0 {
-                        let blocked = s.in_flight() >= MAX_INFLIGHT;
+                        let was_blocked = s.in_flight() >= s.max_inflight;
                         s.acked = seq;
-                        self.poll_capture |= s.visible && blocked && s.in_flight() < MAX_INFLIGHT;
+                        s.note_ack(seq, now);
+                        unblocked = s.visible && was_blocked && s.in_flight() < s.max_inflight;
+                        self.poll_capture |= unblocked;
                     }
-                    self.flush(i, Instant::now());
+                    // If this client was backed up (so capture was paused), let the
+                    // loop poll live capture first rather than refining stale tiles.
+                    if !unblocked && self.sessions[i].tiles.dirty.contains(&true) {
+                        self.flush(i, now);
+                    }
                 }
             }
             Cmd::Visible { id, visible } => {
@@ -1091,6 +1326,8 @@ impl Engine {
                     v.lossless = change.lossless.unwrap_or(v.lossless);
                     let resend = |v: &View| (v.mon, v.quality, v.scale, v.lossless);
                     if resend(v) != resend(&before) {
+                        self.sessions[i].quality_backoff = 0;
+                        self.sessions[i].clear_since = None;
                         self.hello(i); // clamps the monitor index and forces a full resend
                         let mon = self.sessions[i].mon;
                         let was_watching = (was_visible && mon == prev_mon)
@@ -1224,7 +1461,16 @@ impl Engine {
         }
 
         let moving_ready = s.moving_ready_at().is_none_or(|at| at <= now);
-        let (tiles, pass) = s.tiles.next(now, fresh, moving_ready)?;
+        let refine_ready = s.in_flight() == 0 && s.large_motion_hold_until().is_none_or(|at| at <= now);
+        let refine_after = s.refine_after();
+        let (tiles, pass) = s.tiles.next(now, fresh, moving_ready, refine_ready, refine_after)?;
+        let dirty_count = tiles.iter().filter(|&&t| t).count();
+        let total_tiles = tiles.len();
+        // Tiny updates (typing, menus, hovers) stay crisp immediately even in
+        // soft mode, while large motion (video, full-screen scroll) skips WebP
+        // during the moving pass and refines losslessly once still.
+        let small_update = dirty_count <= 16 && dirty_count * 20 <= total_tiles;
+        let large_motion = dirty_count * 4 > total_tiles;
         let sharp = || {
             let (quality, full_chroma) = s.view.quality.still();
             (quality, FLAG_REFINE | if full_chroma { FLAG_FULL_CHROMA } else { 0 })
@@ -1233,13 +1479,14 @@ impl Engine {
             Pass::Fresh => (sharp(), s.pending_since.take()),
             Pass::Refine => (sharp(), None),
             Pass::Moving => {
-                let flags = if s.view.soft { FLAG_SOFT } else { 0 };
-                ((s.view.quality.moving(), flags), s.pending_since.take())
+                let flags = if s.view.soft && !small_update { FLAG_SOFT } else { 0 };
+                ((s.view.quality.backoff(s.quality_backoff).moving(), flags), s.pending_since.take())
             }
         };
         // Soft motion is the cheaper way to send what keeps changing; the
-        // lossless re-send follows once it stops.
-        if s.view.lossless && flags & FLAG_SOFT == 0 {
+        // lossless re-send follows once it stops. Large non-soft motion also
+        // uses JPEG while moving and refines losslessly once still.
+        if s.view.lossless && flags & FLAG_SOFT == 0 && !(pass == Pass::Moving && large_motion) {
             flags |= FLAG_LOSSLESS;
         }
 
@@ -1255,8 +1502,12 @@ impl Engine {
         self.stats.frames += 1;
         self.stats.bytes += msg.len();
         s.last_send = done;
+        s.record_sent(s.seq, done, pass == Pass::Moving && msg.len() >= LARGE_FRAME_BYTES);
         if pass == Pass::Moving {
             s.last_moving = Some(now);
+            if dirty_count * 2 > total_tiles {
+                s.last_large_motion = Some(now);
+            }
         }
         (s.tx)(Out::Binary(msg));
         Some(pass)
@@ -1503,33 +1754,39 @@ mod tests {
         let mut tiles = Tiles::default();
         tiles.reset(4, t0);
 
-        let (sent, pass) = tiles.next(at(0), true, true).unwrap();
+        let (sent, pass) = tiles.next(at(0), true, true, true, REFINE_AFTER).unwrap();
         assert_eq!((on(&sent), pass), (vec![0, 1, 2, 3], Pass::Fresh));
-        assert!(tiles.next(at(1), false, true).is_none(), "a fresh picture is already sharp");
+        assert!(tiles.next(at(1), false, true, true, REFINE_AFTER).is_none(), "a fresh picture is already sharp");
 
         // A scroll changes everything, then a spinner keeps animating tile 3.
         tiles.dirty = vec![true; 4];
-        let (sent, pass) = tiles.next(at(10), false, true).unwrap();
+        let (sent, pass) = tiles.next(at(10), false, true, true, REFINE_AFTER).unwrap();
         assert_eq!((on(&sent), pass), (vec![0, 1, 2, 3], Pass::Moving));
-        for ms in (30..250).step_by(20) {
+        for ms in (30..100).step_by(20) {
             tiles.dirty[3] = true;
-            let (sent, pass) = tiles.next(at(ms), false, true).unwrap();
+            let (sent, pass) = tiles.next(at(ms), false, true, true, REFINE_AFTER).unwrap();
             assert_eq!((on(&sent), pass), (vec![3], Pass::Moving), "at {ms} ms");
         }
-        // 250 ms after the scroll, tiles 0-2 are sharpened even though 3 still moves...
+        // While moving is ready, live motion takes priority over refining.
         tiles.dirty[3] = true;
-        let (sent, pass) = tiles.next(at(260), false, false).unwrap();
+        let (sent, pass) = tiles.next(at(120), false, true, true, REFINE_AFTER).unwrap();
+        assert_eq!((on(&sent), pass), (vec![3], Pass::Moving));
+        // Once moving is not pending (or between frames) and the pipe is idle,
+        // settled tiles 0-2 sharpen even while tile 3 keeps moving.
+        tiles.dirty[3] = true;
+        assert!(tiles.next(at(120), false, false, false, REFINE_AFTER).is_none(), "no refine while frames are in flight");
+        let (sent, pass) = tiles.next(at(120), false, false, true, REFINE_AFTER).unwrap();
         assert_eq!((on(&sent), pass), (vec![0, 1, 2], Pass::Refine));
         // The spinner's update waits for its moving-frame deadline.
-        assert!(tiles.next(at(260), false, false).is_none());
-        let (sent, pass) = tiles.next(at(261), false, true).unwrap();
+        assert!(tiles.next(at(120), false, false, true, REFINE_AFTER).is_none());
+        let (sent, pass) = tiles.next(at(121), false, true, true, REFINE_AFTER).unwrap();
         assert_eq!((on(&sent), pass), (vec![3], Pass::Moving));
 
-        // Once the spinner stops, its tile is sharpened too.
-        assert!(tiles.next(at(400), false, true).is_none());
-        let (sent, pass) = tiles.next(at(520), false, true).unwrap();
+        // Once the spinner stops, its tile is sharpened after REFINE_AFTER too.
+        assert!(tiles.next(at(180), false, true, true, REFINE_AFTER).is_none());
+        let (sent, pass) = tiles.next(at(230), false, true, true, REFINE_AFTER).unwrap();
         assert_eq!((on(&sent), pass), (vec![3], Pass::Refine));
-        assert!(tiles.next(at(900), false, true).is_none());
+        assert!(tiles.next(at(500), false, true, true, REFINE_AFTER).is_none());
     }
 
     #[test]
@@ -1539,19 +1796,163 @@ mod tests {
         let s = screen(1920, 256);
         let mut tiles = Tiles::default();
         tiles.reset(s.cols * s.rows, t0);
-        tiles.next(at(0), true, true);
-        // A checkerboard of changed tiles: more runs than MAX_RECTS, so the
-        // frame draws whole rows, from the first changed tile to the last.
+        tiles.next(at(0), true, true, true, REFINE_AFTER);
+        // A checkerboard of changed tiles: coarse + coalesced merging covers
+        // the whole strip as one rectangle instead of 4 separate strips.
         let (col, row) = (|t: usize| t % s.cols, |t: usize| t / s.cols);
         tiles.dirty = (0..s.cols * s.rows).map(|t| (col(t) + row(t)) % 2 == 0).collect();
-        let (sent, pass) = tiles.next(at(10), false, true).unwrap();
+        let (sent, pass) = tiles.next(at(10), false, true, true, REFINE_AFTER).unwrap();
         assert_eq!(pass, Pass::Moving);
         let frame = frame_message(&s, &sent, 1, 70, 0, 1);
-        let drawn: Vec<bool> = (0..s.cols * s.rows).map(|t| if row(t) % 2 == 0 { col(t) < 29 } else { col(t) > 0 }).collect();
+        let drawn = vec![true; s.cols * s.rows];
         assert_eq!(frame.drawn, drawn);
         tiles.sent(&frame.drawn, &frame.exact, true, at(10));
-        // Once still, everything drawn blurry is re-sent sharp.
-        assert_eq!(tiles.next(at(300), false, true), Some((drawn, Pass::Refine)));
+        // Once still and idle, everything drawn blurry is re-sent sharp.
+        assert_eq!(tiles.next(at(150), false, true, true, REFINE_AFTER), Some((drawn, Pass::Refine)));
+    }
+
+    #[test]
+    fn coalesce_merges_fragmented_video_and_keeps_distant_regions_separate() {
+        // 30x17 grid (1920x1080): ragged video rows with small static gaps
+        // should collapse to one rectangle.
+        let (cols, rows) = (30, 17);
+        let mut video = vec![true; cols * rows];
+        for r in 0..rows {
+            // Vary left/right edge and leave a 1-tile static hole per row.
+            if r % 2 == 0 {
+                video[r * cols] = false;
+            }
+            if r % 3 == 0 {
+                video[r * cols + cols - 1] = false;
+            }
+            video[r * cols + (r * 3 + 5) % (cols - 2) + 1] = false;
+        }
+        let raw = merge(&video, cols, rows, 1920, 1080);
+        assert!(raw.len() >= 15, "uncoalesced video fragments into many strips (got {})", raw.len());
+        let merged = merge_with_coalesce(&video, cols, rows, 1920, 1080, true);
+        assert_eq!(merged, vec![Rect { x: 0, y: 0, w: 1920, h: 1080 }]);
+
+        // Two distant small regions (top-left cursor + bottom-right clock) stay separate.
+        let mut sparse = vec![false; cols * rows];
+        sparse[0] = true;
+        sparse[rows * cols - 1] = true;
+        let sparse_merged = merge_with_coalesce(&sparse, cols, rows, 1920, 1080, true);
+        assert_eq!(sparse_merged.len(), 2);
+    }
+
+    #[test]
+    fn inflight_cap_and_quality_backoff_use_excess_delay_and_recover() {
+        let t0 = Instant::now();
+        let mut s = Session {
+            id: 1,
+            tx: Arc::new(|_| {}),
+            view: View { mon: 0, quality: Quality::Med, scale: 1, fps: 60, soft: true, lossless: true },
+            mon: 0,
+            visible: true,
+            dims: (0, 0),
+            tiles: Tiles::default(),
+            pending_since: None,
+            seq: 1,
+            acked: 0,
+            max_inflight: MAX_INFLIGHT,
+            min_rtt: None,
+            slow_acks: 0,
+            quality_backoff: 0,
+            clear_since: None,
+            sent_at: [None; 4],
+            last_send: t0,
+            last_moving: None,
+            last_large_motion: None,
+            cursor: "",
+            blocked: false,
+        };
+        assert_eq!(s.refine_after(), Duration::from_millis(100));
+        s.view.fps = 10;
+        assert_eq!(s.refine_after(), Duration::from_millis(200));
+
+        // Establish a 20 ms baseline RTT.
+        s.record_sent(1, t0, false);
+        s.note_ack(1, t0 + Duration::from_millis(20));
+        assert_eq!(s.min_rtt, Some(Duration::from_millis(20)));
+        assert_eq!(s.max_inflight, MAX_INFLIGHT);
+        assert_eq!(s.quality_backoff, 0);
+
+        // One congested blip does not shrink the pipeline or quality.
+        s.record_sent(2, t0 + Duration::from_millis(100), true);
+        s.note_ack(2, t0 + Duration::from_millis(250)); // 150 ms RTT, 130 ms excess
+        assert_eq!(s.max_inflight, MAX_INFLIGHT);
+        assert_eq!(s.quality_backoff, 0);
+
+        // Second consecutive congested large moving frame shrinks in-flight to 1
+        // and steps moving quality down one level (Med -> Low).
+        s.record_sent(3, t0 + Duration::from_millis(300), true);
+        s.note_ack(3, t0 + Duration::from_millis(450));
+        assert_eq!(s.max_inflight, 1);
+        assert_eq!(s.quality_backoff, 1);
+        assert_eq!(s.view.quality.backoff(s.quality_backoff), Quality::Low);
+
+        // Two more congested large frames step down again (Low -> Lowest), clamped at Lowest.
+        s.record_sent(4, t0 + Duration::from_millis(500), true);
+        s.note_ack(4, t0 + Duration::from_millis(650));
+        s.record_sent(5, t0 + Duration::from_millis(700), true);
+        s.note_ack(5, t0 + Duration::from_millis(850));
+        assert_eq!(s.quality_backoff, 2);
+        assert_eq!(s.view.quality.backoff(s.quality_backoff), Quality::Lowest);
+
+        // Hysteresis band (50..100 ms excess) holds steady without pumping.
+        s.record_sent(6, t0 + Duration::from_millis(900), true);
+        s.note_ack(6, t0 + Duration::from_millis(995)); // 95 ms RTT, 75 ms excess
+        assert_eq!(s.max_inflight, 1);
+        assert_eq!(s.quality_backoff, 2);
+
+        // Clean ack restores full pipeline immediately and starts quality recovery timer.
+        s.record_sent(7, t0 + Duration::from_millis(1000), true);
+        s.note_ack(7, t0 + Duration::from_millis(1040)); // 40 ms RTT, 20 ms excess
+        assert_eq!(s.max_inflight, MAX_INFLIGHT);
+        assert_eq!(s.quality_backoff, 2);
+
+        // Sustained clean acks step moving quality back up after BACKOFF_RECOVER.
+        s.record_sent(8, t0 + Duration::from_millis(2600), true);
+        s.note_ack(8, t0 + Duration::from_millis(2640));
+        assert_eq!(s.quality_backoff, 1);
+        s.record_sent(9, t0 + Duration::from_millis(4200), true);
+        s.note_ack(9, t0 + Duration::from_millis(4240));
+        assert_eq!(s.quality_backoff, 0);
+
+        // Fast high-RTT long-distance link (180 ms baseline, 200 ms under load -> 20 ms excess)
+        // must never trigger congestion backoff.
+        let mut far = Session {
+            id: 2,
+            tx: Arc::new(|_| {}),
+            view: View { mon: 0, quality: Quality::High, scale: 1, fps: 60, soft: false, lossless: true },
+            mon: 0,
+            visible: true,
+            dims: (0, 0),
+            tiles: Tiles::default(),
+            pending_since: None,
+            seq: 1,
+            acked: 0,
+            max_inflight: MAX_INFLIGHT,
+            min_rtt: None,
+            slow_acks: 0,
+            quality_backoff: 0,
+            clear_since: None,
+            sent_at: [None; 4],
+            last_send: t0,
+            last_moving: None,
+            last_large_motion: None,
+            cursor: "",
+            blocked: false,
+        };
+        far.record_sent(1, t0, false);
+        far.note_ack(1, t0 + Duration::from_millis(180));
+        for seq in 2..=6 {
+            let start = t0 + Duration::from_millis(seq as u64 * 250);
+            far.record_sent(seq, start, true);
+            far.note_ack(seq, start + Duration::from_millis(200));
+        }
+        assert_eq!(far.max_inflight, MAX_INFLIGHT);
+        assert_eq!(far.quality_backoff, 0);
     }
 
     #[test]
