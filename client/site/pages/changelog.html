@@ -7,6 +7,15 @@
 <p class="lead">What changed in each version of peek. To update a machine, run
 <code>npm update -g @peculiarnewbie/peek</code> there, then <code>peek install</code> again.</p>
 
+<h2 id="unreleased"><a href="#unreleased">Unreleased</a></h2>
+<h3>Changed</h3>
+<ul>
+  <li><strong>Smoother video and faster soft-motion restore:</strong> live motion now takes priority over sharpening so
+    high-FPS video cannot stall on full-quality refine frames, fragmented video regions coalesce into fewer JPEG
+    rectangles, congested links adapt pipeline depth and moving quality from excess queueing delay, and soft tiles
+    sharpen in about 100 ms once still (with tiny typing and hover updates staying sharp immediately).</li>
+</ul>
+
 <h2 id="0.4.1"><a href="#0.4.1">0.4.1</a><span class="date">22 November 2026</span><span class="latest">Latest</span></h2>
 <h3>Changed</h3>
 <ul>
