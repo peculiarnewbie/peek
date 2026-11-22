@@ -155,7 +155,11 @@ impl Capture {
             if monitor_bounds(out.handle) != Some(out.monitor) {
                 return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "monitor bounds changed"));
             }
-            if !out.seeded {
+            // Creating the device takes a couple of hundred milliseconds, so
+            // show a screenshot first and let duplication start on the next
+            // call. A kept device (`--keep-gpu`) delivers its first image
+            // sooner than a screenshot takes, so it goes straight to it.
+            if !out.seeded && !self.dups.contains_key(&index) {
                 let started = Instant::now();
                 if let Ok(data) = screenshot(out.monitor) {
                     out.seeded = true;
