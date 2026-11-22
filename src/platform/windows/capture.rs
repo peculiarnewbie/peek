@@ -9,17 +9,18 @@ use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Foundation::{HMODULE, RECT};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_UNKNOWN;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
+    D3D11_BOX, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
     D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1,
+    CreateDXGIFactory1, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_MOVE_RECT, IDXGIAdapter1,
     IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource,
 };
+use windows::Win32::Graphics::Dxgi::Common::DXGI_MODE_ROTATION_IDENTITY;
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap,
     CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, GetMonitorInfoW,
@@ -29,7 +30,7 @@ use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::core::Interface;
 
-use crate::platform::{Monitor, Pixels};
+use crate::platform::{DamageRect, Monitor, Pixels};
 
 /// How long to wait for a new duplication's first real image before falling
 /// back to a plain screenshot. The first frame Windows returns carries no
@@ -53,6 +54,9 @@ struct Output {
     output: IDXGIOutput1,
     handle: HMONITOR,
     monitor: Monitor,
+    unrotated: bool,
+    /// GDI has already supplied an image since the last capture start.
+    seeded: bool,
 }
 
 struct Duplication {
@@ -61,6 +65,9 @@ struct Duplication {
     /// None while idle with the device kept.
     dup: Option<IDXGIOutputDuplication>,
     staging: Option<(ID3D11Texture2D, u32, u32)>,
+    /// Byte storage aligned for both DXGI metadata structures.
+    metadata: Vec<u32>,
+    damage: Vec<DamageRect>,
     /// No image has been read from this duplication yet.
     fresh: bool,
     /// How starting this duplication went, logged with its first image.
@@ -108,6 +115,9 @@ impl Capture {
     /// Stop duplicating (the device objects go with it, unless kept). Called
     /// when nobody is watching, so the compositor is left alone while idle.
     pub fn release(&mut self) {
+        for out in &mut self.outputs {
+            out.seeded = false;
+        }
         if KEEP_DEVICE.load(Ordering::Relaxed) {
             for d in self.dups.values_mut() {
                 d.dup = None;
@@ -133,15 +143,27 @@ impl Capture {
         // No such monitor is a failure, not "nothing changed": enumerating
         // while the display is off (going to sleep, say) finds none, and
         // only a failure makes the caller look again once it is back.
-        let Some(out) = self.outputs.get(index) else {
+        let Some(out) = self.outputs.get_mut(index) else {
             return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "no monitor attached"));
         };
         if self.dups.get(&index).is_none_or(|d| d.dup.is_none()) {
-            follow_desktop();
+            if follow_desktop() {
+                out.seeded = false;
+            }
             // A mode change while duplication was stopped cannot invalidate it.
             // Check the live bounds before opening it or taking the GDI fallback.
             if monitor_bounds(out.handle) != Some(out.monitor) {
                 return Err(windows::core::Error::new(DXGI_ERROR_NOT_FOUND, "monitor bounds changed"));
+            }
+            if !out.seeded {
+                let started = Instant::now();
+                if let Ok(data) = screenshot(out.monitor) {
+                    out.seeded = true;
+                    let (w, h) = (out.monitor.width as usize, out.monitor.height as usize);
+                    f(Pixels::bgra(w, h, w * 4, &data));
+                    self.last_cost = started.elapsed();
+                    return Ok(true);
+                }
             }
         }
         match duplicate_and_grab(&mut self.dups, out, index, timeout, f) {
@@ -154,8 +176,10 @@ impl Capture {
             // duplication: start one there on the next call, keeping the
             // device, rather than fail and wait to be retried.
             Err(_) if follow_desktop() => {
+                out.seeded = false;
                 if let Some(d) = self.dups.get_mut(&index) {
                     d.dup = None;
+                    d.staging = None;
                 }
                 Ok(false)
             }
@@ -172,7 +196,7 @@ impl Capture {
 /// changed.
 fn duplicate_and_grab(
     dups: &mut HashMap<usize, Duplication>,
-    out: &Output,
+    out: &mut Output,
     index: usize,
     timeout: Duration,
     f: impl FnOnce(Pixels<'_>),
@@ -187,7 +211,7 @@ fn duplicate_and_grab(
         d.fresh = true;
         d.startup = Some(Startup { began, device: None, duplicate: began.elapsed() });
     }
-    unsafe { grab(d, out.monitor, timeout, f) }
+    unsafe { grab(d, out, timeout, f) }
 }
 
 /// Duplication only works on the desktop taking input, which a UAC prompt or
@@ -220,6 +244,8 @@ fn enumerate() -> windows::core::Result<Vec<Output>> {
                     output: output.cast()?,
                     handle: desc.Monitor,
                     monitor,
+                    unrotated: desc.Rotation == DXGI_MODE_ROTATION_IDENTITY,
+                    seeded: false,
                 });
             }
         }
@@ -270,6 +296,8 @@ fn open(out: &Output) -> windows::core::Result<Duplication> {
             context: context.unwrap(),
             dup: Some(dup),
             staging: None,
+            metadata: Vec::new(),
+            damage: Vec::new(),
             fresh: true,
             startup: Some(Startup { began, device: Some(created), duplicate }),
         })
@@ -301,7 +329,7 @@ fn log_startup(s: Startup, first: Duration, screenshot: bool) {
 
 /// One `AcquireNextFrame`. `None` means nothing new to show: the wait timed
 /// out, or only the pointer moved (the client draws its own pointer).
-unsafe fn next_image(dup: &IDXGIOutputDuplication, wait: Duration) -> windows::core::Result<Option<ID3D11Texture2D>> {
+unsafe fn next_image(dup: &IDXGIOutputDuplication, wait: Duration) -> windows::core::Result<Option<(ID3D11Texture2D, DXGI_OUTDUPL_FRAME_INFO)>> {
     unsafe {
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
@@ -312,7 +340,13 @@ unsafe fn next_image(dup: &IDXGIOutputDuplication, wait: Duration) -> windows::c
         }
         // A present time of zero means the desktop image was not updated.
         match resource {
-            Some(r) if info.LastPresentTime != 0 => Ok(Some(r.cast()?)),
+            Some(r) if info.LastPresentTime != 0 => match r.cast() {
+                Ok(texture) => Ok(Some((texture, info))),
+                Err(e) => {
+                    let _ = dup.ReleaseFrame();
+                    Err(e)
+                }
+            },
             _ => {
                 dup.ReleaseFrame()?;
                 Ok(None)
@@ -321,17 +355,66 @@ unsafe fn next_image(dup: &IDXGIOutputDuplication, wait: Duration) -> windows::c
     }
 }
 
+/// Read actual pixels for the destinations of moves, as well as dirty
+/// rectangles, from the new texture. The source of a move needs no copy.
+fn read_damage(
+    d: &mut Duplication, dup: &IDXGIOutputDuplication, size: u32, width: u32, height: u32,
+) -> Option<()> {
+    const MAX_DAMAGE_RECTS: usize = 64;
+    let clamp = |r: RECT| {
+        let x = r.left.clamp(0, width as i32) as usize;
+        let y = r.top.clamp(0, height as i32) as usize;
+        let w = (r.right.clamp(0, width as i32) as usize).saturating_sub(x);
+        let h = (r.bottom.clamp(0, height as i32) as usize).saturating_sub(y);
+        (w != 0 && h != 0).then_some(DamageRect { x, y, w, h })
+    };
+    d.metadata.resize((size as usize).div_ceil(size_of::<u32>()), 0);
+    let ptr = d.metadata.as_mut_ptr();
+    let mut used = 0;
+    // Both C structs are made of 32-bit integers. Reuse the aligned buffer
+    // once the move destinations have been copied out.
+    const { assert!(align_of::<DXGI_OUTDUPL_MOVE_RECT>() <= align_of::<u32>()) };
+    const { assert!(align_of::<RECT>() <= align_of::<u32>()) };
+    unsafe {
+        dup.GetFrameMoveRects(size, ptr.cast(), &mut used).ok()?;
+        let moves = metadata_slice::<DXGI_OUTDUPL_MOVE_RECT>(&d.metadata, size, used)?;
+        if moves.len() > MAX_DAMAGE_RECTS {
+            return None;
+        }
+        let move_count = moves.len();
+        d.damage.extend(moves.iter().filter_map(|m| clamp(m.DestinationRect)));
+
+        dup.GetFrameDirtyRects(size, ptr.cast(), &mut used).ok()?;
+        let dirty = metadata_slice::<RECT>(&d.metadata, size, used)?;
+        if dirty.len() + move_count > MAX_DAMAGE_RECTS {
+            return None;
+        }
+        d.damage.extend(dirty.iter().filter_map(|&r| clamp(r)));
+    }
+    let area: u64 = d.damage.iter().map(|r| r.w as u64 * r.h as u64).sum();
+    let screen_area = u64::from(width) * u64::from(height);
+    (!d.damage.is_empty() && area < screen_area.div_ceil(2)).then_some(())
+}
+
+/// The initialized prefix returned by the matching DXGI metadata call.
+unsafe fn metadata_slice<T>(buffer: &[u32], size: u32, used: u32) -> Option<&[T]> {
+    let len = used as usize;
+    (used <= size && len.is_multiple_of(size_of::<T>()))
+        .then(|| unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast(), len / size_of::<T>()) })
+}
+
 /// Returns how long reading the frame took, or `None` if nothing changed.
 unsafe fn grab(
     d: &mut Duplication,
-    monitor: Monitor,
+    out: &mut Output,
     timeout: Duration,
     f: impl FnOnce(Pixels<'_>),
 ) -> windows::core::Result<Option<Duration>> {
     unsafe {
         let dup = d.dup.clone().expect("duplication started before grab");
         let waiting = Instant::now();
-        let texture = if d.fresh {
+        let first_image = d.fresh && !out.seeded;
+        let texture = if first_image {
             let deadline = waiting + FIRST_IMAGE_WAIT;
             loop {
                 let left = deadline.saturating_duration_since(Instant::now());
@@ -345,19 +428,19 @@ unsafe fn grab(
             next_image(&dup, timeout)?
         };
         let started = Instant::now();
-        let Some(texture) = texture else {
-            if !d.fresh {
+        let Some((texture, info)) = texture else {
+            if !first_image {
                 return Ok(None);
             }
             // Still desktop: take the first image the old-fashioned way.
             // Later changes arrive through the duplication as usual (and the
             // engine compares them with this one, so nothing is sent twice).
-            let (width, height) = (monitor.width as usize, monitor.height as usize);
-            let data = screenshot(monitor)?;
-            d.fresh = false;
-            f(Pixels { width, height, stride: width * 4, data: &data });
+            let (width, height) = (out.monitor.width as usize, out.monitor.height as usize);
+            let data = screenshot(out.monitor)?;
+            out.seeded = true;
+            f(Pixels::bgra(width, height, width * 4, &data));
             if let Some(s) = d.startup.take() {
-                log_startup(s, waiting.elapsed(), true);
+                log_startup(s, started - waiting, true);
             }
             return Ok(Some(started.elapsed()));
         };
@@ -377,8 +460,21 @@ unsafe fn grab(
             d.device.CreateTexture2D(&staging_desc, None, Some(&mut staging))?;
             d.staging = Some((staging.unwrap(), desc.Width, desc.Height));
         }
+        d.damage.clear();
+        let partial = reusable && !d.fresh && out.unrotated && info.TotalMetadataBufferSize > 0
+            && read_damage(d, &dup, info.TotalMetadataBufferSize, desc.Width, desc.Height).is_some();
         let staging = &d.staging.as_ref().unwrap().0;
-        d.context.CopyResource(staging, &texture);
+        if partial {
+            for r in &d.damage {
+                let src = D3D11_BOX {
+                    left: r.x as u32, top: r.y as u32, front: 0,
+                    right: r.right() as u32, bottom: r.bottom() as u32, back: 1,
+                };
+                d.context.CopySubresourceRegion(staging, 0, src.left, src.top, 0, &texture, 0, Some(&src));
+            }
+        } else {
+            d.context.CopyResource(staging, &texture);
+        }
         drop(texture);
         dup.ReleaseFrame()?;
 
@@ -390,11 +486,11 @@ unsafe fn grab(
             mapped.pData as *const u8,
             stride * (height - 1) + width * 4,
         );
-        f(Pixels { width, height, stride, data });
+        f(Pixels { damage: partial.then_some(d.damage.as_slice()), ..Pixels::bgra(width, height, stride, data) });
         d.context.Unmap(staging, 0);
         d.fresh = false;
         if let Some(s) = d.startup.take() {
-            log_startup(s, waiting.elapsed(), false);
+            log_startup(s, started - waiting, false);
         }
         Ok(Some(started.elapsed()))
     }
@@ -467,14 +563,13 @@ mod tests {
         let mut cap = Capture::new();
         let monitor = cap.monitors()[0];
         let mut duplicated = Vec::new();
-        let updated = cap
-            .acquire(0, Duration::ZERO, |px| {
+        let updated = duplicate_and_grab(&mut cap.dups, &mut cap.outputs[0], 0, Duration::ZERO, |px| {
                 for y in 0..px.height {
                     duplicated.extend_from_slice(&px.data[y * px.stride..][..px.width * 4]);
                 }
             })
             .unwrap();
-        assert!(updated, "a new duplication always yields a first image");
+        assert!(updated.is_some(), "a new duplication always yields a first image");
         let shot = screenshot(monitor).unwrap();
         assert_eq!(duplicated.len(), shot.len());
         // The two grabs are milliseconds apart, so allow for a little motion.

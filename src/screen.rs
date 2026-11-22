@@ -29,11 +29,28 @@ const CLIP_READ_TRIES: u32 = 4;
 /// Where a session's output goes: a socket's queue, or a provider's pipe.
 pub type Sink = Arc<dyn Fn(Out) + Send + Sync>;
 
+pub struct EngineSender {
+    tx: Sender<Cmd>,
+    #[cfg(target_os = "linux")]
+    pub(crate) wakeup: Option<Arc<platform::Wakeup>>,
+}
+
+impl EngineSender {
+    fn send(&self, cmd: Cmd) -> Result<(), std::sync::mpsc::SendError<Cmd>> {
+        self.tx.send(cmd)?;
+        #[cfg(target_os = "linux")]
+        if let Some(wakeup) = &self.wakeup {
+            wakeup.signal();
+        }
+        Ok(())
+    }
+}
+
 pub struct Shared {
     pub view_only: bool,
     pub clipboard: bool,
     pub verbose: bool,
-    pub engine: Sender<Cmd>,
+    pub engine: EngineSender,
     pub monitors: RwLock<Vec<Monitor>>,
     /// Every open session, for clipboard broadcasts.
     pub peers: Mutex<HashMap<u64, Sink>>,
@@ -56,7 +73,17 @@ pub fn start(view_only: bool, clipboard: bool, verbose: bool, fps: u32) -> Arc<S
         view_only,
         clipboard,
         verbose,
-        engine: engine_tx,
+        engine: EngineSender {
+            tx: engine_tx,
+            #[cfg(target_os = "linux")]
+            wakeup: match platform::Wakeup::new() {
+                Ok(wakeup) => Some(Arc::new(wakeup)),
+                Err(e) => {
+                    crate::log!("could not create capture wakeup fd: {e}");
+                    None
+                }
+            },
+        },
         monitors: RwLock::new(Vec::new()),
         peers: Mutex::new(HashMap::new()),
         clip_last: Mutex::new(String::new()),
@@ -566,7 +593,11 @@ mod tests {
             view_only: true,
             clipboard: false,
             verbose: false,
-            engine,
+            engine: EngineSender {
+                tx: engine,
+                #[cfg(target_os = "linux")]
+                wakeup: None,
+            },
             monitors: RwLock::new(monitors),
             peers: Mutex::default(),
             clip_last: Mutex::default(),

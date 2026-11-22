@@ -31,7 +31,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, IoSlice, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -103,11 +103,23 @@ fn write_frame(w: &mut impl Write, kind: u8, channel: u64, payload: &[u8]) -> io
         let mut whole = Vec::with_capacity(HEADER + payload.len());
         whole.extend_from_slice(&head);
         whole.extend_from_slice(payload);
-        w.write_all(&whole)
-    } else {
-        w.write_all(&head)?;
-        w.write_all(payload)
+        return w.write_all(&whole);
     }
+
+    let mut parts = [IoSlice::new(&head), IoSlice::new(payload)];
+    let mut remaining = &mut parts[..];
+    while remaining.len() > 1 {
+        match w.write_vectored(remaining) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => IoSlice::advance_slices(&mut remaining, n),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    if let Some(last) = remaining.first() {
+        w.write_all(last)?;
+    }
+    Ok(())
 }
 
 fn read_frame(r: &mut impl Read) -> io::Result<(u8, u64, Vec<u8>)> {
@@ -406,7 +418,7 @@ impl Link {
         };
         let link = self.clone();
         let reader = std::thread::Builder::new().name(format!("from-{}", self.name)).spawn(move || {
-            let mut from = Opening { inner: from, first: Vec::new(), served: None };
+            let mut from = Opening { inner: BufReader::with_capacity(64 * 1024, from), first: Vec::new(), served: None };
             let mut frames = 0u64;
             let error = loop {
                 match read_frame(&mut from) {
@@ -762,17 +774,60 @@ mod tests {
         assert!(read_frame(&mut r).is_err(), "end of stream");
     }
 
+    #[test]
+    fn vectored_frame_write_resumes_after_short_writes() {
+        #[derive(Default)]
+        struct ShortWrites {
+            bytes: Vec<u8>,
+            vectored_calls: usize,
+        }
+
+        impl Write for ShortWrites {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.bytes.write(&buf[..buf.len().min(1024)])
+            }
+
+            fn write_vectored(&mut self, parts: &[IoSlice<'_>]) -> io::Result<usize> {
+                self.vectored_calls += 1;
+                let mut left = match self.vectored_calls {
+                    1 => return Err(io::ErrorKind::Interrupted.into()),
+                    2 => 2,
+                    _ => HEADER + 1,
+                };
+                let start = self.bytes.len();
+                for part in parts {
+                    let n = part.len().min(left);
+                    self.bytes.extend_from_slice(&part[..n]);
+                    left -= n;
+                }
+                Ok(self.bytes.len() - start)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut pipe = ShortWrites::default();
+        let payload = (0..6000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        write_frame(&mut pipe, BINARY, 42, &payload).unwrap();
+        assert_eq!(pipe.vectored_calls, 3);
+        let mut bytes = pipe.bytes.as_slice();
+        assert_eq!(read_frame(&mut bytes).unwrap(), (BINARY, 42, payload));
+        assert!(bytes.is_empty());
+    }
+
     /// Reading through `Opening` changes nothing, and keeps what came first.
     #[test]
     fn opening_passes_frames_through_and_keeps_text() {
         let mut pipe = Vec::new();
         write_frame(&mut pipe, TEXT, 3, b"{}").unwrap();
         write_frame(&mut pipe, BINARY, 4, &vec![1u8; 9000]).unwrap();
-        let mut r = Opening { inner: &pipe[..], first: Vec::new(), served: None };
+        let mut r = Opening { inner: BufReader::new(&pipe[..]), first: Vec::new(), served: None };
         assert_eq!(read_frame(&mut r).unwrap(), (TEXT, 3, b"{}".to_vec()));
         assert_eq!(read_frame(&mut r).unwrap(), (BINARY, 4, vec![1u8; 9000]));
         assert!(read_frame(&mut r).is_err());
-        let mut r = Opening { inner: &b"Listening on port 3000\n"[..], first: Vec::new(), served: None };
+        let mut r = Opening { inner: BufReader::new(&b"Listening on port 3000\n"[..]), first: Vec::new(), served: None };
         assert_eq!(read_frame(&mut r).unwrap_err().kind(), io::ErrorKind::InvalidData);
         assert_eq!(r.first, b"Listening on port 3000\n");
     }

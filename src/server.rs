@@ -2,6 +2,7 @@
 //! sockets and requests, and passes what clients say to the screen (in this
 //! process, or in a provider's) and to the other providers.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1056,6 +1057,53 @@ enum CoreMsg {
     PairCode,
 }
 
+impl CoreMsg {
+    fn parse(text: &str) -> Option<Self> {
+        match message_tag(text)?.as_ref() {
+            "open" | "to" | "close" | "ping" | "paircode" => serde_json::from_str(text).ok(),
+            _ => None,
+        }
+    }
+}
+
+/// Look only as far as the tag. Browser messages put it first, so the
+/// screen's input and acknowledgements can skip core deserialization.
+fn message_tag(text: &str) -> Option<Cow<'_, str>> {
+    let text = text.trim_ascii_start();
+    // Serde also accepts internally tagged messages as sequences.
+    if let Some(mut rest) = text.strip_prefix('[') {
+        return take_json_string(&mut rest);
+    }
+    let mut rest = text.strip_prefix('{')?;
+    loop {
+        let key = take_json_string(&mut rest)?;
+        rest = rest.trim_ascii_start().strip_prefix(':')?;
+        if key == "t" {
+            return take_json_string(&mut rest);
+        }
+        take_json::<serde::de::IgnoredAny>(&mut rest)?;
+        rest = rest.trim_ascii_start().strip_prefix(',')?;
+    }
+}
+
+fn take_json_string<'a>(text: &mut &'a str) -> Option<Cow<'a, str>> {
+    let (value, rest) = text.trim_ascii_start().strip_prefix('"')?.split_once('"')?;
+    if !value.contains('\\') {
+        *text = rest;
+        return Some(Cow::Borrowed(value));
+    }
+    #[derive(Deserialize)]
+    struct JsonString<'a>(#[serde(borrow)] Cow<'a, str>);
+    take_json::<JsonString<'a>>(text).map(|value| value.0)
+}
+
+fn take_json<'a, T: Deserialize<'a>>(text: &mut &'a str) -> Option<T> {
+    let mut values = serde_json::Deserializer::from_str(text).into_iter::<T>();
+    let value = values.next()?.ok()?;
+    *text = &text[values.byte_offset()..];
+    Some(value)
+}
+
 /// Where a provider's messages on a socket's channel go: onto the socket,
 /// marked with the provider's name. A provider speaks JSON here; anything
 /// else of its is dropped, as there is nowhere to put the name.
@@ -1144,15 +1192,15 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
             Message::Close(_) => break,
             _ => continue,
         };
-        match serde_json::from_str::<CoreMsg>(&text) {
-            Ok(CoreMsg::Open { p }) => {
+        match CoreMsg::parse(&text) {
+            Some(CoreMsg::Open { p }) => {
                 if let Some(link) = shared.plugins.get(&p)
                     && opened.insert(p.clone())
                 {
                     link.open(id, &HashMap::new(), from_provider(&p, reply.clone()));
                 }
             }
-            Ok(CoreMsg::To { p, m }) => {
+            Some(CoreMsg::To { p, m }) => {
                 if let (Some(link), true) = (shared.plugins.get(&p), opened.contains(&p)) {
                     if shared.view_only && acts(&m) {
                         let refused = serde_json::json!({ "t": "error", "why": VIEW_ONLY });
@@ -1162,12 +1210,12 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                     }
                 }
             }
-            Ok(CoreMsg::Close { p }) => {
+            Some(CoreMsg::Close { p }) => {
                 if let (Some(link), true) = (shared.plugins.get(&p), opened.remove(&p)) {
                     link.close(id);
                 }
             }
-            Ok(CoreMsg::PairCode) => {
+            Some(CoreMsg::PairCode) => {
                 let shared = shared.clone();
                 let reply = reply.clone();
                 tokio::task::spawn_blocking(move || {
@@ -1176,12 +1224,12 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                     let _ = reply.send(Out::Text(offer.to_string()));
                 });
             }
-            Ok(CoreMsg::Ping { n }) => {
+            Some(CoreMsg::Ping { n }) => {
                 // Queued behind any frames already waiting, which is the
                 // delay a fresh frame would see too.
                 let _ = reply.send(Out::Text(serde_json::json!({ "t": "pong", "n": n }).to_string()));
             }
-            Err(_) => match (&shared.screen, &mut session) {
+            None => match (&shared.screen, &mut session) {
                 (Screen::Here(screen), Some(session)) => session.message(screen, &text),
                 (Screen::Provider(link), _) => link.text(id, &text),
                 (Screen::Here(_), None) => {}
@@ -1324,16 +1372,28 @@ mod tests {
 
     #[test]
     fn the_server_answers_only_its_own_messages() {
-        let core = |text: &str| serde_json::from_str::<CoreMsg>(text).is_ok();
+        let core = |text: &str| {
+            let parsed = CoreMsg::parse(text).is_some();
+            assert_eq!(parsed, serde_json::from_str::<CoreMsg>(text).is_ok(), "{text}");
+            parsed
+        };
         assert!(core(r#"{"t":"ping","n":3}"#));
         assert!(core(r#"{"t":"paircode"}"#));
+        assert!(core(r#"{"t": "ping", "n": 3}"#));
+        assert!(core(r#" { "n":3,"t" : "ping" } "#));
+        assert!(core(r#"{"extra":{"t":"ack"},"\u0074":"p\u0069ng","n":3}"#));
+        assert!(core(r#"["ping",3]"#));
         for screen in [
             r#"{"t":"ack","s":7}"#,
+            r#"{"s":7,"t": "ack","extra":{"t":"ping"}}"#,
             r#"{"t":"vis","v":true}"#,
             r#"{"t":"cfg","q":"high"}"#,
             r#"{"t":"m","x":0.5,"y":0.5}"#,
             r#"{"t":"k","c":"KeyA","d":1}"#,
             r#"{"t":"clip","s":"text"}"#,
+            r#"{"t":"ping","t":"ack","n":3}"#,
+            r#"{"t":"ping","n":3"#,
+            r#"{"t":"ping","n":3} trailing"#,
             "not json",
         ] {
             assert!(!core(screen), "{screen} is for the screen");

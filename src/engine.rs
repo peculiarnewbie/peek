@@ -10,13 +10,14 @@
 //! setting, tiles that look like text or flat UI go out as lossless WebP
 //! instead, and only photo-like tiles as JPEG.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
+use jpeg_encoder::{
+    ChromaSubsamplingMethod, ColorType, Encoder, ImageBuffer, JpegColorType, SamplingFactor, rgb_to_ycbcr,
+};
 use rayon::prelude::*;
 
 use crate::platform::{self, Capture, Pixels};
@@ -29,9 +30,12 @@ pub const TILE: usize = 64;
 const MAX_INFLIGHT: u32 = 2;
 /// Stillness needed before blurry regions are re-sent sharply.
 const REFINE_AFTER: Duration = Duration::from_millis(250);
-/// Longest single wait for the screen to change; bounds how long a command
-/// (an ack, a new client) can sit unprocessed.
+/// Short capture wait when there is no way to interrupt the OS call.
 const ACQUIRE_WAIT: Duration = Duration::from_millis(10);
+#[cfg(target_os = "linux")]
+const WAYLAND_WAIT: Duration = Duration::from_secs(1);
+#[cfg(windows)]
+const INPUT_POLL: Duration = Duration::from_millis(33);
 /// With nobody watching for this long, capture resources are released.
 const IDLE_RELEASE: Duration = Duration::from_secs(5);
 /// A client that has not acknowledged anything for this long is assumed to
@@ -141,35 +145,107 @@ struct Screen {
 impl Screen {
     /// Fold a captured frame into the buffer, recording changed tiles.
     fn update(&mut self, px: Pixels<'_>) {
-        let row_bytes = px.width * 4;
+        let stride = px.width * 4;
+        if stride == 0 || px.height == 0 {
+            return;
+        }
         if (px.width, px.height) != (self.width, self.height) {
             self.width = px.width;
             self.height = px.height;
             self.cols = px.width.div_ceil(TILE);
             self.rows = px.height.div_ceil(TILE);
-            self.buf = vec![0; row_bytes * px.height];
-            for y in 0..px.height {
-                self.buf[y * row_bytes..][..row_bytes]
-                    .copy_from_slice(&px.data[y * px.stride..][..row_bytes]);
-            }
-            self.changed = vec![true; self.cols * self.rows];
-            return;
-        }
-        self.changed.fill(false);
-        let tile_bytes = TILE * 4;
-        for y in 0..px.height {
-            let src = &px.data[y * px.stride..][..row_bytes];
-            let dst = &mut self.buf[y * row_bytes..][..row_bytes];
-            let flags = &mut self.changed[(y / TILE) * self.cols..][..self.cols];
-            for ((s, d), flag) in
-                src.chunks(tile_bytes).zip(dst.chunks_mut(tile_bytes)).zip(flags.iter_mut())
-            {
-                if s != d {
-                    d.copy_from_slice(s);
-                    *flag = true;
+            self.changed.resize(self.cols * self.rows, true);
+            self.changed.fill(true);
+            let len = stride * px.height;
+            self.buf.clear();
+            if !px.y_invert && !px.swap_rb && px.stride == stride {
+                self.buf.extend_from_slice(&px.data[..len]);
+            } else {
+                self.buf.resize(len, 0);
+                for (y, dst) in self.buf.chunks_exact_mut(stride).enumerate() {
+                    copy_pixels(dst, source_row(&px, y), px.swap_rb);
                 }
             }
+            return;
         }
+
+        let damage = px.damage.filter(|rects| !rects.is_empty());
+        if let Some(rects) = damage {
+            self.changed.fill(false);
+            for r in rects {
+                let right = r.right().min(px.width);
+                let bottom = r.bottom().min(px.height);
+                if r.x >= right || r.y >= bottom {
+                    continue;
+                }
+                for y in r.y..bottom {
+                    let src = source_row(&px, y);
+                    let dst = &mut self.buf[y * stride..][..stride];
+                    let flags = &mut self.changed[y / TILE * self.cols..][..self.cols];
+                    for (col, flag) in flags.iter_mut().enumerate().take(right.div_ceil(TILE)).skip(r.x / TILE) {
+                        let start = r.x.max(col * TILE) * 4;
+                        let end = right.min((col + 1) * TILE) * 4;
+                        diff_pixels(&mut dst[start..end], &src[start..end], flag, px.swap_rb);
+                    }
+                }
+            }
+            return;
+        }
+
+        let diff_band = |(band, (dst, flags)): (usize, (&mut [u8], &mut [bool]))| {
+            flags.fill(false);
+            for (row, dst) in dst.chunks_exact_mut(stride).enumerate() {
+                let src = source_row(&px, band * TILE + row);
+                for ((dst, src), flag) in dst.chunks_mut(TILE * 4).zip(src.chunks(TILE * 4)).zip(&mut *flags) {
+                    diff_pixels(dst, src, flag, px.swap_rb);
+                }
+            }
+        };
+        if self.rows >= 4 {
+            self.buf.par_chunks_mut(stride * TILE)
+                .zip(self.changed.par_chunks_mut(self.cols))
+                .enumerate()
+                .for_each(diff_band);
+        } else {
+            self.buf.chunks_mut(stride * TILE)
+                .zip(self.changed.chunks_mut(self.cols))
+                .enumerate()
+                .for_each(diff_band);
+        }
+    }
+}
+
+const RGB_MASK: u32 = 0x00FF_FFFF;
+
+fn source_row<'a>(px: &Pixels<'a>, y: usize) -> &'a [u8] {
+    let y = if px.y_invert { px.height - 1 - y } else { y };
+    &px.data[y * px.stride..][..px.width * 4]
+}
+
+fn copy_pixels(dst: &mut [u8], src: &[u8], swap_rb: bool) {
+    if swap_rb {
+        for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0) {
+            *d = [s[2], s[1], s[0], s[3]];
+        }
+    } else {
+        dst.copy_from_slice(src);
+    }
+}
+
+fn diff_pixels(dst: &mut [u8], src: &[u8], changed: &mut bool, swap_rb: bool) {
+    let different = if swap_rb {
+        dst.as_chunks::<4>().0.iter().zip(src.as_chunks::<4>().0)
+            .any(|(d, s)| [d[0], d[1], d[2]] != [s[2], s[1], s[0]])
+    } else {
+        // A reduction lets the compiler compare several pixels at once,
+        // while the mask removes the undefined byte from every comparison.
+        let difference = dst.as_chunks::<4>().0.iter().zip(src.as_chunks::<4>().0)
+            .fold(0, |bits, (&d, &s)| bits | (u32::from_le_bytes(d) ^ u32::from_le_bytes(s)));
+        difference & RGB_MASK != 0
+    };
+    if different {
+        copy_pixels(dst, src, swap_rb);
+        *changed = true;
     }
 }
 
@@ -190,11 +266,29 @@ struct Session {
     seq: u32,
     acked: u32,
     last_send: Instant,
+    last_moving: Option<Instant>,
     cursor: &'static str,
     blocked: bool,
 }
 
 impl Session {
+    fn in_flight(&self) -> u32 {
+        self.seq.wrapping_sub(self.acked)
+    }
+
+    fn send_ready_at(&self) -> Option<Instant> {
+        (self.in_flight() >= MAX_INFLIGHT).then_some(self.last_send + STALL)
+    }
+
+    fn can_capture(&self, now: Instant) -> bool {
+        self.visible && (self.dims == (0, 0) || self.send_ready_at().is_none_or(|at| at <= now))
+    }
+
+    fn moving_ready_at(&self) -> Option<Instant> {
+        self.last_moving.filter(|_| self.view.fps > 0)
+            .map(|last| last + Duration::from_secs_f64(1.0 / self.view.fps as f64))
+    }
+
     fn send_text(&self, text: String) {
         (self.tx)(Out::Text(text));
     }
@@ -228,32 +322,47 @@ impl Tiles {
         self.changed_at = vec![now; count];
     }
 
+    fn refine_deadlines(&self) -> impl Iterator<Item = (usize, Instant)> + '_ {
+        self.lossy.iter().zip(&self.dirty).zip(&self.changed_at).enumerate()
+            .filter(|&(_, ((lossy, dirty), _))| *lossy && !*dirty)
+            .map(|(t, (_, changed_at))| (t, *changed_at + REFINE_AFTER))
+    }
+
     /// Pick the next frame's tiles. Stillness is judged per tile, so a small
     /// animation somewhere does not keep the rest of the screen blurry.
-    fn next(&mut self, now: Instant, fresh: bool) -> Option<(Vec<bool>, Pass)> {
-        let blank = vec![false; self.dirty.len()];
+    fn next(&mut self, now: Instant, fresh: bool, moving_ready: bool) -> Option<(Vec<bool>, Pass)> {
         if fresh {
             self.lossy.fill(false);
+            let blank = vec![false; self.dirty.len()];
             return Some((std::mem::replace(&mut self.dirty, blank), Pass::Fresh));
         }
         // Settled tiles go first: a one-off frame, and the moving regions
-        // are only a frame behind.
-        let settled: Vec<bool> = (0..self.dirty.len())
-            .map(|t| self.lossy[t] && !self.dirty[t] && now.duration_since(self.changed_at[t]) >= REFINE_AFTER)
-            .collect();
-        if settled.iter().any(|&t| t) {
-            for (l, &t) in self.lossy.iter_mut().zip(&settled) {
-                *l &= !t;
+        // can be sent immediately after it if there is room.
+        let settled = {
+            let mut ready = self.refine_deadlines().filter(|&(_, at)| at <= now);
+            ready.next().map(|(first, _)| {
+                let mut settled = vec![false; self.dirty.len()];
+                settled[first] = true;
+                for (t, _) in ready {
+                    settled[t] = true;
+                }
+                settled
+            })
+        };
+        if let Some(settled) = settled {
+            for (lossy, &refined) in self.lossy.iter_mut().zip(&settled) {
+                *lossy &= !refined;
             }
             return Some((settled, Pass::Refine));
         }
-        if self.dirty.iter().any(|&d| d) {
+        if moving_ready && self.dirty.contains(&true) {
             for t in 0..self.dirty.len() {
                 if self.dirty[t] {
                     self.lossy[t] = true;
                     self.changed_at[t] = now;
                 }
             }
+            let blank = vec![false; self.dirty.len()];
             return Some((std::mem::replace(&mut self.dirty, blank), Pass::Moving));
         }
         None
@@ -342,53 +451,94 @@ fn stack(tiles: &[bool], cols: usize, rows: usize, width: usize, height: usize, 
     done
 }
 
-/// Average `f`x`f` blocks of a region into a smaller BGRA buffer. Blocks cut
-/// off by the region's edge average only the pixels they have.
-fn downscale(screen: &Screen, r: Rect, f: usize) -> (Vec<u8>, usize, usize) {
+/// Visit one row of rounded block averages. Full blocks use a constant
+/// divisor of 4 or 16, and only partial edge blocks need a dynamic divisor.
+fn downscale_row<const F: usize>(screen: &Screen, r: Rect, oy: usize, mut emit: impl FnMut([u8; 3])) {
     let stride = screen.width * 4;
-    let (ow, oh) = (r.w.div_ceil(f), r.h.div_ceil(f));
-    let mut out = vec![255u8; ow * oh * 4];
-    let mut sums = vec![0u32; ow * 3];
-    for oy in 0..oh {
-        sums.fill(0);
-        let y0 = r.y + oy * f;
-        let rows = f.min(r.y + r.h - y0);
-        for y in y0..y0 + rows {
-            let line = &screen.buf[y * stride + r.x * 4..][..r.w * 4];
-            for (block, sum) in line.chunks(f * 4).zip(sums.chunks_exact_mut(3)) {
-                for px in block.chunks_exact(4) {
-                    sum[0] += px[0] as u32;
-                    sum[1] += px[1] as u32;
-                    sum[2] += px[2] as u32;
+    let y = r.y + oy * F;
+    let rows = F.min(r.y + r.h - y);
+    let first = y * stride + r.x * 4;
+    let lines: [&[[u8; 4]]; F] = std::array::from_fn(|dy| {
+        let offset = first + dy.min(rows - 1) * stride;
+        screen.buf[offset..][..r.w * 4].as_chunks::<4>().0
+    });
+    let full_width = r.w / F * F;
+    if rows == F {
+        for x in (0..full_width).step_by(F) {
+            let mut sum = [0u16; 3];
+            for line in lines {
+                for &[b, g, r, _] in &line[x..][..F] {
+                    sum[0] += u16::from(b);
+                    sum[1] += u16::from(g);
+                    sum[2] += u16::from(r);
                 }
             }
+            let shift = (F * F).trailing_zeros();
+            emit(sum.map(|v| ((v + (F * F / 2) as u16) >> shift) as u8));
         }
-        let dst = &mut out[oy * ow * 4..][..ow * 4];
-        for (ox, (px, sum)) in dst.chunks_exact_mut(4).zip(sums.chunks_exact(3)).enumerate() {
-            let n = (f.min(r.w - ox * f) * rows) as u32;
-            for c in 0..3 {
-                px[c] = ((sum[c] + n / 2) / n) as u8;
+    }
+    let edge_start = if rows == F { full_width } else { 0 };
+    for x in (edge_start..r.w).step_by(F) {
+        let cols = F.min(r.w - x);
+        let mut sum = [0u16; 3];
+        for line in &lines[..rows] {
+            for &[b, g, r, _] in &line[x..x + cols] {
+                sum[0] += u16::from(b);
+                sum[1] += u16::from(g);
+                sum[2] += u16::from(r);
             }
+        }
+        let count = (rows * cols) as u16;
+        emit(sum.map(|v| ((v + count / 2) / count) as u8));
+    }
+}
+
+/// Average blocks into packed BGRA so the JPEG encoder can use its
+/// SIMD color conversion at reduced resolutions.
+fn downscale(screen: &Screen, r: Rect, f: usize) -> (Vec<u8>, usize, usize) {
+    let (ow, oh) = (r.w.div_ceil(f), r.h.div_ceil(f));
+    let mut out = Vec::with_capacity(ow * oh * 4);
+    for oy in 0..oh {
+        let emit = |[b, g, r]: [u8; 3]| out.extend_from_slice(&[b, g, r, 255]);
+        match f {
+            2 => downscale_row::<2>(screen, r, oy, emit),
+            4 => downscale_row::<4>(screen, r, oy, emit),
+            _ => unreachable!("unsupported JPEG scale {f}"),
         }
     }
     (out, ow, oh)
 }
 
-/// A region shrunk by `factor`, as packed BGRA rows: borrowed from the
-/// screen when it already is (full-width rows at full size), else copied.
-fn region(screen: &Screen, r: Rect, factor: usize) -> (Cow<'_, [u8]>, usize, usize) {
-    let stride = screen.width * 4;
-    if factor > 1 {
-        let (buf, ow, oh) = downscale(screen, r, factor);
-        (Cow::Owned(buf), ow, oh)
-    } else if r.x == 0 && r.w == screen.width {
-        (Cow::Borrowed(&screen.buf[r.y * stride..(r.y + r.h) * stride]), r.w, r.h)
-    } else {
-        let mut buf = Vec::with_capacity(r.w * r.h * 4);
-        for y in r.y..r.y + r.h {
-            buf.extend_from_slice(&screen.buf[y * stride + r.x * 4..][..r.w * 4]);
+/// A JPEG region borrowed from the screen, with no packed intermediate.
+struct StridedBgra<'a> {
+    data: &'a [u8],
+    stride: usize,
+    width: u16,
+    height: u16,
+}
+
+impl ImageBuffer for StridedBgra<'_> {
+    fn get_jpeg_color_type(&self) -> JpegColorType {
+        JpegColorType::Ycbcr
+    }
+
+    fn width(&self) -> u16 {
+        self.width
+    }
+
+    fn height(&self) -> u16 {
+        self.height
+    }
+
+    fn fill_buffers(&self, y: u16, buffers: &mut [Vec<u8>; 4]) {
+        let line = &self.data[usize::from(y) * self.stride..][..usize::from(self.width) * 4];
+        let [luma, cb, cr, _] = buffers;
+        for &[b, g, r, _] in line.as_chunks::<4>().0 {
+            let (y, u, v) = rgb_to_ycbcr(r, g, b);
+            luma.push(y);
+            cb.push(u);
+            cr.push(v);
         }
-        (Cow::Owned(buf), r.w, r.h)
     }
 }
 
@@ -402,7 +552,7 @@ fn on_canvas(r: Rect, scale: usize) -> Rect {
 /// client's canvas (which is the screen shrunk by `scale`) and the bytes; the
 /// client stretches the image to fill that rectangle.
 fn encode_piece(screen: &Screen, r: Rect, scale: usize, factor: usize, quality: u8, full_chroma: bool) -> (Rect, Vec<u8>) {
-    let (pixels, ow, oh) = region(screen, r, factor);
+    let (ow, oh) = (r.w.div_ceil(factor), r.h.div_ceil(factor));
     let mut out = Vec::with_capacity(ow * oh / 3 + 1024);
     let mut encoder = Encoder::new(&mut out, quality);
     encoder.set_sampling_factor(if full_chroma {
@@ -410,83 +560,123 @@ fn encode_piece(screen: &Screen, r: Rect, scale: usize, factor: usize, quality: 
     } else {
         SamplingFactor::R_4_2_0
     });
-    encoder
-        .encode(&pixels, ow as u16, oh as u16, ColorType::Bgra)
-        .expect("JPEG encoding into memory cannot fail");
+    encoder.set_chroma_subsampling_method(ChromaSubsamplingMethod::Average);
+    let stride = screen.width * 4;
+    let data = &screen.buf[r.y * stride + r.x * 4..];
+    let result = if factor != 1 {
+        let (pixels, _, _) = downscale(screen, r, factor);
+        encoder.encode(&pixels, ow as u16, oh as u16, ColorType::Bgra)
+    } else if r.w == screen.width {
+        // Full-width rows are already packed, so keep SIMD colour conversion.
+        encoder.encode(data, ow as u16, oh as u16, ColorType::Bgra)
+    } else {
+        encoder.encode_image(StridedBgra { data, stride, width: ow as u16, height: oh as u16 })
+    };
+    result.expect("JPEG encoding into memory cannot fail");
     (on_canvas(r, scale), out)
 }
 
 /// Colour of tiles painted over in a lossless piece (they go out as JPEG).
 const FLAT: [u8; 3] = [128, 128, 128];
 
-/// Losslessly encode one region at the canvas scale as WebP. Tiles not in
-/// `exact` are painted flat: they are sent as JPEG and drawn over it. At full
-/// size the pixels are read from the screen in place, with no copy; at half
-/// size from the shrunk copy, a quarter of the region.
+/// Losslessly encode one region at the canvas scale as WebP. Read each exact
+/// tile span in place, or average it at half size. JPEG covers the flat spans.
 fn encode_lossless(screen: &Screen, r: Rect, scale: usize, exact: &[bool]) -> (Rect, Vec<u8>) {
-    let (pixels, stride) = if scale > 1 {
-        let (buf, ow, _) = downscale(screen, r, scale);
-        (Cow::Owned(buf), ow * 4)
-    } else {
-        (Cow::Borrowed(&screen.buf[(r.y * screen.width + r.x) * 4..]), screen.width * 4)
-    };
     let (ow, oh) = (r.w.div_ceil(scale), r.h.div_ceil(scale));
     let out = webp::encode(ow, oh, |oy, row| {
-        let line = &pixels[oy * stride..][..ow * 4];
-        let tiles = &exact[(r.y + oy * scale) / TILE * screen.cols..];
-        for (ox, (dst, px)) in row.iter_mut().zip(line.chunks_exact(4)).enumerate() {
-            // BGRA in, with an undefined 4th byte; RGB out.
-            *dst = if tiles[(r.x + ox * scale) / TILE] { [px[2], px[1], px[0]] } else { FLAT };
+        let y = r.y + oy * scale;
+        let tiles = &exact[y / TILE * screen.cols + r.x / TILE..];
+        for (col, (span, &is_exact)) in row.chunks_mut(TILE / scale).zip(tiles).enumerate() {
+            if !is_exact {
+                span.fill(FLAT);
+                continue;
+            }
+            let x = r.x + col * TILE;
+            if scale == 1 {
+                let line = &screen.buf[(y * screen.width + x) * 4..][..span.len() * 4];
+                for (dst, &[b, g, r, _]) in span.iter_mut().zip(line.as_chunks::<4>().0) {
+                    *dst = [r, g, b];
+                }
+            } else {
+                let tile = Rect { x, w: TILE.min(r.x + r.w - x), ..r };
+                let mut dst = span.iter_mut();
+                downscale_row::<2>(screen, tile, oy, |[b, g, r]| *dst.next().unwrap() = [r, g, b]);
+            }
         }
     });
     (on_canvas(r, scale), out)
 }
 
-/// Whether a tile looks like text or flat UI, which lossless compression
-/// packs smaller than JPEG: at least three quarters of its pixels repeat the
-/// one to their left or above. Photos, and gradients with dithering noise,
-/// have few repeats however few colours they use.
+/// Whether at least three quarters of a tile's pixels repeat the one to
+/// their left or above. Ignore the undefined fourth byte.
 fn looks_flat(screen: &Screen, tile: usize) -> bool {
     let (x0, y0) = (tile % screen.cols * TILE, tile / screen.cols * TILE);
     let (w, h) = (TILE.min(screen.width - x0), TILE.min(screen.height - y0));
     let stride = screen.width * 4;
-    // The 4th byte of a captured pixel is undefined.
-    let px = |x: usize, y: usize| u32::from_le_bytes(screen.buf[y * stride + x * 4..][..4].try_into().unwrap()) & 0xFF_FFFF;
+    let read = |&pixel: &[u8; 4]| u32::from_le_bytes(pixel) & RGB_MASK;
+    let max_misses = w * h / 4;
+    let min_repeats = w * h - max_misses;
+    let mut misses = 0;
     let mut repeats = 0;
+    let mut above = None;
     for y in y0..y0 + h {
-        for x in x0..x0 + w {
-            let v = px(x, y);
-            if (x > x0 && v == px(x - 1, y)) || (y > y0 && v == px(x, y - 1)) {
+        let row = screen.buf[y * stride + x0 * 4..][..w * 4].as_chunks::<4>().0;
+        let mut prev_x = u32::MAX;
+        for (x, value) in row.iter().map(read).enumerate() {
+            if value == prev_x || above.is_some_and(|row: &[[u8; 4]]| value == read(&row[x])) {
                 repeats += 1;
+                if repeats >= min_repeats {
+                    return true;
+                }
+            } else {
+                misses += 1;
+                if misses > max_misses {
+                    return false;
+                }
             }
+            prev_x = value;
         }
+        above = Some(row);
     }
-    repeats * 4 >= w * h * 3
+    repeats >= min_repeats
 }
 
-/// Photo tiles widened, within each row's runs of covered tiles, to span from
-/// the first photo tile to the last: fewer, larger JPEGs, never over a tile
-/// the frame does not send.
+/// Bridge small flat gaps between photo tiles within a covered row run.
 fn photo_spans(covered: &[bool], photo: &[bool], cols: usize) -> Vec<bool> {
+    const MAX_PHOTO_GAP: usize = 2;
     let mut spans = vec![false; covered.len()];
     for row in (0..covered.len()).step_by(cols) {
-        let mut c = 0;
-        while c < cols {
-            if !covered[row + c] {
-                c += 1;
-                continue;
-            }
-            let start = c;
-            while c < cols && covered[row + c] {
-                c += 1;
-            }
-            let run = row + start..row + c;
-            if let (Some(a), Some(b)) = (run.clone().position(|t| photo[t]), run.clone().rposition(|t| photo[t])) {
-                spans[run.start + a..=run.start + b].fill(true);
+        let mut last_photo = None;
+        for t in row..row + cols {
+            if !covered[t] {
+                last_photo = None;
+            } else if photo[t] {
+                let from = last_photo.filter(|&last| t - last <= MAX_PHOTO_GAP + 1).unwrap_or(t);
+                spans[from..=t].fill(true);
+                last_photo = Some(t);
             }
         }
     }
     spans
+}
+
+/// Tight tile-aligned bounds of the exact pixels within a lossless chunk.
+fn exact_bounds(r: Rect, exact: &[bool], cols: usize) -> Option<Rect> {
+    let mut left = r.x + r.w;
+    let mut top = r.y + r.h;
+    let mut right = r.x;
+    let mut bottom = r.y;
+    for y in (r.y..r.y + r.h).step_by(TILE) {
+        for x in (r.x..r.x + r.w).step_by(TILE) {
+            if exact[y / TILE * cols + x / TILE] {
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max((x + TILE).min(r.x + r.w));
+                bottom = bottom.max((y + TILE).min(r.y + r.h));
+            }
+        }
+    }
+    (left < right).then(|| Rect { x: left, y: top, w: right - left, h: bottom - top })
 }
 
 /// Mark the tiles a list of rectangles covers.
@@ -557,16 +747,10 @@ fn frame_message(screen: &Screen, tiles: &[bool], scale: usize, quality: u8, fla
         // over some flat tiles, which are then not exact after all.
         let spans = photo_spans(&covered, &photo, screen.cols);
         let jpeg = stack(&spans, screen.cols, screen.rows, screen.width, screen.height, false);
-        let mut drawn_over = vec![false; tiles.len()];
-        cover(&jpeg, screen.cols, &mut drawn_over);
-        for (e, &d) in exact.iter_mut().zip(&drawn_over) {
+        for (e, &d) in exact.iter_mut().zip(&spans) {
             *e &= !d;
         }
-        let has_exact = |r: &Rect| {
-            (r.y / TILE..(r.y + r.h).div_ceil(TILE))
-                .any(|ty| exact[ty * screen.cols + r.x / TILE..ty * screen.cols + (r.x + r.w).div_ceil(TILE)].contains(&true))
-        };
-        let lossless: Vec<Rect> = chunks(rects).into_iter().filter(has_exact).collect();
+        let lossless: Vec<Rect> = chunks(rects).into_iter().filter_map(|r| exact_bounds(r, &exact, screen.cols)).collect();
         (lossless, chunks(jpeg), exact)
     } else {
         (Vec::new(), chunks(rects), Vec::new())
@@ -621,7 +805,11 @@ struct Engine {
     sessions: Vec<Session>,
     shared: Arc<Shared>,
     interval: Duration,
-    last_capture: Instant,
+    last_capture: Option<Instant>,
+    wanted: Vec<usize>,
+    poll_capture: bool,
+    #[cfg(windows)]
+    input_poll_at: Option<Instant>,
     retry_at: Option<Instant>,
     failing: bool,
     stats: Stats,
@@ -643,19 +831,33 @@ pub fn run(rx: Receiver<Cmd>, shared: Arc<Shared>, fps: u32) {
         sessions: Vec::new(),
         shared,
         interval: Duration::from_secs_f64(1.0 / fps as f64),
-        last_capture: Instant::now(),
+        last_capture: None,
+        wanted: Vec::new(),
+        poll_capture: false,
+        #[cfg(windows)]
+        input_poll_at: None,
         retry_at: None,
         failing: false,
         stats: Stats::default(),
     };
+    #[cfg(target_os = "linux")]
+    e.cap.set_wakeup(e.shared.engine.wakeup.clone());
     e.publish_monitors();
     loop {
+        #[cfg(target_os = "linux")]
+        if let Some(wakeup) = &e.shared.engine.wakeup {
+            wakeup.clear();
+        }
+        while let Ok(cmd) = rx.try_recv() {
+            e.handle(cmd);
+        }
         if !e.sessions.iter().any(|s| s.visible) {
-            // Nobody is watching: no capture at all.
             let cmd = match rx.recv_timeout(IDLE_RELEASE) {
                 Ok(cmd) => cmd,
                 Err(RecvTimeoutError::Timeout) => {
                     e.cap.release();
+                    e.screens.clear();
+                    e.last_capture = None;
                     match rx.recv() {
                         Ok(cmd) => cmd,
                         Err(_) => return,
@@ -666,24 +868,53 @@ pub fn run(rx: Receiver<Cmd>, shared: Arc<Shared>, fps: u32) {
             e.handle(cmd);
             continue;
         }
-        while let Ok(cmd) = rx.try_recv() {
-            e.handle(cmd);
+
+        let mut now = Instant::now();
+        let mut send_at = e.send_deadline(now);
+        if send_at.is_some_and(|at| at <= now) {
+            e.flush_all(false);
+            now = Instant::now();
+            send_at = e.send_deadline(now);
         }
-        // Wait out a capture failure, or the rest of this frame's time slot,
-        // while still serving commands.
-        let now = Instant::now();
-        let ready_at = e.retry_at.unwrap_or(e.last_capture + e.capture_interval());
-        if now < ready_at {
-            match rx.recv_timeout(ready_at - now) {
+        let room = e.sessions.iter().any(|s| s.can_capture(now));
+        let first = e.sessions.iter().any(|s| s.visible && s.dims == (0, 0) && !e.has_pixels(s.mon));
+        let ready_at = e.retry_at.or_else(|| {
+            e.last_capture.filter(|_| !first).map(|last| last + e.capture_interval())
+        });
+        if !room || ready_at.is_some_and(|at| at > now) {
+            // Acknowledgements can wake this wait immediately when all
+            // clients are backed up, including on Windows.
+            let mut wait = if room { ready_at.unwrap() - now } else { ACQUIRE_WAIT };
+            if let Some(at) = send_at {
+                wait = wait.min(at.saturating_duration_since(now));
+            }
+            #[cfg(windows)]
+            {
+                e.poll_input(now, false);
+                wait = wait.min(e.input_poll_at.unwrap().saturating_duration_since(now));
+            }
+            match rx.recv_timeout(wait) {
                 Ok(cmd) => e.handle(cmd),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
             continue;
         }
+
         e.retry_at = None;
-        e.capture();
-        e.flush_all();
+        let poll_capture = std::mem::take(&mut e.poll_capture);
+        let mut wait = if first || poll_capture { Duration::ZERO } else { e.capture_wait() };
+        if let Some(at) = send_at {
+            wait = wait.min(at.saturating_duration_since(now));
+        }
+        let captured = e.capture(wait, now);
+        if captured {
+            e.flush_all(true);
+        }
+        #[cfg(windows)]
+        if !captured {
+            e.poll_input(Instant::now(), false);
+        }
     }
 }
 
@@ -693,6 +924,39 @@ impl Engine {
     /// slower rate sends less without losing anything.
     fn capture_interval(&self) -> Duration {
         capture_interval(self.interval, self.sessions.iter().filter(|s| s.visible).map(|s| s.view.fps))
+    }
+
+    fn has_pixels(&self, mon: usize) -> bool {
+        self.screens.get(&mon).is_some_and(|screen| screen.width > 0)
+    }
+
+    fn capture_wait(&self) -> Duration {
+        #[cfg(target_os = "linux")]
+        if self.shared.engine.wakeup.is_some() {
+            // A single monitor's pending request can wait for the Wayland
+            // fd. With several, periodically check each one's queue state.
+            let mut visible = self.sessions.iter().filter(|s| s.visible);
+            if let Some(first) = visible.next() {
+                if visible.all(|s| s.mon == first.mon) {
+                    return WAYLAND_WAIT;
+                }
+            }
+        }
+        ACQUIRE_WAIT
+    }
+
+    /// The next pending send, including a capture-independent refine.
+    fn send_deadline(&self, now: Instant) -> Option<Instant> {
+        self.sessions.iter().filter(|s| s.visible).filter_map(|s| {
+            let screen = self.screens.get(&s.mon).filter(|screen| screen.width > 0)?;
+            let pending = if s.dims != (screen.width, screen.height) {
+                now
+            } else {
+                let moving = s.tiles.dirty.contains(&true).then(|| s.moving_ready_at().unwrap_or(now));
+                s.tiles.refine_deadlines().map(|(_, at)| at).chain(moving).min()?
+            };
+            Some(pending.max(s.send_ready_at().unwrap_or(now)))
+        }).min()
     }
 
     /// Returns true when the layout changed and there is a display to capture.
@@ -727,6 +991,7 @@ impl Engine {
         let s = &mut self.sessions[index];
         s.mon = s.view.mon.min(monitors.len().saturating_sub(1));
         s.dims = (0, 0);
+        s.pending_since = None;
         let list: Vec<_> = monitors
             .iter()
             .map(|m| serde_json::json!({ "w": m.width, "h": m.height }))
@@ -741,6 +1006,22 @@ impl Engine {
             })
             .to_string(),
         );
+    }
+
+    fn flush_fresh(&mut self, index: usize, was_watching: bool, now: Instant) {
+        if !self.sessions[index].visible {
+            return;
+        }
+        let mon = self.sessions[index].mon;
+        if !self.has_pixels(mon) {
+            return;
+        }
+        // If no visible session was watching this monitor, poll once without
+        // blocking so a warm cached buffer picks up any change since it paused.
+        if !was_watching {
+            self.capture(Duration::ZERO, now);
+        }
+        self.flush(index, Instant::now());
     }
 
     fn handle(&mut self, cmd: Cmd) {
@@ -759,10 +1040,15 @@ impl Engine {
                     seq: 0,
                     acked: 0,
                     last_send: now,
+                    last_moving: None,
                     cursor: "",
                     blocked: false,
                 });
-                self.hello(self.sessions.len() - 1);
+                let i = self.sessions.len() - 1;
+                self.hello(i);
+                let mon = self.sessions[i].mon;
+                let was_watching = self.sessions[..i].iter().any(|s| s.visible && s.mon == mon);
+                self.flush_fresh(i, was_watching, now);
             }
             Cmd::Remove { id } => self.sessions.retain(|s| s.id != id),
             Cmd::Ack { id, seq } => {
@@ -770,20 +1056,31 @@ impl Engine {
                     let s = &mut self.sessions[i];
                     // Acks can only move forward (seq wraps after 4 billion frames).
                     if (seq.wrapping_sub(s.acked) as i32) > 0 && (s.seq.wrapping_sub(seq) as i32) >= 0 {
+                        let blocked = s.in_flight() >= MAX_INFLIGHT;
                         s.acked = seq;
+                        self.poll_capture |= s.visible && blocked && s.in_flight() < MAX_INFLIGHT;
                     }
                     self.flush(i, Instant::now());
                 }
             }
             Cmd::Visible { id, visible } => {
-                if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+                if let Some(i) = self.sessions.iter().position(|s| s.id == id) {
+                    let mon = self.sessions[i].mon;
+                    let was_watching = self.sessions.iter().enumerate().any(|(j, s)| j != i && s.visible && s.mon == mon);
+                    let was_visible = self.sessions[i].visible;
+                    let s = &mut self.sessions[i];
                     s.visible = visible;
                     // Changes from while it was asleep are not latency.
                     s.pending_since = None;
+                    if visible && !was_visible {
+                        self.flush_fresh(i, was_watching, Instant::now());
+                    }
                 }
             }
             Cmd::Configure { id, change } => {
                 if let Some(i) = self.sessions.iter().position(|s| s.id == id) {
+                    let prev_mon = self.sessions[i].mon;
+                    let was_visible = self.sessions[i].visible;
                     let v = &mut self.sessions[i].view;
                     let before = *v;
                     v.mon = change.mon.unwrap_or(v.mon);
@@ -795,50 +1092,49 @@ impl Engine {
                     let resend = |v: &View| (v.mon, v.quality, v.scale, v.lossless);
                     if resend(v) != resend(&before) {
                         self.hello(i); // clamps the monitor index and forces a full resend
+                        let mon = self.sessions[i].mon;
+                        let was_watching = (was_visible && mon == prev_mon)
+                            || self.sessions.iter().enumerate().any(|(j, s)| j != i && s.visible && s.mon == mon);
+                        self.flush_fresh(i, was_watching, Instant::now());
                     }
                 }
             }
         }
     }
 
-    /// Capture every monitor a visible session is looking at.
-    fn capture(&mut self) {
-        let mut wanted: Vec<usize> =
-            self.sessions.iter().filter(|s| s.visible).map(|s| s.mon).collect();
-        wanted.sort_unstable();
-        wanted.dedup();
-        // If a client is already owed something it has room for, don't sit
-        // waiting for the screen to change before sending it. (One waiting
-        // on acks is not urgent: polling for it would spin the CPU.)
-        let urgent = self.sessions.iter().any(|s| {
-            s.visible
-                && (s.dims == (0, 0)
-                    || (s.seq.wrapping_sub(s.acked) < MAX_INFLIGHT && s.tiles.dirty.iter().any(|&d| d)))
-        });
+    /// Capture monitors with a session ready to receive new pixels.
+    fn capture(&mut self, timeout: Duration, now: Instant) -> bool {
+        self.wanted.clear();
+        self.wanted.extend(self.sessions.iter().filter(|s| s.can_capture(now)).map(|s| s.mon));
+        self.wanted.sort_unstable();
+        self.wanted.dedup();
 
-        for (n, &mon) in wanted.iter().enumerate() {
-            let timeout = if urgent || n > 0 { Duration::ZERO } else { ACQUIRE_WAIT };
+        let mut captured_frame = false;
+        for (n, &mon) in self.wanted.iter().enumerate() {
+            let timeout = if n == 0 { timeout } else { Duration::ZERO };
             let screen = self.screens.entry(mon).or_default();
             match self.cap.acquire(mon, timeout, |px| screen.update(px)) {
                 Ok(true) => {
                     let now = Instant::now();
-                    self.last_capture = now;
+                    captured_frame = true;
                     self.stats.capture += self.cap.last_cost;
                     // The image is as of just before it was copied off the GPU.
                     let captured = now.checked_sub(self.cap.last_cost).unwrap_or(now);
+                    self.last_capture = Some(captured);
                     if self.failing {
                         self.failing = false;
                         crate::log!("capture recovered");
                     }
-                    let changed = screen.changed.iter().any(|&c| c);
-                    for s in self.sessions.iter_mut().filter(|s| s.mon == mon) {
-                        if s.dims == (screen.width, screen.height) {
-                            for (d, c) in s.tiles.dirty.iter_mut().zip(&screen.changed) {
-                                *d |= *c;
+                    if screen.changed.contains(&true) {
+                        for s in self.sessions.iter_mut().filter(|s| s.mon == mon) {
+                            if s.dims == (screen.width, screen.height) {
+                                for (d, c) in s.tiles.dirty.iter_mut().zip(&screen.changed) {
+                                    *d |= *c;
+                                }
                             }
-                        }
-                        if changed && s.visible {
-                            s.pending_since.get_or_insert(captured);
+                            if s.visible {
+                                s.pending_since.get_or_insert(captured);
+                            }
                         }
                     }
                 }
@@ -854,16 +1150,25 @@ impl Engine {
                     if !self.publish_monitors() {
                         self.retry_at = Some(Instant::now() + RETRY);
                     }
-                    return;
+                    break;
                 }
             }
         }
+        captured_frame
     }
 
-    fn flush_all(&mut self) {
+    fn poll_input(&mut self, now: Instant, captured: bool) {
+        #[cfg(windows)]
+        {
+            if !captured && self.input_poll_at.is_some_and(|at| at > now) {
+                return;
+            }
+            self.input_poll_at = Some(now + INPUT_POLL);
+        }
+        #[cfg(target_os = "linux")]
+        let _ = (now, captured);
         let cursor = platform::cursor_name();
         let blocked = platform::input_blocked();
-        let now = Instant::now();
         for i in 0..self.sessions.len() {
             let s = &mut self.sessions[i];
             if !s.visible {
@@ -877,26 +1182,38 @@ impl Engine {
                 s.blocked = blocked;
                 s.send_text(serde_json::json!({ "t": "blocked", "v": blocked }).to_string());
             }
-            self.flush(i, now);
         }
-        self.report(now);
+    }
+
+    fn flush_all(&mut self, captured: bool) {
+        self.poll_input(Instant::now(), captured);
+        for i in 0..self.sessions.len() {
+            self.flush(i, Instant::now());
+        }
+        self.report(Instant::now());
     }
 
     /// Send session `index` whatever it is owed, if it has room for a frame.
     fn flush(&mut self, index: usize, now: Instant) {
+        if self.flush_once(index, now) == Some(Pass::Refine)
+            && self.sessions[index].tiles.dirty.contains(&true)
+        {
+            self.flush_once(index, Instant::now());
+        }
+    }
+
+    fn flush_once(&mut self, index: usize, now: Instant) -> Option<Pass> {
         let s = &mut self.sessions[index];
-        let Some(screen) = self.screens.get(&s.mon) else { return };
+        let screen = self.screens.get(&s.mon)?;
         if !s.visible || screen.width == 0 {
-            return;
+            return None;
         }
         // A whole new picture (just connected, or switched monitor, quality or
         // resolution) goes out sharp straight away rather than blurry and
         // then again sharp.
-        // (Checked before the room for a frame, so that a fresh picture still
-        // counts as fresh once there is room.)
-        if s.seq.wrapping_sub(s.acked) >= MAX_INFLIGHT {
-            if now.duration_since(s.last_send) < STALL {
-                return;
+        if let Some(at) = s.send_ready_at() {
+            if at > now {
+                return None;
             }
             s.acked = s.seq;
         }
@@ -906,7 +1223,8 @@ impl Engine {
             s.tiles.reset(screen.cols * screen.rows, now);
         }
 
-        let Some((tiles, pass)) = s.tiles.next(now, fresh) else { return };
+        let moving_ready = s.moving_ready_at().is_none_or(|at| at <= now);
+        let (tiles, pass) = s.tiles.next(now, fresh, moving_ready)?;
         let sharp = || {
             let (quality, full_chroma) = s.view.quality.still();
             (quality, FLAG_REFINE | if full_chroma { FLAG_FULL_CHROMA } else { 0 })
@@ -936,8 +1254,12 @@ impl Engine {
         self.stats.encode += done - started;
         self.stats.frames += 1;
         self.stats.bytes += msg.len();
-        s.last_send = now;
+        s.last_send = done;
+        if pass == Pass::Moving {
+            s.last_moving = Some(now);
+        }
         (s.tx)(Out::Binary(msg));
+        Some(pass)
     }
 
     /// With --verbose, summarise throughput every couple of seconds.
@@ -971,7 +1293,7 @@ mod tests {
     fn screen(width: usize, height: usize) -> Screen {
         let mut s = Screen::default();
         let data = vec![0u8; width * height * 4];
-        s.update(Pixels { width, height, stride: width * 4, data: &data });
+        s.update(Pixels::bgra(width, height, width * 4, &data));
         s
     }
 
@@ -995,12 +1317,68 @@ mod tests {
         let mut s = screen(200, 100);
         let stride = 200 * 4 + 32; // padded rows, as GPUs like to hand out
         let data = frame(100, stride, &[(70, 10), (199, 99)]);
-        s.update(Pixels { width: 200, height: 100, stride, data: &data });
+        s.update(Pixels::bgra(200, 100, stride, &data));
         let flagged: Vec<usize> = (0..8).filter(|&i| s.changed[i]).collect();
         assert_eq!(flagged, vec![1, 7]); // tile (1,0) and the partial tile (3,1)
-        s.update(Pixels { width: 200, height: 100, stride, data: &data });
+        s.update(Pixels::bgra(200, 100, stride, &data));
         assert!(s.changed.iter().all(|&c| !c), "identical frame changes nothing");
         assert_eq!(s.buf[10 * 800 + 70 * 4], 200);
+    }
+
+    #[test]
+    fn full_diff_normalizes_layout_and_ignores_alpha() {
+        let (width, height) = (70, TILE * 4 + 1);
+        let mut s = painted(width, height, |x, y| [x as u8, y as u8, 123]);
+        let stride = width * 4 + 8;
+        let mut data = vec![0; stride * height];
+        for y in 0..height {
+            for x in 0..width {
+                let at = (height - 1 - y) * stride + x * 4;
+                data[at..at + 4].copy_from_slice(&[123, y as u8, x as u8, 255]);
+            }
+        }
+        fn pixels(data: &[u8], width: usize, height: usize, stride: usize) -> Pixels<'_> {
+            Pixels { y_invert: true, swap_rb: true, ..Pixels::bgra(width, height, stride, data) }
+        }
+        s.update(pixels(&data, width, height, stride));
+        assert!(!s.changed.contains(&true));
+
+        data[66 * 4] = 42;
+        s.update(pixels(&data, width, height, stride));
+        assert_eq!(s.changed.iter().position(|&changed| changed), Some(9));
+        assert_eq!(s.changed.iter().filter(|&&changed| changed).count(), 1);
+        let at = ((height - 1) * width + 66) * 4;
+        assert_eq!(&s.buf[at..at + 3], &[66, 0, 42]);
+
+        let mut fresh = Screen::default();
+        fresh.update(pixels(&data, width, height, stride));
+        assert!(fresh.changed.iter().all(|&changed| changed));
+        assert_eq!(&fresh.buf[at..at + 3], &[66, 0, 42]);
+    }
+
+    #[test]
+    fn damage_reads_only_reported_pixels_and_marks_intersecting_tiles() {
+        use crate::platform::DamageRect;
+
+        let mut s = screen(130, 65);
+        let stride = s.width * 4;
+        let data = frame(s.height, stride, &[(62, 63), (63, 63), (64, 64), (129, 64)]);
+        let damage = [
+            DamageRect { x: 63, y: 63, w: 2, h: 2 },
+            DamageRect { x: 129, y: 64, w: 20, h: 20 },
+            DamageRect { x: 200, y: 100, w: 20, h: 20 },
+        ];
+        s.update(Pixels { damage: Some(&damage), ..Pixels::bgra(130, 65, stride, &data) });
+        assert_eq!(s.changed, [true, false, false, false, true, true]);
+        assert_eq!(s.buf[63 * stride + 62 * 4], 0);
+        assert_eq!(s.buf[63 * stride + 63 * 4], 200);
+
+        let mut alpha = s.buf.clone();
+        for px in alpha.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        s.update(Pixels::bgra(130, 65, stride, &alpha));
+        assert!(!s.changed.contains(&true));
     }
 
     #[test]
@@ -1047,7 +1425,7 @@ mod tests {
     fn frame_message_layout() {
         let mut s = screen(200, 150);
         let data = frame(150, 800, &[(5, 5)]);
-        s.update(Pixels { width: 200, height: 150, stride: 800, data: &data });
+        s.update(Pixels::bgra(200, 150, 800, &data));
         let Frame { msg, exact, .. } = frame_message(&s, &s.changed, 1, 70, FLAG_REFINE, 7);
         assert!(exact.is_empty(), "nothing is lossless without the flag");
         assert_eq!(msg[0], 1);
@@ -1125,32 +1503,33 @@ mod tests {
         let mut tiles = Tiles::default();
         tiles.reset(4, t0);
 
-        let (sent, pass) = tiles.next(at(0), true).unwrap();
+        let (sent, pass) = tiles.next(at(0), true, true).unwrap();
         assert_eq!((on(&sent), pass), (vec![0, 1, 2, 3], Pass::Fresh));
-        assert!(tiles.next(at(1), false).is_none(), "a fresh picture is already sharp");
+        assert!(tiles.next(at(1), false, true).is_none(), "a fresh picture is already sharp");
 
         // A scroll changes everything, then a spinner keeps animating tile 3.
         tiles.dirty = vec![true; 4];
-        let (sent, pass) = tiles.next(at(10), false).unwrap();
+        let (sent, pass) = tiles.next(at(10), false, true).unwrap();
         assert_eq!((on(&sent), pass), (vec![0, 1, 2, 3], Pass::Moving));
         for ms in (30..250).step_by(20) {
             tiles.dirty[3] = true;
-            let (sent, pass) = tiles.next(at(ms), false).unwrap();
+            let (sent, pass) = tiles.next(at(ms), false, true).unwrap();
             assert_eq!((on(&sent), pass), (vec![3], Pass::Moving), "at {ms} ms");
         }
         // 250 ms after the scroll, tiles 0-2 are sharpened even though 3 still moves...
         tiles.dirty[3] = true;
-        let (sent, pass) = tiles.next(at(260), false).unwrap();
+        let (sent, pass) = tiles.next(at(260), false, false).unwrap();
         assert_eq!((on(&sent), pass), (vec![0, 1, 2], Pass::Refine));
-        // ...and the spinner's update goes out right after.
-        let (sent, pass) = tiles.next(at(261), false).unwrap();
+        // The spinner's update waits for its moving-frame deadline.
+        assert!(tiles.next(at(260), false, false).is_none());
+        let (sent, pass) = tiles.next(at(261), false, true).unwrap();
         assert_eq!((on(&sent), pass), (vec![3], Pass::Moving));
 
         // Once the spinner stops, its tile is sharpened too.
-        assert!(tiles.next(at(400), false).is_none());
-        let (sent, pass) = tiles.next(at(520), false).unwrap();
+        assert!(tiles.next(at(400), false, true).is_none());
+        let (sent, pass) = tiles.next(at(520), false, true).unwrap();
         assert_eq!((on(&sent), pass), (vec![3], Pass::Refine));
-        assert!(tiles.next(at(900), false).is_none());
+        assert!(tiles.next(at(900), false, true).is_none());
     }
 
     #[test]
@@ -1160,19 +1539,19 @@ mod tests {
         let s = screen(1920, 256);
         let mut tiles = Tiles::default();
         tiles.reset(s.cols * s.rows, t0);
-        tiles.next(at(0), true);
+        tiles.next(at(0), true, true);
         // A checkerboard of changed tiles: more runs than MAX_RECTS, so the
         // frame draws whole rows, from the first changed tile to the last.
         let (col, row) = (|t: usize| t % s.cols, |t: usize| t / s.cols);
         tiles.dirty = (0..s.cols * s.rows).map(|t| (col(t) + row(t)) % 2 == 0).collect();
-        let (sent, pass) = tiles.next(at(10), false).unwrap();
+        let (sent, pass) = tiles.next(at(10), false, true).unwrap();
         assert_eq!(pass, Pass::Moving);
         let frame = frame_message(&s, &sent, 1, 70, 0, 1);
         let drawn: Vec<bool> = (0..s.cols * s.rows).map(|t| if row(t) % 2 == 0 { col(t) < 29 } else { col(t) > 0 }).collect();
         assert_eq!(frame.drawn, drawn);
         tiles.sent(&frame.drawn, &frame.exact, true, at(10));
         // Once still, everything drawn blurry is re-sent sharp.
-        assert_eq!(tiles.next(at(300), false), Some((drawn, Pass::Refine)));
+        assert_eq!(tiles.next(at(300), false, true), Some((drawn, Pass::Refine)));
     }
 
     #[test]
@@ -1205,7 +1584,7 @@ mod tests {
             }
         }
         let mut s = Screen::default();
-        s.update(Pixels { width: w, height: h, stride: w * 4, data: &data });
+        s.update(Pixels::bgra(w, h, w * 4, &data));
         let all = Rect { x: 0, y: 0, w, h };
 
         let (out, ow, oh) = downscale(&s, all, 2);
@@ -1233,7 +1612,7 @@ mod tests {
             }
         }
         let mut s = Screen::default();
-        s.update(Pixels { width, height, stride: width * 4, data: &data });
+        s.update(Pixels::bgra(width, height, width * 4, &data));
         s
     }
 
@@ -1295,17 +1674,33 @@ mod tests {
 
     #[test]
     fn photo_jpegs_span_flat_tiles_only_within_what_is_sent() {
-        // Photos in tiles 0 and 2 of a row of four, text in 1 and 3.
-        let s = painted(256, 64, |x, y| if x / 64 % 2 == 0 { noise(x, y) } else { [255, 255, (x / 3 % 2 * 255) as u8] });
+        // Photos in tiles 0 and 3, with the maximum flat gap between them.
+        let s = painted(320, 64, |x, y| if matches!(x / TILE, 0 | 3) { noise(x, y) } else { [240; 3] });
         let jpegs = |tiles: &[bool]| {
             let Frame { msg, exact, .. } = frame_message(&s, tiles, 1, 70, FLAG_LOSSLESS, 6);
             let rects = parts(&msg).iter().filter(|p| p.4 == 0).map(|p| (p.0, p.2)).collect::<Vec<_>>();
             (rects, exact)
         };
-        // All sent: one JPEG over tiles 0 to 2, so tile 1 is not exact.
-        assert_eq!(jpegs(&[true; 4]), (vec![(0, 192)], vec![false, false, false, true]));
+        // All sent: one JPEG over tiles 0 to 3.
+        assert_eq!(jpegs(&[true; 5]), (vec![(0, 256)], vec![false, false, false, false, true]));
         // Tile 1 not sent: it must not be drawn over.
-        assert_eq!(jpegs(&[true, false, true, false]), (vec![(0, 64), (128, 64)], vec![false, false, false, false]));
+        assert_eq!(jpegs(&[true, false, true, true, false]), (vec![(0, 64), (192, 64)], vec![false, false, true, false, false]));
+    }
+
+    #[test]
+    fn wide_photo_gap_stays_lossless_and_webp_margins_are_trimmed() {
+        let flat = [104, 150, 248];
+        let s = painted(6 * TILE + 17, 33, |x, y| {
+            if matches!(x / TILE, 0 | 6) { noise(x, y) } else { flat }
+        });
+        let Frame { msg, exact, .. } = frame_message(&s, &s.changed, 2, 70, FLAG_LOSSLESS, 7);
+        assert_eq!(exact, [false, true, true, true, true, true, false]);
+        let parts = parts(&msg);
+        let rects: Vec<_> = parts.iter().map(|p| (p.0, p.1, p.2, p.3, p.4)).collect();
+        assert_eq!(rects, [(32, 0, 160, 17, 1), (0, 0, 32, 17, 0), (192, 0, 9, 17, 0)]);
+        let (w, h, rgba) = webp_rgba(parts[0].5);
+        assert_eq!((w, h), (160, 17));
+        assert!(rgba.chunks_exact(4).all(|p| p == [flat[2], flat[1], flat[0], 255]));
     }
 
     #[test]

@@ -82,34 +82,100 @@ pub fn input_blocked() -> bool {
 /// Dispatch whatever arrives for `queue` within `timeout`. Returns early as
 /// soon as anything was dispatched.
 fn dispatch_timeout<S>(queue: &mut EventQueue<S>, state: &mut S, timeout: Duration) -> Result<usize, Error> {
+    dispatch_interruptible(queue, state, timeout, None).map(|n| n.unwrap_or(0))
+}
+
+/// None means a command interrupted the capture wait.
+fn dispatch_interruptible<S>(
+    queue: &mut EventQueue<S>,
+    state: &mut S,
+    timeout: Duration,
+    wakeup: Option<&Wakeup>,
+) -> Result<Option<usize>, Error> {
     let err = |e: &dyn std::fmt::Display| format!("Wayland connection lost: {e}");
     let n = queue.dispatch_pending(state).map_err(|e| err(&e))?;
     if n > 0 {
-        return Ok(n);
+        return Ok(Some(n));
     }
     queue.flush().map_err(|e| err(&e))?;
     if let Some(guard) = queue.prepare_read() {
-        if wait_readable(guard.connection_fd(), timeout) {
-            match guard.read() {
+        match wait_readable_or_command(guard.connection_fd(), timeout, wakeup) {
+            Ready::Command => return Ok(None),
+            Ready::Wayland => match guard.read() {
                 Ok(_) => {}
                 Err(wayland_client::backend::WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(err(&e)),
+            },
+            Ready::Timeout => {}
+        }
+    }
+    queue.dispatch_pending(state).map(Some).map_err(|e| err(&e))
+}
+
+/// The engine and its command senders share one non-blocking counter. A
+/// command is queued before signalling, and the engine clears the counter
+/// before draining commands, so a command cannot be lost between waits.
+pub struct Wakeup(OwnedFd);
+
+impl Wakeup {
+    pub fn new() -> std::io::Result<Self> {
+        let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(unsafe { OwnedFd::from_raw_fd(fd) }))
+    }
+
+    pub fn signal(&self) {
+        let one = 1u64;
+        while unsafe { libc::write(self.0.as_raw_fd(), (&raw const one).cast(), size_of::<u64>()) } < 0 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                break;
             }
         }
     }
-    queue.dispatch_pending(state).map_err(|e| err(&e))
+
+    pub fn clear(&self) {
+        let mut count = 0u64;
+        while unsafe { libc::read(self.0.as_raw_fd(), (&raw mut count).cast(), size_of::<u64>()) } < 0 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+    }
 }
 
-/// Wait until `fd` can be read, for at most `timeout`.
+enum Ready {
+    Wayland,
+    Command,
+    Timeout,
+}
+
 fn wait_readable(fd: BorrowedFd<'_>, timeout: Duration) -> bool {
-    let mut pfd = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+    matches!(wait_readable_or_command(fd, timeout, None), Ready::Wayland)
+}
+
+fn wait_readable_or_command(fd: BorrowedFd<'_>, timeout: Duration, wakeup: Option<&Wakeup>) -> Ready {
+    let mut fds = [
+        libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: wakeup.map_or(-1, |w| w.0.as_raw_fd()), events: libc::POLLIN, revents: 0 },
+    ];
+    let deadline = std::time::Instant::now() + timeout;
+    let mut left = timeout;
     loop {
-        let r = unsafe { libc::poll(&mut pfd, 1, ms) };
+        let ms = left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32;
+        let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
         if r < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            continue;
+            left = deadline.saturating_duration_since(std::time::Instant::now());
+            if !left.is_zero() {
+                continue;
+            }
         }
-        return r > 0;
+        return match fds {
+            [_, command] if r > 0 && command.revents != 0 => Ready::Command,
+            [wayland, _] if r > 0 && wayland.revents != 0 => Ready::Wayland,
+            _ => Ready::Timeout,
+        };
     }
 }
 
@@ -139,6 +205,25 @@ fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    #[test]
+    fn capture_poll_is_interruptible_by_commands() {
+        use std::os::fd::AsFd;
+
+        let (read, _write) = super::pipe().unwrap();
+        let wakeup = super::Wakeup::new().unwrap();
+        wakeup.signal();
+        wakeup.signal();
+        assert!(matches!(
+            super::wait_readable_or_command(read.as_fd(), Duration::ZERO, Some(&wakeup)),
+            super::Ready::Command
+        ));
+        wakeup.clear();
+        assert!(matches!(
+            super::wait_readable_or_command(read.as_fd(), Duration::ZERO, Some(&wakeup)),
+            super::Ready::Timeout
+        ));
+    }
 
     /// Clicks, types and sets the clipboard, so it only runs against a
     /// throwaway compositor, such as a nested niri with a terminal focused:
