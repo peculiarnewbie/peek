@@ -5,7 +5,7 @@ import { createEffect, createMemo, onSettled, untrack } from 'solid-js';
 import { App } from '../App';
 import { showSettings } from '../actions';
 import { boot } from '../boot';
-import { connect, disconnect } from '../connection';
+import { connect, disconnect, onFirstFrame } from '../connection';
 import { about, current, learn, navigate } from '../hosted';
 import { focusScreen } from '../screen';
 import { setMessage } from '../state';
@@ -30,10 +30,18 @@ export function HostedScreen() {
     }
     const m = current()!;
     setMessage(`Connecting to ${m.name}…`);
+    let disposed = false;
+    const timer = setTimeout(fetchAbout, 400);
+    const stopWaiting = onFirstFrame(fetchAbout);
+    function fetchAbout() {
+      clearTimeout(timer);
+      stopWaiting();
+      // Its providers as they are now: this page may be the first to ask.
+      about(m.host).then(a => { if (!disposed && a.id === m.id) learn(m, a); }, () => {});
+    }
     connect();
-    // Its providers as they are now: this page may be the first to ask.
-    about(m.host).then(a => { if (a.id === m.id) learn(m, a); }, () => {});
     focusScreen();
+    return () => { disposed = true; clearTimeout(timer); stopWaiting(); };
   }));
   return <App />;
 }

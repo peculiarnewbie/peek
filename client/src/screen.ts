@@ -4,8 +4,7 @@ import { isTouch } from './state';
 // here so the socket, input handling and components can all reach it.
 //
 // The canvas is laid out to fit the window ("base" size, centred), then
-// zoomed and panned with a CSS transform. Pointer positions are read with
-// getBoundingClientRect, which includes the transform, so they stay right.
+// positioned and zoomed with a CSS transform. Input uses the same coordinates.
 
 export const cv = document.createElement('canvas');
 cv.id = 'screen';
@@ -28,7 +27,9 @@ export const focusScreen = () => { if (!isTouch()) cv.focus({ preventScroll: tru
 
 /** Zoom factor over the fitted size, and translation in CSS pixels. */
 export const view = { z: 1, x: 0, y: 0 };
-let baseW = 1, baseH = 1;
+let baseW = cv.width, baseH = cv.height;
+let baseX = 0, baseY = 0;
+let left = 0, top = 0;
 const viewListeners: (() => void)[] = [];
 /** Called whenever the canvas moves on the page. */
 export const onViewChange = (f: () => void) => { viewListeners.push(f); };
@@ -51,14 +52,18 @@ const maxZoom = () => Math.max(2, (MAX_PIXEL_ZOOM * cv.width) / baseW);
 
 /** Fit the canvas into the window, keeping its aspect ratio. */
 export function layout() {
-  const k = Math.min(areaW() / cv.width, areaH() / cv.height);
+  const aw = areaW(), ah = areaH();
+  const k = Math.min(aw / cv.width, ah / cv.height);
   baseW = Math.floor(cv.width * k);
   baseH = Math.floor(cv.height * k);
+  baseX = (aw - baseW) / 2;
+  baseY = (ah - baseH) / 2;
   cv.style.width = baseW + 'px';
   cv.style.height = baseH + 'px';
   view.z = Math.min(view.z, maxZoom());
   applyView();
 }
+document.addEventListener('fullscreenchange', layout);
 
 export function resizeScreen(w: number, h: number) {
   if (cv.width === w && cv.height === h) return;
@@ -67,28 +72,24 @@ export function resizeScreen(w: number, h: number) {
   layout();
 }
 
-/** Where the canvas's top-left corner sits when not zoomed. */
-const baseOrigin = () => ({ x: (areaW() - baseW) / 2, y: (areaH() - baseH) / 2 });
-
 /** The canvas as currently shown, in CSS pixels. */
 export function shownRect() {
-  const o = baseOrigin();
-  return { left: o.x + view.x, top: o.y + view.y, width: baseW * view.z, height: baseH * view.z };
+  return { left, top, width: baseW * view.z, height: baseH * view.z };
 }
 
 // Keep the zoomed canvas covering the area: no empty margin on a side
 // where it is larger than the area, centred where it is smaller.
-function clampView() {
-  const o = baseOrigin(), aw = areaW(), ah = areaH();
-  const w = baseW * view.z, h = baseH * view.z;
-  view.x = w <= aw ? (aw - w) / 2 - o.x : Math.min(Math.max(view.x, aw - w - o.x), -o.x);
-  view.y = h <= ah ? (ah - h) / 2 - o.y : Math.min(Math.max(view.y, ah - h - o.y), -o.y);
-}
-
 function applyView() {
-  clampView();
-  cv.style.transform = view.z === 1 && !view.x && !view.y
-    ? '' : `translate(${view.x}px, ${view.y}px) scale(${view.z})`;
+  const aw = areaW(), ah = areaH();
+  const w = baseW * view.z, h = baseH * view.z;
+  view.x = w <= aw ? (aw - w) / 2 - baseX : Math.min(Math.max(view.x, aw - w - baseX), -baseX);
+  view.y = h <= ah ? (ah - h) / 2 - baseY : Math.min(Math.max(view.y, ah - h - baseY), -baseY);
+  // Snap the actual canvas origin. Keep fractional movement in view for panning.
+  const dpr = window.devicePixelRatio;
+  left = Math.round((baseX + view.x) * dpr) / dpr;
+  top = Math.round((baseY + view.y) * dpr) / dpr;
+  cv.style.transform = view.z === 1 && !left && !top
+    ? '' : `translate(${left}px, ${top}px) scale(${view.z})`;
   for (const f of viewListeners) f();
 }
 
@@ -101,9 +102,8 @@ export function toCanvas(px: number, py: number) {
 /** Zoom to `z`, putting the unzoomed canvas point `at` under page point (px, py). */
 export function zoomTo(z: number, at: { x: number; y: number }, px: number, py: number) {
   view.z = Math.min(Math.max(z, 1), maxZoom());
-  const o = baseOrigin();
-  view.x = px - o.x - at.x * view.z;
-  view.y = py - o.y - at.y * view.z;
+  view.x = px - baseX - at.x * view.z;
+  view.y = py - baseY - at.y * view.z;
   applyView();
 }
 

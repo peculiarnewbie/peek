@@ -17,6 +17,25 @@ pub struct Monitor {
     pub height: u32,
 }
 
+/// Damage in top-down screen coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageRect {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+}
+
+impl DamageRect {
+    pub fn right(self) -> usize {
+        self.x.saturating_add(self.w)
+    }
+
+    pub fn bottom(self) -> usize {
+        self.y.saturating_add(self.h)
+    }
+}
+
 /// Pixels handed to the engine for one captured frame. Rows are `stride`
 /// bytes apart and hold `width` BGRA pixels (the fourth byte is ignored).
 pub struct Pixels<'a> {
@@ -24,6 +43,17 @@ pub struct Pixels<'a> {
     pub height: usize,
     pub stride: usize,
     pub data: &'a [u8],
+    /// Regions changed since the previous delivered frame. None or empty
+    /// means the whole frame should be checked.
+    pub damage: Option<&'a [DamageRect]>,
+    pub y_invert: bool,
+    pub swap_rb: bool,
+}
+
+impl<'a> Pixels<'a> {
+    pub fn bgra(width: usize, height: usize, stride: usize, data: &'a [u8]) -> Self {
+        Self { width, height, stride, data, damage: None, y_invert: false, swap_rb: false }
+    }
 }
 
 #[cfg(windows)]

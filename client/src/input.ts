@@ -1,7 +1,8 @@
 // Mouse, wheel, keyboard and clipboard, from this browser to the host.
+import { createEffect, createRoot } from 'solid-js';
 import { release, setSleep, showSettings } from './actions';
 import { BIN_CLIPBOARD_PNG, hooks, send, sendBinary } from './connection';
-import { cv, focusScreen } from './screen';
+import { cv, focusScreen, shownRect } from './screen';
 import {
   active, autoSlept, cfg, clipboardOn, isTouch, live, MAX_CLIP_IMAGE, onPage, settingsOpen, sleeping, viewOnly,
 } from './state';
@@ -10,24 +11,31 @@ import { current, HOSTED } from './hosted';
 
 // ---- mouse ----
 function pos(e: PointerEvent): [number, number] {
-  const r = cv.getBoundingClientRect();
+  const r = shownRect();
   return [clamp01((e.clientX - r.left) / r.width), clamp01((e.clientY - r.top) / r.height)];
 }
 /** MouseEvent.buttons bit -> button index understood by the host. */
 const BUTTON_BITS = [[1, 0], [2, 2], [4, 1], [8, 3], [16, 4]];
 let held = 0;
-let pendingMove: [number, number] | null = null, moveQueued = false;
+let pendingMove: [number, number] | null = null, moveQueued: number | null = null;
 /** A click that only closed the settings panel. */
 let swallowing = false;
 
 function flushMove() {
-  moveQueued = false;
-  if (pendingMove) { send({ t: 'm', x: pendingMove[0], y: pendingMove[1] }); pendingMove = null; }
+  if (onPage()) { clearPointerInput(); return; }
+  if (!pendingMove) { moveQueued = null; return; }
+  const [x, y] = pendingMove;
+  pendingMove = null;
+  send({ t: 'm', x, y });
+  // The trailing packet used this frame's slot. Reopen it after an idle frame.
+  moveQueued = requestAnimationFrame(flushMove);
 }
 /** Pointer moves go out at most once per animation frame. Positions are 0..1 of the screen. */
 export function sendMove(x: number, y: number) {
-  pendingMove = [x, y];
-  if (!moveQueued) { moveQueued = true; requestAnimationFrame(flushMove); }
+  if (onPage()) return;
+  if (moveQueued !== null) { pendingMove = [x, y]; return; }
+  send({ t: 'm', x, y });
+  moveQueued = requestAnimationFrame(flushMove);
 }
 /** b: 0 left, 1 middle, 2 right. A press or release also places the pointer, so a pending move is dropped. */
 export function sendButton(b: number, down: boolean, x: number, y: number) {
@@ -40,7 +48,8 @@ function pointer(e: PointerEvent) {
   // A page covers the screen, which is frozen behind it: a click there would
   // land on the machine unseen.
   if (onPage()) {
-    if (held) { held = 0; pendingMove = null; send({ t: 'rel' }); }
+    clearPointerInput();
+    if (held) { held = 0; send({ t: 'rel' }); }
     return;
   }
   const [x, y] = pos(e);
@@ -73,22 +82,42 @@ cv.addEventListener('pointerup', e => {
 });
 cv.addEventListener('pointercancel', e => {
   if (e.pointerType === 'touch') return;
+  clearPointerInput();
   held = 0; swallowing = false; send({ t: 'rel' });
 });
 for (const type of ['contextmenu', 'mousedown', 'mouseup', 'auxclick', 'dragstart']) {
   cv.addEventListener(type, e => e.preventDefault());
 }
 
-let wheelX = 0, wheelY = 0;
+let wheelX = 0, wheelY = 0, wheelQueued: number | null = null;
+function sendWheel() {
+  const dx = Math.trunc(wheelX), dy = Math.trunc(wheelY);
+  if (!dx && !dy) return false;
+  wheelX -= dx; wheelY -= dy;
+  send({ t: 'w', dx, dy });
+  return true;
+}
+function flushWheel() {
+  if (onPage()) { clearPointerInput(); return; }
+  wheelQueued = sendWheel() ? requestAnimationFrame(flushWheel) : null;
+}
 cv.addEventListener('wheel', e => {
   e.preventDefault();
-  if (onPage()) return;
+  if (onPage()) { clearPointerInput(); return; }
   // Normalise to Windows wheel units (120 per notch).
   const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 480 : 1.2;
   wheelX += e.deltaX * unit; wheelY -= e.deltaY * unit;
-  const dx = Math.trunc(wheelX), dy = Math.trunc(wheelY);
-  if (dx || dy) { wheelX -= dx; wheelY -= dy; send({ t: 'w', dx, dy }); }
+  if (wheelQueued === null && sendWheel()) wheelQueued = requestAnimationFrame(flushWheel);
 }, { passive: false });
+
+function clearPointerInput() {
+  if (moveQueued !== null) cancelAnimationFrame(moveQueued);
+  if (wheelQueued !== null) cancelAnimationFrame(wheelQueued);
+  moveQueued = wheelQueued = null;
+  pendingMove = null;
+  wheelX = wheelY = 0;
+}
+createRoot(() => createEffect(onPage, page => { if (page) clearPointerInput(); }));
 
 // ---- clipboard ----
 // Host -> client: the host tells us when its clipboard text changes.
@@ -252,7 +281,7 @@ addEventListener('keydown', e => key(e, true), true);
 addEventListener('keyup', e => key(e, false), true);
 
 // ---- focus ----
-release.all = () => { held = 0; swallowV = false; heldBack.clear(); send({ t: 'rel' }); };
+release.all = () => { clearPointerInput(); held = 0; swallowV = false; heldBack.clear(); send({ t: 'rel' }); };
 addEventListener('blur', () => {
   release.all();
   // Into a provider's page (Frame.tsx): still this window, so no pause.

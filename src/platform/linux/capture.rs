@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use wayland_client::protocol::wl_buffer::WlBuffer;
@@ -20,8 +21,8 @@ use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_frame_v1::{
 };
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
-use super::Error;
-use crate::platform::{Monitor, Pixels};
+use super::{Error, Wakeup};
+use crate::platform::{DamageRect, Monitor, Pixels};
 
 /// How long to wait for a monitor's first image. It is copied straight
 /// away, without waiting for a change, so this only covers a busy compositor.
@@ -55,7 +56,9 @@ impl OutputInfo {
 #[derive(Default)]
 struct FrameEvents {
     /// Shared-memory format, width, height, stride.
-    buffer: Option<(WEnum<Format>, u32, u32, u32)>,
+    buffer: Option<(Format, u32, u32, u32)>,
+    saw_buffer: bool,
+    damage: Vec<DamageRect>,
     buffer_done: bool,
     y_invert: bool,
     ready: bool,
@@ -102,6 +105,8 @@ impl Drop for ShmBuffer {
 
 pub struct Capture {
     queue: Option<EventQueue<State>>,
+    wakeup: Option<Arc<Wakeup>>,
+    spare_damage: Vec<DamageRect>,
     state: State,
     registry: Option<WlRegistry>,
     shm: Option<WlShm>,
@@ -125,6 +130,8 @@ impl Capture {
     pub fn new() -> Self {
         let mut c = Capture {
             queue: None,
+            wakeup: None,
+            spare_damage: Vec::new(),
             state: State::default(),
             registry: None,
             shm: None,
@@ -147,6 +154,10 @@ impl Capture {
             Err(e) => c.error = Some(e),
         }
         c
+    }
+
+    pub fn set_wakeup(&mut self, wakeup: Option<Arc<Wakeup>>) {
+        self.wakeup = wakeup;
     }
 
     fn qh(&self) -> QueueHandle<State> {
@@ -296,12 +307,15 @@ impl Capture {
             let output = self.state.outputs[output_index].output.clone().ok_or("monitor is gone")?;
             let id = self.next_frame;
             self.next_frame += 1;
-            self.state.frames.insert(id, FrameEvents::default());
+            self.state.frames.insert(id, FrameEvents { damage: std::mem::take(&mut self.spare_damage), ..FrameEvents::default() });
             let frame = manager.capture_output(0, &output, &self.qh(), id);
             self.pending.insert(index, Pending { frame, id, copied: false });
         }
 
         loop {
+            if self.state.changed {
+                return Err("monitors changed".into());
+            }
             let p = self.pending.get_mut(&index).unwrap();
             let ev = self.state.frames.get(&p.id).unwrap();
             if ev.failed {
@@ -311,18 +325,11 @@ impl Capture {
             if ev.ready {
                 break;
             }
-            let described = if p.frame.version() >= 3 { ev.buffer_done } else { ev.buffer.is_some() };
+            let described = if p.frame.version() >= 3 { ev.buffer_done } else { ev.saw_buffer };
             if !p.copied && described {
                 let Some((format, width, height, stride)) = ev.buffer else {
                     self.drop_pending(index);
                     return Err("the compositor offers no shared-memory format".into());
-                };
-                let format = match format {
-                    WEnum::Value(f @ (Format::Xrgb8888 | Format::Argb8888 | Format::Xbgr8888 | Format::Abgr8888)) => f,
-                    other => {
-                        self.drop_pending(index);
-                        return Err(format!("unsupported pixel format {other:?}"));
-                    }
                 };
                 if (width, height) != (monitor.width, monitor.height) {
                     self.drop_pending(index);
@@ -331,7 +338,7 @@ impl Capture {
                 }
                 let buffer = self.buffer(index, width, height, stride, format)?.clone();
                 let p = self.pending.get_mut(&index).unwrap();
-                if fresh {
+                if fresh || p.frame.version() < 2 {
                     p.frame.copy(&buffer);
                 } else {
                     p.frame.copy_with_damage(&buffer);
@@ -339,11 +346,13 @@ impl Capture {
                 p.copied = true;
             }
             let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                let _ = self.queue.as_ref().unwrap().flush();
-                return Ok(false);
+            match super::dispatch_interruptible(
+                self.queue.as_mut().unwrap(), &mut self.state, left, self.wakeup.as_deref(),
+            )? {
+                None => return Ok(false),
+                Some(0) if left.is_zero() || Instant::now() >= deadline => return Ok(false),
+                Some(_) => {}
             }
-            super::dispatch_timeout(self.queue.as_mut().unwrap(), &mut self.state, left)?;
         }
 
         let started = Instant::now();
@@ -353,25 +362,21 @@ impl Capture {
         let b = &self.buffers[&index];
         let (width, height, stride) = (b.width as usize, b.height as usize, b.stride as usize);
         let data = unsafe { std::slice::from_raw_parts(b.map, b.len) };
-        let needs_copy = ev.y_invert || matches!(b.format, Format::Xbgr8888 | Format::Abgr8888);
-        if needs_copy {
-            let swap = matches!(b.format, Format::Xbgr8888 | Format::Abgr8888);
-            let mut out = vec![0u8; width * height * 4];
-            for y in 0..height {
-                let from = if ev.y_invert { height - 1 - y } else { y };
-                let src = &data[from * stride..][..width * 4];
-                let dst = &mut out[y * width * 4..][..width * 4];
-                dst.copy_from_slice(src);
-                if swap {
-                    for px in dst.chunks_exact_mut(4) {
-                        px.swap(0, 2);
-                    }
-                }
-            }
-            f(Pixels { width, height, stride: width * 4, data: &out });
-        } else {
-            f(Pixels { width, height, stride, data });
-        }
+        let damage_area = ev.damage.iter().fold(0usize, |area, r| {
+            let w = r.right().min(width).saturating_sub(r.x);
+            let h = r.bottom().min(height).saturating_sub(r.y);
+            area.saturating_add(w * h)
+        });
+        let damage = (!fresh && !ev.y_invert && !ev.damage.is_empty() && damage_area < (width * height).div_ceil(2))
+            .then_some(ev.damage.as_slice());
+        f(Pixels {
+            damage,
+            y_invert: ev.y_invert,
+            swap_rb: matches!(b.format, Format::Xbgr8888 | Format::Abgr8888),
+            ..Pixels::bgra(width, height, stride, data)
+        });
+        self.spare_damage = ev.damage;
+        self.spare_damage.clear();
         self.seen.insert(index);
         self.last_cost = started.elapsed();
         Ok(true)
@@ -454,12 +459,28 @@ impl Dispatch<WlOutput, usize> for State {
     }
 }
 
+fn format_rank(format: Format) -> u8 {
+    match format {
+        Format::Xrgb8888 | Format::Argb8888 => 2,
+        Format::Xbgr8888 | Format::Abgr8888 => 1,
+        _ => 0,
+    }
+}
+
 impl Dispatch<ZwlrScreencopyFrameV1, u64> for State {
     fn event(state: &mut Self, _: &ZwlrScreencopyFrameV1, event: zwlr_screencopy_frame_v1::Event, id: &u64, _: &wayland_client::Connection, _: &QueueHandle<Self>) {
         let Some(f) = state.frames.get_mut(id) else { return };
         match event {
             zwlr_screencopy_frame_v1::Event::Buffer { format, width, height, stride } => {
-                f.buffer = Some((format, width, height, stride));
+                f.saw_buffer = true;
+                if let WEnum::Value(format) = format {
+                    if format_rank(format) > f.buffer.map_or(0, |(current, ..)| format_rank(current)) {
+                        f.buffer = Some((format, width, height, stride));
+                    }
+                }
+            }
+            zwlr_screencopy_frame_v1::Event::Damage { x, y, width, height } => {
+                f.damage.push(DamageRect { x: x as usize, y: y as usize, w: width as usize, h: height as usize });
             }
             zwlr_screencopy_frame_v1::Event::BufferDone => f.buffer_done = true,
             zwlr_screencopy_frame_v1::Event::Flags { flags } => {

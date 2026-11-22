@@ -72,8 +72,13 @@ let fromPageLoad = false;
 /** Still running the page's startup code (a later connect is a click or a retry). */
 let startup = true;
 setTimeout(() => { startup = false; });
-/** Frames are decoded asynchronously but drawn in order. */
-let chain = Promise.resolve();
+let firstFrameDrawn: (() => void) | undefined;
+
+/** Call once when the connection next draws a frame. */
+export function onFirstFrame(draw: () => void) {
+  firstFrameDrawn = draw;
+  return () => { if (firstFrameDrawn === draw) firstFrameDrawn = undefined; };
+}
 
 /** Set by the input code: the host's clipboard changed / its pointer shape changed. */
 export const hooks = {
@@ -110,12 +115,12 @@ export function disconnect() {
   clearTimeout(retryTimer);
   const sock = ws;
   ws = null;
+  firstFrameDrawn = undefined;
   sock?.close();
   setLive(false);
   setBlocked(false);
   dropPages();
   setMonitors([]);
-  chain = Promise.resolve();
   ctx.clearRect(0, 0, cv.width, cv.height);
 }
 
@@ -131,8 +136,11 @@ export function connect() {
   firstFrameFrom = active() ? performance.now() : null;
   fromPageLoad = startup;
   const sock = ws = new WebSocket(`${t.url}?${q}`);
+  // Start decoding on arrival, but draw and acknowledge frames in socket order.
+  let chain = Promise.resolve();
   sock.binaryType = 'arraybuffer';
   sock.onopen = () => {
+    if (sock !== ws) return;
     retry = 250;
     failures = 0;
     setMessage('');
@@ -144,6 +152,7 @@ export function connect() {
     send({ t: 'clipimg', on: wantImages() });
   };
   sock.onmessage = e => {
+    if (sock !== ws) return;
     if (typeof e.data === 'string') {
       countIn(e.data.length);
       onJson(JSON.parse(e.data));
@@ -156,11 +165,15 @@ export function connect() {
         return;
       }
       const arrived = performance.now();
-      chain = chain.then(() => onFrame(sock, buf, arrived)).catch(err => console.error(err));
+      try {
+        const frame = decodeFrame(buf);
+        chain = chain.then(() => drawFrame(sock, frame, arrived)).catch(err => console.error(err));
+      } catch (err) { console.error(err); }
     }
   };
   sock.onclose = e => {
     if (ws !== sock) return;
+    ws = null;
     setLive(false);
     setBlocked(false);
     dropPages();
@@ -254,33 +267,63 @@ function onJson(m: HostMsg) {
 // a u8 format (0 JPEG, 1 lossless WebP), u32 length, image bytes. A JPEG
 // smaller than its rectangle is stretched to fill it. Rectangles are drawn in
 // order: JPEGs over the flat-painted tiles of the lossless pieces before them.
-async function onFrame(sock: WebSocket, buf: ArrayBuffer, arrived: number) {
+type FramePart = { x: number; y: number; w: number; h: number; bm: ImageBitmap };
+
+function discardParts(jobs: Promise<FramePart>[]) {
+  for (const job of jobs) void job.then(({ bm }) => bm.close(), () => {});
+}
+
+function decodeFrame(buf: ArrayBuffer) {
   const dv = new DataView(buf);
   const seq = dv.getUint32(1, true), W = dv.getUint16(5, true), H = dv.getUint16(7, true);
   const n = dv.getUint16(9, true), hostUs = dv.getUint32(11, true);
   const jpegQ = dv.getUint8(15), flags = dv.getUint8(16);
-  const jobs = [];
+  const jobs: Promise<FramePart>[] = [];
   let off = 17;
-  for (let i = 0; i < n; i++) {
-    const x = dv.getUint16(off, true), y = dv.getUint16(off + 2, true);
-    const w = dv.getUint16(off + 4, true), h = dv.getUint16(off + 6, true);
-    const format = flags & 8 ? dv.getUint8(off + 8) : 0;
-    off += flags & 8 ? 9 : 8;
-    const len = dv.getUint32(off, true);
-    off += 4;
-    const blob = new Blob([new Uint8Array(buf, off, len)], { type: format === 1 ? 'image/webp' : 'image/jpeg' });
-    jobs.push(createImageBitmap(blob).then(bm => ({ x, y, w, h, bm })));
-    off += len;
+  try {
+    for (let i = 0; i < n; i++) {
+      const x = dv.getUint16(off, true), y = dv.getUint16(off + 2, true);
+      const w = dv.getUint16(off + 4, true), h = dv.getUint16(off + 6, true);
+      const format = flags & 8 ? dv.getUint8(off + 8) : 0;
+      off += flags & 8 ? 9 : 8;
+      const len = dv.getUint32(off, true);
+      off += 4;
+      const blob = new Blob([new Uint8Array(buf, off, len)], { type: format === 1 ? 'image/webp' : 'image/jpeg' });
+      jobs.push(createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' })
+        .then(bm => ({ x, y, w, h, bm })));
+      off += len;
+    }
+  } catch (err) {
+    // A truncated rectangle header or payload can follow jobs already started.
+    discardParts(jobs);
+    throw err;
   }
-  const parts = await Promise.all(jobs);
-  resizeScreen(W, H);
-  for (const p of parts) { ctx.drawImage(p.bm, p.x, p.y, p.w, p.h); p.bm.close(); }
+  // Handle failures now, even while this frame is waiting in the draw queue.
+  const decoded = Promise.all(jobs).catch(err => {
+    discardParts(jobs);
+    console.error(err);
+    return null;
+  });
+  return { seq, W, H, n, hostUs, jpegQ, flags, size: buf.byteLength, decoded };
+}
+
+async function drawFrame(sock: WebSocket, frame: ReturnType<typeof decodeFrame>, arrived: number) {
+  const { seq, W, H, n, hostUs, jpegQ, flags, size, decoded } = frame;
+  const parts = await decoded;
+  if (!parts) return;
+  try {
+    if (sock !== ws) return;
+    resizeScreen(W, H);
+    for (const { bm, x, y, w, h } of parts) ctx.drawImage(bm, x, y, w, h);
+  } finally {
+    for (const { bm } of parts) bm.close();
+  }
   if (sock.readyState === WebSocket.OPEN) {
     const ack = JSON.stringify({ t: 'ack', s: seq });
     sock.send(ack);
     countOut(ack.length);
   }
-  if (firstFrameFrom != null && sock === ws) {
+  if (firstFrameFrom != null) {
     const now = performance.now();
     first.connect = now - firstFrameFrom;
     first.page = fromPageLoad ? now : null;   // performance.now() counts from navigation
@@ -288,9 +331,11 @@ async function onFrame(sock: WebSocket, buf: ArrayBuffer, arrived: number) {
   }
   S.frames++; S.rects += n;
   S.host += hostUs / 1000; S.client += performance.now() - arrived;
-  S.lastSize = buf.byteLength;
+  S.lastSize = size;
   S.lastKind = `q${jpegQ} ${flags & 1 ? '4:4:4' : '4:2:0'}, ${flags & 2 ? 'sharp' : 'moving'}` +
     (flags & 4 ? ', half size' : '') + (flags & 8 ? ', lossless text' : '');
+  const drawn = firstFrameDrawn;
+  if (drawn) { firstFrameDrawn = undefined; drawn(); }
 }
 
 // Round-trip probe, only while someone is looking at the numbers.
