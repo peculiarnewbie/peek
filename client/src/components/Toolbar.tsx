@@ -1,8 +1,8 @@
 import { For, onSettled, Show } from 'solid-js';
-import { setSleep, setStats, showSettings, toggleFullscreen, togglePin, toggleTouchMode } from '../actions';
+import { setSleep, setStats, showSettings, toggleFullscreen, toggleKeyboard, togglePin, toggleTouchMode } from '../actions';
 import { focusScreen } from '../screen';
 import {
-  barOpen, cfg, fullscreen, isTouch, live, monitors, pinned, setBarOpen, setIsTouch, settingsOpen, sleeping,
+  barOpen, cfg, fullscreen, isTouch, kbdOpen, live, monitors, pinned, setBarOpen, setIsTouch, settingsOpen, sleeping,
   statsMode, touchMode, viewOnly,
 } from '../state';
 import { current, home, HOSTED } from '../hosted';
@@ -63,6 +63,12 @@ export function Toolbar() {
           onClick={() => { setStats(statsMode() === 'off' ? 'open' : 'off'); focusScreen(); }}>
           <Icon name="chart" /><span>Stats</span>
         </button>
+        <Show when={!isTouch()}>
+          <button id="b-kbd" class="tb" tabindex={-1} aria-label="Keyboard" title="On-screen keyboard"
+            aria-pressed={kbdOpen() ? 'true' : 'false'} onClick={toggleKeyboard}>
+            <Icon name="keyboard" /><span>Keyboard</span>
+          </button>
+        </Show>
         <Show when={isTouch()}>
           <button id="b-touch" class="tb" tabindex={-1} onClick={toggleTouchMode}
             aria-label={touchMode() === 'trackpad' ? 'Trackpad' : 'Touch'}

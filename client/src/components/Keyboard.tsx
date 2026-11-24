@@ -1,4 +1,5 @@
-// The keyboard dock at the bottom of the screen, for phones and tablets.
+// The keyboard dock at the bottom of the screen: always shown on phones and
+// tablets, and toggleable from the toolbar on desktop as a fallback.
 // Two faces: a text field that types through the phone's own keyboard, and
 // a PC keyboard (with a Shift layer and an Fn layer of F-keys, numpad and
 // navigation keys) for everything a phone keyboard lacks.
@@ -7,7 +8,7 @@ import {
   dock, field, keyDown, keyUp, lockModifier, mods, sendDraft, setDock, shifted, tap, tapModifier,
 } from '../keyboard';
 import { setBottomInset } from '../screen';
-import { isTouch } from '../state';
+import { isTouch, kbdOpen } from '../state';
 import { Icon } from './Icons';
 
 type Kind = 'key' | 'mod' | 'fn' | 'text' | 'gap';
@@ -69,6 +70,7 @@ function Key(props: { def: KeyDef; fn: boolean; toggleFn: () => void }) {
   let lockTimer: ReturnType<typeof setTimeout> | undefined, locked = false;
 
   const press = (e: PointerEvent) => {
+    if (e.button !== 0) return;
     e.preventDefault();   // keep focus (and the phone's keyboard) where it is
     (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     setDown(true);
@@ -150,6 +152,7 @@ export function Keyboard() {
   // ⌫ in the bar is the host's Backspace, repeating while held.
   let repeat: ReturnType<typeof setTimeout> | undefined;
   const holdBackspace = (e: PointerEvent) => {
+    if (e.button !== 0) return;
     e.preventDefault();
     tap('Backspace');
     const again = (wait: number) => { repeat = setTimeout(() => { tap('Backspace'); again(60); }, wait); };
@@ -159,7 +162,7 @@ export function Keyboard() {
   const keep = (e: PointerEvent) => e.preventDefault();   // buttons must not take focus from the field
 
   return (
-    <div id="kbd" ref={box} class={{ show: isTouch(), keys: dock() === 'keys' }}>
+    <div id="kbd" ref={box} class={{ show: isTouch() || kbdOpen(), keys: dock() === 'keys' }}>
       <div class="kbd-bar">
         <button class="kbd-btn" tabindex={-1} title="PC keyboard: Esc, Ctrl, F-keys, arrows…" onPointerDown={keep}
           onClick={() => setDock('keys')}><Icon name="keyboard" /></button>

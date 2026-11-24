@@ -89,6 +89,8 @@ export const [statsMode, setStatsMode] = createSignal<StatsMode>(
   ['open', 'folded'].includes(store.get('stats') ?? '') ? 'open' : 'off');
 export const [statsPinned, setStatsPinned] = createSignal(store.get('stats-pin') === '1');
 export const [fullscreen, setFullscreen] = createSignal(false);
+/** On-screen keyboard dock shown on a non-touch browser, as a fallback. */
+export const [kbdOpen, setKbdOpen] = createSignal(false);
 
 // Touch screens.
 export type TouchMode = 'trackpad' | 'direct';

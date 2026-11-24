@@ -1,9 +1,10 @@
 // Things the UI and input handling both do.
 import { flush } from 'solid-js';
 import { send } from './connection';
+import { field, keyUp, releaseModifiers, setDock } from './keyboard';
 import {
-  active, cfg, COPY_IMAGES, pinned, setAutoSlept, setCfg, setPinned, setSettingsOpen, setSleeping, setStatsMode,
-  setStatsPinned, setTouchMode, sleeping, statsPinned, touchMode, type Cfg, type StatsMode,
+  active, cfg, COPY_IMAGES, kbdOpen, pinned, setAutoSlept, setCfg, setKbdOpen, setPinned, setSettingsOpen, setSleeping,
+  setStatsMode, setStatsPinned, setTouchMode, sleeping, statsPinned, touchMode, type Cfg, type StatsMode,
 } from './state';
 import { focusScreen } from './screen';
 import { store } from './util';
@@ -55,6 +56,18 @@ export function toggleTouchMode() {
   const v = touchMode() === 'trackpad' ? 'direct' : 'trackpad';
   setTouchMode(v);
   store.set('touch', v);
+}
+
+export function toggleKeyboard() {
+  const v = !kbdOpen();
+  setKbdOpen(v);
+  if (v) setDock('keys');
+  else {
+    keyUp();
+    releaseModifiers();
+    field.el?.blur();
+  }
+  focusScreen();
 }
 
 export function toggleStatsPin() {

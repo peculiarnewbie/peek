@@ -151,7 +151,7 @@ details[open] summary svg { transform: none; }
 #pairhere .card { gap: 10px; box-sizing: border-box; max-width: 420px; }
 #pairhere form { width: 100%; margin-top: 6px; }
 #pairhere .err { margin: 0; }
-#note { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 2; display: none;
+#note { position: fixed; bottom: calc(14px + var(--bottom-inset, 0px)); left: 50%; transform: translateX(-50%); z-index: 2; display: none;
   align-items: flex-start; gap: 10px; max-width: min(560px, 90vw); padding: 10px 14px; line-height: 1.45;
   color: var(--ink); pointer-events: none; }
 #note.show { display: flex; }
@@ -188,7 +188,7 @@ body.sleeping #cursor { display: none; }
 #kbd.show { display: block; }
 body.sleeping #kbd { pointer-events: none; opacity: .4; }
 #kbd.keys .kbd-bar, #kbd:not(.keys) .kbd-keys { display: none; }
-.kbd-bar { display: flex; align-items: center; gap: 2px; padding: 6px 6px; }
+.kbd-bar { display: flex; align-items: center; gap: 2px; padding: 6px 6px; max-width: 900px; margin: 0 auto; box-sizing: border-box; }
 #kbd-text { flex: 1; min-width: 0; height: 38px; padding: 8px 12px; margin: 0 4px; box-sizing: border-box;
   resize: none; line-height: 20px; overflow: hidden; white-space: nowrap;
   border: 1px solid var(--line); border-radius: 8px; background: var(--page); color: var(--ink);
@@ -199,7 +199,7 @@ body.sleeping #kbd { pointer-events: none; opacity: .4; }
 .kbd-btn:active { background: var(--raised); color: var(--ink); }
 .kbd-btn svg.i { width: 22px; height: 22px; }
 .kbd-keys { display: flex; flex-direction: column; gap: 3px; padding: 3px; height: min(50vh, 280px);
-  box-sizing: border-box; }
+  max-width: 900px; margin: 0 auto; box-sizing: border-box; }
 .kbd-row { flex: 1; display: flex; gap: 3px; min-height: 0; }
 .key { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 0;
   border-radius: 4px; background: #000; color: var(--ink); font-size: clamp(13px, 2.4vw, 20px);
@@ -209,9 +209,13 @@ body.sleeping #kbd { pointer-events: none; opacity: .4; }
 .key.down { background: var(--raised); }
 .key.mod.latched, .key.on { background: #454541; }
 .key.mod.locked { background: var(--s1); }
+@media (hover: hover) {
+  .kbd-btn:hover { background: var(--hover); color: var(--ink); }
+  .key:hover:not(.down):not(.latched):not(.locked):not(.on) { background: var(--hover); }
+}
 
 /* ---- devices page (hosted client) and pairing ---- */
-body.home #stage, body.home #bar, body.home #stats, body.home #msg { visibility: hidden; }
+body.home #stage, body.home #bar, body.home #stats, body.home #msg, body.home #kbd { visibility: hidden; }
 #devices { position: fixed; inset: 0; z-index: 6; overflow-y: auto; background: var(--page);
   padding: max(28px, env(safe-area-inset-top)) 16px 28px; box-sizing: border-box; scrollbar-width: thin; }
 #devices > * { max-width: 760px; margin-left: auto; margin-right: auto; }
