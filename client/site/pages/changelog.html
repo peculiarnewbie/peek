@@ -12,6 +12,10 @@
 <ul>
   <li><strong>On-screen keyboard on desktop:</strong> the toolbar now includes a <strong>Keyboard</strong> toggle on
     non-touch browsers to open the same on-screen PC keyboard and text bar used on mobile as a fallback.</li>
+  <li><strong>Screen viewer events for plugins &amp; <code>screen-blank</code> plugin:</strong> plugins can opt into
+    <code>"events": ["screen"]</code> to hear when screen viewing becomes active or idle, and the new
+    <code>examples/provider/screen-blank</code> plugin uses it to keep a laptop's backlight off while viewing and power
+    off the display when idle on Niri.</li>
 </ul>
 <h3>Changed</h3>
 <ul>

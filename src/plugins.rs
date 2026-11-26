@@ -634,6 +634,8 @@ pub struct Plugins {
     staged: Mutex<HashMap<String, Staged>>,
     /// One change at a time. Set to true during shutdown.
     changing: Mutex<bool>,
+    /// Client ids currently watching the screen (`vis: true`).
+    screen_viewers: Mutex<BTreeSet<u64>>,
 }
 
 impl Plugins {
@@ -645,9 +647,35 @@ impl Plugins {
             running: RwLock::default(),
             staged: Mutex::default(),
             changing: Mutex::default(),
+            screen_viewers: Mutex::default(),
         });
         plugins.reconcile();
         plugins
+    }
+
+    /// Record whether client `id` is actively viewing the screen, and notify
+    /// subscribed providers when viewers transition between 0 and >= 1.
+    pub fn set_screen_visible(&self, id: u64, visible: bool) {
+        let transition = {
+            let mut viewers = self.screen_viewers.lock().unwrap();
+            let was_active = !viewers.is_empty();
+            if visible {
+                viewers.insert(id);
+            } else {
+                viewers.remove(&id);
+            }
+            let is_active = !viewers.is_empty();
+            (was_active != is_active).then_some(is_active)
+        };
+        if let Some(active) = transition {
+            let state = if active { "active" } else { "idle" };
+            let msg = json!({ "t": "event", "screen": state }).to_string();
+            for (_, link) in self.running() {
+                if link.wants_event("screen") {
+                    link.event(&msg);
+                }
+            }
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<Link>> {
@@ -1466,6 +1494,76 @@ mod tests {
         let spec = catalog.specs().into_iter().find(|s| s.name == "native").unwrap();
         let Start::Program(p) = spec.start else { panic!("not a program") };
         assert_eq!(PathBuf::from(&p.words[0]), dir.join("bin").join(program));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn screen_viewer_transitions_notify_subscribed_providers() {
+        use std::io::{Read, Write};
+        struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedBuf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        /// Yields `data`, then blocks until `done` is dropped so the provider stays attached.
+        struct OpenReader { data: std::io::Cursor<Vec<u8>>, done: std::sync::mpsc::Receiver<()> }
+        impl Read for OpenReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.data.read(buf)?;
+                if n > 0 { return Ok(n); }
+                let _ = self.done.recv();
+                Ok(0)
+            }
+        }
+        fn frame(kind: u8, channel: u64, payload: &[u8]) -> Vec<u8> {
+            let mut out = Vec::with_capacity(13 + payload.len());
+            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            out.push(kind);
+            out.extend_from_slice(&channel.to_le_bytes());
+            out.extend_from_slice(payload);
+            out
+        }
+        let (sub_tx, sub_rx) = std::sync::mpsc::channel();
+        let sub_out = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sub = Link::new("sub");
+        sub.attach(SharedBuf(sub_out.clone()), OpenReader { data: std::io::Cursor::new(frame(7, 0, br#"{"events":["screen"]}"#)), done: sub_rx });
+        let (unsub_tx, unsub_rx) = std::sync::mpsc::channel();
+        let unsub_out = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let unsub = Link::new("unsub");
+        unsub.attach(SharedBuf(unsub_out.clone()), OpenReader { data: std::io::Cursor::new(frame(7, 0, br#"{"places":["card"]}"#)), done: unsub_rx });
+        // Wait briefly for the reader threads to process the ABOUT frames.
+        for _ in 0..50 {
+            if sub.wants_event("screen") { break; }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(sub.wants_event("screen"));
+        assert!(!unsub.wants_event("screen"));
+
+        let root = std::env::temp_dir().join(format!("peek-plugins-events-{}", std::process::id()));
+        let plugins = Plugins::start(Catalog::new(root.clone(), Vec::new()), false);
+        {
+            let mut running = plugins.running.write().unwrap();
+            running.insert("sub".into(), sub);
+            running.insert("unsub".into(), unsub);
+        }
+        plugins.set_screen_visible(1, true);  // 0 -> 1: active
+        plugins.set_screen_visible(1, true);  // duplicate: no event
+        plugins.set_screen_visible(2, true);  // 1 -> 2: no event
+        plugins.set_screen_visible(1, false); // 2 -> 1: no event
+        plugins.set_screen_visible(2, false); // 1 -> 0: idle
+        plugins.set_screen_visible(2, false); // duplicate: no event
+
+        let received = sub_out.lock().unwrap().clone();
+        let expected = [
+            frame(3, 0, br#"{"screen":"active","t":"event"}"#),
+            frame(3, 0, br#"{"screen":"idle","t":"event"}"#),
+        ].concat();
+        assert_eq!(received, expected);
+        assert!(unsub_out.lock().unwrap().is_empty());
+        drop((sub_tx, unsub_tx));
         let _ = fs::remove_dir_all(&root);
     }
 }

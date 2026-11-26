@@ -572,6 +572,22 @@ impl Link {
         Self::send(&mut self.to.lock().unwrap(), TEXT, channel, text.as_bytes());
     }
 
+    /// Whether this provider opted into host `event` in its `ABOUT` message.
+    pub fn wants_event(&self, event: &str) -> bool {
+        self.about
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|a| a.get("events"))
+            .and_then(|e| e.as_array())
+            .is_some_and(|list| list.iter().any(|v| v.as_str() == Some(event)))
+    }
+
+    /// Send an unsolicited host event on channel 0.
+    pub fn event(&self, text: &str) {
+        Self::send(&mut self.to.lock().unwrap(), TEXT, 0, text.as_bytes());
+    }
+
     /// The same, for binary: a provider's own page, or an image pasted on
     /// the screen.
     pub fn binary(&self, channel: u64, bytes: &[u8]) {

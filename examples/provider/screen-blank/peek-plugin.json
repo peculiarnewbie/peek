@@ -1,0 +1,26 @@
+{
+  "manifest_version": 1,
+  "provider_protocol": 1,
+  "name": "screen-blank",
+  "version": "0.1.0",
+  "description": "Keep the laptop screen dark while viewing in peek, and sleep the display when idle.",
+  "run": ["node", "index.mjs"],
+  "needs": ["node", "brightnessctl"],
+  "settings": {
+    "dpms": {
+      "label": "Power off monitor when nobody is viewing peek (Niri)",
+      "kind": "switch",
+      "default": true
+    },
+    "idle_seconds": {
+      "label": "Seconds after viewing stops before powering off monitor",
+      "kind": "text",
+      "default": "5"
+    },
+    "device": {
+      "label": "Backlight device name (empty: auto-detect)",
+      "kind": "text",
+      "default": ""
+    }
+  }
+}

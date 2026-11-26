@@ -83,11 +83,12 @@ To peek:
 Send kind 7 once, as you start:
 
 ```json
-{ "places": ["card", "page"], "peers": false }
+{ "places": ["card", "page"], "peers": false, "events": ["screen"] }
 ```
 
 - `places`: where you have something to show.
 - `peers` (**provisional**): you want to hear of the other machines.
+- `events`: optional host lifecycle events to receive as JSON `TEXT` messages on channel `0`. `"screen"` delivers `{"t": "event", "screen": "active"}` when the first client starts viewing the screen and `{"t": "event", "screen": "idle"}` when none are viewing it.
 
 It appears, with your name, in the machine's `/.well-known/peek`:
 

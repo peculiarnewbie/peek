@@ -319,6 +319,7 @@ async fn about(State(shared): State<Arc<Shared>>, headers: HeaderMap) -> Respons
         let mut about = link.about();
         // Where its page is stays here; the client hears only that there is one.
         about.remove("page");
+        about.remove("events");
         if page_available(&shared, &name) {
             about.insert("frame".into(), true.into());
         }
@@ -1140,6 +1141,9 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
     }
 
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+    if query.get("vis").is_none_or(|v| v != "0") {
+        shared.plugins.set_screen_visible(id, true);
+    }
     let (tx, mut rx) = unbounded_channel::<Out>();
     let reply = tx.clone();
     // The providers this socket has a channel on.
@@ -1229,11 +1233,20 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
                 // delay a fresh frame would see too.
                 let _ = reply.send(Out::Text(serde_json::json!({ "t": "pong", "n": n }).to_string()));
             }
-            None => match (&shared.screen, &mut session) {
-                (Screen::Here(screen), Some(session)) => session.message(screen, &text),
-                (Screen::Provider(link), _) => link.text(id, &text),
-                (Screen::Here(_), None) => {}
-            },
+            None => {
+                if text.contains("\"vis\"")
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+                    && v["t"] == "vis"
+                    && let Some(vis) = v["v"].as_bool()
+                {
+                    shared.plugins.set_screen_visible(id, vis);
+                }
+                match (&shared.screen, &mut session) {
+                    (Screen::Here(screen), Some(session)) => session.message(screen, &text),
+                    (Screen::Provider(link), _) => link.text(id, &text),
+                    (Screen::Here(_), None) => {}
+                }
+            }
         }
     }
 
@@ -1242,6 +1255,7 @@ async fn client(mut socket: WebSocket, shared: Arc<Shared>, query: HashMap<Strin
         (Screen::Provider(link), _) => link.close(id),
         (Screen::Here(_), None) => {}
     }
+    shared.plugins.set_screen_visible(id, false);
     for p in opened {
         if let Some(link) = shared.plugins.get(&p) {
             link.close(id);
