@@ -38,6 +38,9 @@ and memory, responsiveness: nothing may slow the path to the first frame or
 add work per frame. A change a user will notice gets a line in
 `client/site/pages/changelog.html`.
 
+Always commit and push changes before deploying; never deploy local-only or
+uncommitted changes.
+
 ## Running peek for a test
 
 A peek may already be installed and running on this machine, on port 9182.

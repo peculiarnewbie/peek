@@ -1,4 +1,4 @@
-import { For, onSettled, Show } from 'solid-js';
+import { createEffect, createSignal, For, onSettled, Show } from 'solid-js';
 import { setSleep, setStats, showSettings, toggleFullscreen, toggleKeyboard, togglePin, toggleTouchMode } from '../actions';
 import { focusScreen } from '../screen';
 import {
@@ -11,23 +11,44 @@ import { appPages, framed, openPage } from './Frame';
 
 /** The pill at the top: a dot until hovered (or tapped), unless pinned or settings are open. */
 export function Toolbar() {
-  const open = () => pinned() || settingsOpen() || barOpen();
+  const [pluginsOpen, setPluginsOpen] = createSignal(false);
+  const open = () => pinned() || settingsOpen() || barOpen() || pluginsOpen();
   // No hover on a touch screen: the first tap opens the bar, a tap on the screen
   // closes it. Opened on the click itself (in the capture phase, stopped there):
   // opened any sooner, the bar grows under the finger and the click lands on
   // whichever button is there now.
   let bar!: HTMLDivElement;
+  let pluginsMenu: HTMLDivElement | undefined;
   onSettled(() => {
     bar.addEventListener('click', e => {
       if ((e as PointerEvent).pointerType !== 'touch') return;
       setIsTouch(true);
       if (!open()) { setBarOpen(true); e.stopPropagation(); }
     }, true);
+    const onPointerDown = (e: PointerEvent) => {
+      if (pluginsOpen() && pluginsMenu && !pluginsMenu.contains(e.target as Node)) setPluginsOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && pluginsOpen()) setPluginsOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  });
+  createEffect(() => settingsOpen() || appPages().length <= 2, close => {
+    if (close) setPluginsOpen(false);
   });
   const status = () => {
     const m = monitors()[cfg.mon];
     const state = !live() ? 'Connecting' : sleeping() ? 'Paused' : 'Live';
     return state + (live() && m ? ` · ${m.w}×${m.h}` : '') + (viewOnly() ? ' · view only' : '');
+  };
+  const pluginActive = () => {
+    const p = framed();
+    return !!p && appPages().includes(p);
   };
   return (
     <div id="bar" class={['panel', { open: open() }]} ref={bar}>
@@ -43,10 +64,30 @@ export function Toolbar() {
           </button>
         </Show>
         {/* The machine's apps with a page of their own (Frame.tsx); plugins are under Settings. */}
-        <For each={appPages()}>{p =>
-          <button class="tb text" tabindex={-1} title={`${p}: its page on this machine`} aria-pressed={framed() === p ? 'true' : 'false'}
-            onClick={() => openPage(p)}><span>{p}</span></button>
-        }</For>
+        <Show when={appPages().length > 2} fallback={
+          <For each={appPages()}>{p =>
+            <button class="tb text" tabindex={-1} title={`${p}: its page on this machine`} aria-pressed={framed() === p ? 'true' : 'false'}
+              onClick={() => openPage(p)}><span>{p}</span></button>
+          }</For>
+        }>
+          <div class="tb-menu" ref={pluginsMenu}>
+            <button id="b-plugins" class="tb text" tabindex={-1} title="Plugins with pages on this machine"
+              aria-haspopup="menu" aria-expanded={pluginsOpen() ? 'true' : 'false'}
+              aria-pressed={pluginsOpen() || pluginActive() ? 'true' : 'false'}
+              onClick={() => setPluginsOpen(!pluginsOpen())}>
+              <span>Plugins</span><Icon name="chev" />
+            </button>
+            <Show when={pluginsOpen()}>
+              <div class="tb-drop panel" role="menu" aria-label="Plugins">
+                <For each={appPages()}>{p =>
+                  <button role="menuitem" tabindex={-1} title={`${p}: its page on this machine`}
+                    aria-pressed={framed() === p ? 'true' : 'false'}
+                    onClick={() => { setPluginsOpen(false); openPage(p); }}>{p}</button>
+                }</For>
+              </div>
+            </Show>
+          </div>
+        </Show>
         {/* Labels as well as text: a narrow screen shows the icons only. */}
         <button id="b-sleep" class="tb" tabindex={-1} onClick={() => setSleep(!sleeping())}
           aria-label={sleeping() ? 'Resume' : 'Pause'}

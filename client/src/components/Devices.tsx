@@ -9,7 +9,7 @@ import {
 } from '../hosted';
 import { ago, changing, columns, fetchTo, offers, picked, setPicked, turn } from '../plugins';
 import { checkUpdate, upgrade, updating } from '../update';
-import { cardError, cardItems, press, pressing } from '../views';
+import { cardError, cardItems, frameProviders, press, pressing } from '../views';
 import { Icon } from './Icons';
 import { AddForm, Foot, Header, Intro } from './Intro';
 import { canScan, QrScan } from './QrScan';
@@ -191,11 +191,14 @@ function CardPlugins(props: { m: Machine }) {
   return (
     <Show when={items().length}>
       <div class={['dplugins', { stale: !!asOf() }]}>
-        <For each={items()}>{i => (
-          <button class={['ptag', { off: !i.on, hl: i.name === picked() }]} tabindex={-1}
-            title={`${i.name}: ${i.on ? 'on' : 'off'}${asOf() ? `, as of ${asOf()}` : ''}. Opens ${props.m.name}'s Plugins page`}
-            onClick={() => navigate(pagePath(props.m, 'plugins'))}>{i.name}</button>
-        )}</For>
+        <For each={items()}>{i => {
+          const target = () => (i.on && frameProviders(props.m).includes(i.name) ? i.name : 'plugins');
+          return (
+            <button class={['ptag', { off: !i.on, hl: i.name === picked() }]} tabindex={-1}
+              title={`${i.name}: ${i.on ? 'on' : 'off'}${asOf() ? `, as of ${asOf()}` : ''}. Opens ${props.m.name}'s ${target() === 'plugins' ? 'Plugins' : i.name} page`}
+              onClick={() => navigate(pagePath(props.m, target()))}>{i.name}</button>
+          );
+        }}</For>
         <Show when={asOf()}>{a => <span class="pasof">as of {a()}</span>}</Show>
       </div>
       <Show when={fix()}>{f => (

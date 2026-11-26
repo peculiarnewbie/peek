@@ -55,6 +55,15 @@ body.sleeping #screen { filter: grayscale(1) brightness(.35); }
 .tb:hover { background: var(--hover); color: var(--ink); }
 .tb[aria-pressed="true"] { background: var(--raised); color: var(--ink); }
 .tb.icon { width: 30px; padding: 0; justify-content: center; }
+.tb-menu { position: relative; }
+.tb-menu > .tb svg.i { width: 14px; height: 14px; transition: transform .15s; }
+.tb-menu > .tb[aria-expanded="true"] svg.i { transform: rotate(180deg); }
+.tb-drop { position: absolute; top: calc(100% + 8px); left: 0; min-width: 150px; padding: 4px;
+  display: flex; flex-direction: column; gap: 2px; z-index: 4; }
+.tb-drop button { display: flex; align-items: center; width: 100%; height: 30px; padding: 0 10px;
+  border-radius: 8px; color: var(--ink-2); white-space: nowrap; text-align: left; }
+.tb-drop button:hover { background: var(--hover); color: var(--ink); }
+.tb-drop button[aria-pressed="true"] { background: var(--raised); color: var(--ink); }
 
 /* ---- settings ---- */
 #settings { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 3;
