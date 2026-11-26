@@ -104,6 +104,49 @@ function niriAction(action) {
   }
 }
 
+function findInternalOutput() {
+  try {
+    const raw = execFileSync('niri', ['msg', '-j', 'outputs'], { encoding: 'utf8', timeout: 3000 });
+    const outputs = JSON.parse(raw);
+    const names = Object.keys(outputs);
+    const name = names.find(n => /^eDP-/i.test(n)) || names[0];
+    return name ? { name, off: outputs[name]?.current_mode == null } : null;
+  } catch (e) {
+    log(`niri outputs failed: ${e.message}`);
+    return null;
+  }
+}
+
+function wakeDisplay(keepDark) {
+  if (!settings.dpms) return;
+  const out = findInternalOutput();
+  if (out && out.off) {
+    try {
+      execFileSync('niri', ['msg', 'output', out.name, 'on'], { timeout: 3000, stdio: 'ignore' });
+    } catch (e) {
+      log(`niri output ${out.name} on failed: ${e.message}`);
+    }
+  }
+  niriAction('power-on-monitors');
+  if (keepDark) {
+    try { setBrightness(0); } catch (e) { log(`brightness 0 failed: ${e.message}`); }
+  }
+}
+
+function sleepDisplay() {
+  if (!settings.dpms) return;
+  const out = findInternalOutput();
+  if (out) {
+    try {
+      execFileSync('niri', ['msg', 'output', out.name, 'off'], { timeout: 3000, stdio: 'ignore' });
+      return;
+    } catch (e) {
+      log(`niri output ${out.name} off failed: ${e.message}`);
+    }
+  }
+  niriAction('power-off-monitors');
+}
+
 const state = loadState();
 let screenActive = false;
 let displayAsleep = false;
@@ -121,7 +164,7 @@ function scheduleSleep() {
   clearIdleTimer();
   if (!state.blanked || !settings.dpms || screenActive) return;
   if (settings.idleMs === 0) {
-    niriAction('power-off-monitors');
+    sleepDisplay();
     displayAsleep = true;
     pushPages();
     return;
@@ -129,7 +172,7 @@ function scheduleSleep() {
   idleTimer = setTimeout(() => {
     idleTimer = null;
     if (state.blanked && !screenActive) {
-      niriAction('power-off-monitors');
+      sleepDisplay();
       displayAsleep = true;
       pushPages();
     }
@@ -145,16 +188,17 @@ function applyBlank(on) {
     state.blanked = true;
     saveState();
     if (settings.dpms && !screenActive) {
-      niriAction('power-off-monitors');
+      sleepDisplay();
       displayAsleep = true;
     } else {
+      wakeDisplay(true);
       displayAsleep = false;
     }
     log(`blanked (saved=${state.savedBrightness ?? 'default'}, dpms=${settings.dpms}, active=${screenActive})`);
   } else {
     const target = state.savedBrightness && state.savedBrightness > 0 ? state.savedBrightness : '50%';
+    wakeDisplay(false);
     setBrightness(target);
-    niriAction('power-on-monitors');
     state.blanked = false;
     state.savedBrightness = null;
     displayAsleep = false;
@@ -172,10 +216,8 @@ function onScreenEvent(mode) {
   if (active) {
     clearIdleTimer();
     try { setBrightness(0); } catch (e) { log(`brightness 0 failed: ${e.message}`); }
-    if (settings.dpms) {
-      niriAction('power-on-monitors');
-      displayAsleep = false;
-    }
+    wakeDisplay(true);
+    displayAsleep = false;
     pushPages();
   } else {
     scheduleSleep();
